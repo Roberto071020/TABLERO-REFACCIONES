@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Servicio Cristian · Tablero de Seguimiento de Refacciones</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="toastRoot" class="toast-root"></div>
+<div id="modalRoot"></div>
+<div id="loginRoot"></div>
+
+<header class="top hidden" id="topHeader">
+  <div class="brand">Servicio Cristian<small>Seguimiento de siniestros, pedidos y refacciones</small></div>
+  <nav class="tabs" id="mainTabs"></nav>
+  <div class="search-box no-print">
+    <input id="globalSearch" placeholder="Buscar siniestro, pedido, placa..." onkeydown="if(event.key==='Enter')doGlobalSearch()">
+    <button class="btn small" onclick="doGlobalSearch()">Buscar</button>
+  </div>
+  <button class="btn secondary small no-print" onclick="openNuevoMenu()">+ Nuevo</button>
+  <span class="userchip" id="userChip"></span>
+  <button class="btn ghost small no-print" onclick="hacerLogout()">Salir</button>
+</header>
+
+<main id="app"></main>
+
+<footer class="note hidden" id="footerNote">Servicio Cristian · Tablero de Seguimiento de Refacciones · Base de datos compartida (no localStorage). Los correos requieren aprobación expresa antes de registrarse; no se envían automáticamente.</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

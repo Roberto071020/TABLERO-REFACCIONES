@@ -1,0 +1,27 @@
+{
+  "name": "_app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server/index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --no-warnings --test tests/*.test.js",
+    "start": "node --no-warnings server/index.js",
+    "seed": "node --no-warnings server/seed.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "dayjs": "^1.11.21",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "multer": "^2.2.0"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
