@@ -1,7 +1,7 @@
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite'); // módulo integrado en Node 22+: sin compilación nativa ni descargas al instalar
 
-const DB_PATH = process.env.TEST_DB_PATH || path.join(__dirname, '..', 'data', 'tablero.db');
+const DB_PATH = process.env.TEST_DB_PATH || (process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'tablero.db') : path.join(__dirname, '..', 'data', 'tablero.db'));
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = DELETE;');
 db.exec('PRAGMA foreign_keys = ON;');

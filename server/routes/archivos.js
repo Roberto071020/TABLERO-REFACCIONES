@@ -7,7 +7,7 @@ const { requireAuth } = require('../auth');
 const { registrarAuditoria } = require('../utils');
 const router = express.Router();
 
-const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
+const UPLOAD_DIR = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'uploads') : path.join(__dirname, '..', '..', 'uploads');
 if(!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive:true });
 
 const ALLOWED_MIME = ['application/pdf','image/jpeg','image/png','image/webp','image/heic'];
