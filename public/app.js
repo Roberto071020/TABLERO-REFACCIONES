@@ -381,9 +381,23 @@ async function viewSiniestro(id){
   if(state.subtabSiniestro==='cliente'){
     const eventos = await api('GET','/api/eventos-cliente?siniestro_id='+id);
     const tareas = await api('GET','/api/tareas?siniestro_id='+id);
+    const hitos = await api('GET','/api/hitos?siniestro_id='+id);
     const ESTADOS_TAREA = {pendiente:'ambar', en_proceso:'azul', completada:'verde', cancelada:'gris'};
+    const ESTADOS_HITO = {pendiente:'gris', generado:'ambar', revisado:'azul', enviado:'verde', no_aplica:'gris'};
+    const LABEL_HITO = {pendiente:'Pendiente', generado:'Generado', revisado:'Revisado', enviado:'Enviado', no_aplica:'No aplica'};
     body = `
-    <h3>Tareas</h3>
+    <h3>Hitos del expediente</h3>
+    <p class="subtle">Secuencia real de avisos al cliente. Los marcados "condicional" pueden omitirse con motivo.</p>
+    <table><thead><tr><th>#</th><th>Hito</th><th>Estado</th><th>Detalle</th><th></th></tr></thead><tbody>
+    ${hitos.map(h=>`<tr>
+      <td>${h.orden}</td>
+      <td>${esc(h.titulo)}${h.condicional?' <span class="badge gris">condicional</span>':''}</td>
+      <td><span class="badge ${ESTADOS_HITO[h.estado]||'gris'}">${LABEL_HITO[h.estado]||h.estado}</span></td>
+      <td class="subtle">${h.estado==='no_aplica'?esc(h.motivo_no_aplica||''):(h.fecha_estado?esc(h.fecha_estado):'')}</td>
+      <td>${!['enviado'].includes(h.estado) || h.condicional ? `<button class="btn small secondary" onclick="abrirFormHito(${h.id})">Actualizar</button>` : ''}</td>
+    </tr>`).join('')}
+    </tbody></table>
+    <h3 style="margin-top:18px;">Tareas</h3>
     <div style="margin-bottom:8px;"><button class="btn small" onclick="abrirFormNuevaTarea(${id})">+ Nueva tarea</button></div>
     ${tareas.length===0?'<div class="empty">Sin tareas registradas.</div>':`
     <table><thead><tr><th>Descripción</th><th>Responsable</th><th>Fecha límite</th><th>Origen</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -825,6 +839,34 @@ async function marcarTareaCompletada(id){
   await api('PATCH','/api/tareas/'+id, { estado:'completada' });
   toast('Tarea marcada como completada.', 'success');
   render();
+}
+async function abrirFormHito(id){
+  const h = await api('GET','/api/hitos/'+id);
+  showModal(`
+    <h3>Actualizar hito: ${esc(h.titulo)}</h3>
+    <p class="subtle">${esc(h.hito_descripcion||'')}</p>
+    <div class="field"><label>Nuevo estado</label><select id="fh_estado" onchange="document.getElementById('fh_motivo_wrap').style.display=this.value==='no_aplica'?'block':'none';document.getElementById('fh_mensaje_wrap').style.display=this.value==='enviado'?'block':'none';">
+      <option value="pendiente" ${h.estado==='pendiente'?'selected':''}>Pendiente</option>
+      <option value="generado" ${h.estado==='generado'?'selected':''}>Generado (borrador listo)</option>
+      <option value="revisado" ${h.estado==='revisado'?'selected':''}>Revisado</option>
+      <option value="enviado" ${h.estado==='enviado'?'selected':''}>Enviado al cliente</option>
+      ${h.condicional?`<option value="no_aplica" ${h.estado==='no_aplica'?'selected':''}>No aplica</option>`:''}
+    </select></div>
+    <div class="field" id="fh_motivo_wrap" style="display:${h.estado==='no_aplica'?'block':'none'}"><label>Motivo de "no aplica"</label><input id="fh_motivo" value="${esc(h.motivo_no_aplica||'')}"></div>
+    <div class="field" id="fh_mensaje_wrap" style="display:none"><label>Mensaje enviado al cliente (queda registrado en la bitácora)</label><textarea id="fh_mensaje"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarHito(${id})">Guardar</button></div>
+  `);
+}
+async function guardarHito(id){
+  const estado = document.getElementById('fh_estado').value;
+  try{
+    await api('PATCH','/api/hitos/'+id, {
+      estado, motivo_no_aplica: document.getElementById('fh_motivo').value,
+      mensaje: document.getElementById('fh_mensaje') ? document.getElementById('fh_mensaje').value : ''
+    });
+    toast('Hito actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
 }
 function formNuevoSiniestro(){
   showModal(`

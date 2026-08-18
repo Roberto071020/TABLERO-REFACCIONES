@@ -475,3 +475,52 @@ test('FASE2-4: la bandeja de clientes calcula días sin actualización y cuenta 
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
 });
+
+/* ===================== FASE 3 — Módulo Alejandra: catálogo de hitos por expediente ===================== */
+test('FASE3-1: al consultar los hitos de un expediente se aprovisionan automáticamente los 15, en orden, todos "pendiente"', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE3-HITOS-1', aseguradora: 'GNP', cliente_nombre: 'A', cliente_telefono: '1', cliente_correo: 'a@a.com' })).data;
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  assert.equal(hitos.length, 15);
+  assert.equal(hitos[0].clave, 'recepcion');
+  assert.equal(hitos[14].clave, 'postventa');
+  assert.ok(hitos.every(h => h.estado === 'pendiente'));
+
+  // pedir de nuevo no debe duplicar (idempotencia del aprovisionamiento)
+  const hitos2 = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  assert.equal(hitos2.length, 15);
+});
+
+test('FASE3-2: un expediente creado ANTES de esta fase (sin filas en siniestro_hitos) también se aprovisiona al consultarlo', async () => {
+  // Reutiliza el caso real sembrado por seed.js, que nació antes de que existiera el módulo de hitos.
+  const siniestros = (await req('GET', '/api/siniestros')).data;
+  const casoReal = siniestros.find(s => s.numero === '4264105314000171');
+  assert.ok(casoReal, 'debe existir el caso real sembrado');
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + casoReal.id)).data;
+  assert.equal(hitos.length, 15, 'debe aprovisionarse igual que un expediente nuevo');
+});
+
+test('FASE3-3: marcar un hito como "no aplica" exige motivo, y marcarlo "enviado" exige mensaje y lo registra en la bitácora', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE3-HITOS-2', aseguradora: 'GNP', cliente_nombre: 'B', cliente_telefono: '2', cliente_correo: 'b@b.com' })).data;
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const espera = hitos.find(h => h.clave === 'espera_refacciones');
+  assert.equal(espera.condicional, 1);
+
+  const sinMotivo = await req('PATCH', '/api/hitos/' + espera.id, { estado: 'no_aplica' });
+  assert.equal(sinMotivo.status, 400);
+  const conMotivo = await req('PATCH', '/api/hitos/' + espera.id, { estado: 'no_aplica', motivo_no_aplica: 'El vehículo no requiere cambio de piezas.' });
+  assert.equal(conMotivo.status, 200);
+  assert.equal(conMotivo.data.estado, 'no_aplica');
+
+  const recepcion = hitos.find(h => h.clave === 'recepcion');
+  const sinMensaje = await req('PATCH', '/api/hitos/' + recepcion.id, { estado: 'enviado' });
+  assert.equal(sinMensaje.status, 400);
+  const conMensaje = await req('PATCH', '/api/hitos/' + recepcion.id, { estado: 'enviado', mensaje: 'Le explicamos el proceso completo al cliente por WhatsApp.' });
+  assert.equal(conMensaje.status, 200);
+  assert.ok(conMensaje.data.evento_cliente_id, 'debe quedar ligado a un evento de la bitácora');
+
+  const bitacora = (await req('GET', '/api/eventos-cliente?siniestro_id=' + s.id)).data;
+  assert.ok(bitacora.some(e => e.id === conMensaje.data.evento_cliente_id && e.mensaje.includes('explicamos el proceso completo')));
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
