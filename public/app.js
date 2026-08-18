@@ -8,6 +8,8 @@ function todayISO(){ return new Date().toISOString().slice(0,10); }
 function uidLocal(){ return 'tmp'+Math.random().toString(36).slice(2); }
 
 let currentUser = null;
+const ASEGURADORAS = ['GNP','Mapfre','Inbursa','Afirme','Allianz','La Latinoamericana'];
+
 
 async function api(method, url, body, opts={}){
   const res = await fetch(url, {
@@ -277,7 +279,7 @@ async function viewLista(){
     <input placeholder="Búsqueda global" value="${esc(f.q||'')}" oninput="setFiltroQLive(this.value)" onkeydown="if(event.key==='Enter')render()" style="min-width:180px">
     <select onchange="setFiltroListaMaestra('aseguradora', this.value)">
       <option value="">Todas las aseguradoras</option>
-      ${['GNP','Mapfre','Inbursa','Afirme','Allianz'].map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
+      ${ASEGURADORAS.map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
     </select>
     <select onchange="setFiltroListaMaestra('estatus', this.value)">
       <option value="">Todos los estatus de pieza</option>
@@ -668,7 +670,7 @@ function formNuevoSiniestro(){
     <h3>Nuevo siniestro</h3>
     <div class="field"><label>Número de siniestro</label><input id="f_numero" placeholder="0186561262A"></div>
     <div class="row-flex">
-      <div class="field"><label>Aseguradora</label><select id="f_aseguradora">${['GNP','Mapfre','Inbursa','Afirme','Allianz'].map(a=>`<option>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Aseguradora</label><select id="f_aseguradora">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
       <div class="field"><label>Vehículo</label><input id="f_vehiculo" placeholder="Marca / modelo"></div>
     </div>
     <div class="row-flex">
@@ -696,7 +698,7 @@ function abrirFormEditarSiniestro(id){
     showModal(`
       <h3>Editar siniestro ${esc(s.numero)}</h3>
       <div class="row-flex">
-        <div class="field"><label>Aseguradora</label><select id="fe_aseguradora">${['GNP','Mapfre','Inbursa','Afirme','Allianz'].map(a=>`<option ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+        <div class="field"><label>Aseguradora</label><select id="fe_aseguradora">${ASEGURADORAS.map(a=>`<option ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
         <div class="field"><label>Vehículo</label><input id="fe_vehiculo" value="${esc(s.vehiculo||'')}"></div>
       </div>
       <div class="row-flex">
