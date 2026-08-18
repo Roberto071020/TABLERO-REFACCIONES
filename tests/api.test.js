@@ -279,3 +279,64 @@ test('F-19: los archivos se guardan realmente en disco (no solo el nombre)', asy
   });
   assert.equal(rechazo.status, 400, 'debe rechazar tipos de archivo no permitidos');
 });
+
+/* ===================== FASE 0 — Módulo Alejandra: migración aditiva ===================== */
+test('FASE0-1: el expediente maestro (siniestros) tiene las columnas nuevas del módulo de Alejandra, sin perder las de Daniela', async () => {
+  const db = require('../server/db');
+  const cols = db.prepare('PRAGMA table_info(siniestros)').all().map(c => c.name);
+  // columnas originales de Daniela siguen presentes
+  ['numero','aseguradora','vehiculo','placas','completo','estatus_general'].forEach(c => {
+    assert.ok(cols.includes(c), `no debe perderse la columna original "${c}"`);
+  });
+  // columnas nuevas del expediente maestro
+  ['cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen',
+   'etapa_actual','prioridad','requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista',
+   'fecha_entrega_real','postventa_programada','postventa_completada'].forEach(c => {
+    assert.ok(cols.includes(c), `falta la columna nueva "${c}"`);
+  });
+});
+
+test('FASE0-2: requiere_refacciones nace en "por_definir" y un siniestro nuevo de Daniela sigue creándose igual que antes', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE0-TEST-1', aseguradora: 'GNP', vehiculo: 'Aveo', placas: 'ZZZ-111-A' })).data;
+  assert.equal(s.requiere_refacciones, 'por_definir', 'debe nacer sin definir hasta que Alejandra o Daniela lo determinen');
+  assert.equal(s.completo, 1, 'la lógica de completo de Daniela no debe alterarse');
+});
+
+test('FASE0-3: el rol nuevo "atencion_cliente" es válido y los roles existentes de Daniela/admin siguen funcionando', async () => {
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  assert.doesNotThrow(() => {
+    db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+      .run('Alejandra Prueba', 'alejandra.fase0.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'atencion_cliente');
+  }, 'el CHECK de rol debe aceptar atencion_cliente');
+  assert.throws(() => {
+    db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+      .run('Rol Invalido', 'rolinvalido.fase0.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'rol_que_no_existe');
+  }, 'el CHECK de rol debe seguir rechazando roles inválidos, igual que antes');
+  const roles = db.prepare("SELECT rol FROM usuarios WHERE email IN ('daniela@serviciocristian.mx','admin@serviciocristian.mx')").all().map(r=>r.rol);
+  assert.ok(roles.includes('operativo') && roles.includes('admin'), 'los usuarios sembrados de Daniela y admin conservan su rol original');
+});
+
+test('FASE0-4: las tablas nuevas del módulo de Alejandra existen y el catálogo de hitos está sembrado con la secuencia real', async () => {
+  const db = require('../server/db');
+  ['eventos_cliente','tareas','catalogo_hitos','siniestro_hitos','mensajes_ia'].forEach(t => {
+    assert.doesNotThrow(() => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get(), `la tabla ${t} debe existir`);
+  });
+  const hitos = db.prepare('SELECT orden,clave,condicional FROM catalogo_hitos ORDER BY orden').all();
+  assert.equal(hitos.length, 15, 'deben ser los 15 hitos reales descritos por Roberto');
+  assert.equal(hitos[0].clave, 'recepcion');
+  assert.equal(hitos[hitos.length-1].clave, 'postventa');
+  const condicionales = hitos.filter(h => h.condicional === 1).map(h => h.clave);
+  ['espera_refacciones','refacciones_completas','cita_reingreso','reprogramacion_cita','mecanica'].forEach(c => {
+    assert.ok(condicionales.includes(c), `"${c}" debe quedar marcado como condicional (puede omitirse)`);
+  });
+});
+
+test('FASE0-5: correr la inicialización de la base dos veces no duplica el catálogo de hitos ni rompe nada (idempotencia)', async () => {
+  const db = require('../server/db');
+  const antes = db.prepare('SELECT COUNT(*) c FROM catalogo_hitos').get().c;
+  delete require.cache[require.resolve('../server/db')];
+  require('../server/db');
+  const despues = db.prepare('SELECT COUNT(*) c FROM catalogo_hitos').get().c;
+  assert.equal(antes, despues, 'no debe duplicarse el catálogo al reiniciar el servidor');
+});
