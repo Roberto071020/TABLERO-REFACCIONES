@@ -48,6 +48,7 @@ app.use('/api/reportes', require('./routes/reportes'));
 app.use('/api/eventos-cliente', require('./routes/eventosCliente'));
 app.use('/api/tareas', require('./routes/tareas'));
 app.use('/api/hitos', require('./routes/hitos'));
+app.use('/api/mensajes-ia', require('./routes/mensajesIa'));
 
 // ---- Frontend estático ----
 app.use(express.static(path.join(__dirname, '..', 'public')));

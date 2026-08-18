@@ -382,9 +382,11 @@ async function viewSiniestro(id){
     const eventos = await api('GET','/api/eventos-cliente?siniestro_id='+id);
     const tareas = await api('GET','/api/tareas?siniestro_id='+id);
     const hitos = await api('GET','/api/hitos?siniestro_id='+id);
+    const mensajesIa = await api('GET','/api/mensajes-ia?siniestro_id='+id);
     const ESTADOS_TAREA = {pendiente:'ambar', en_proceso:'azul', completada:'verde', cancelada:'gris'};
     const ESTADOS_HITO = {pendiente:'gris', generado:'ambar', revisado:'azul', enviado:'verde', no_aplica:'gris'};
     const LABEL_HITO = {pendiente:'Pendiente', generado:'Generado', revisado:'Revisado', enviado:'Enviado', no_aplica:'No aplica'};
+    const ESTADOS_IA = {generado:'ambar', aprobado:'azul', enviado:'verde'};
     body = `
     <h3>Hitos del expediente</h3>
     <p class="subtle">Secuencia real de avisos al cliente. Los marcados "condicional" pueden omitirse con motivo.</p>
@@ -394,7 +396,10 @@ async function viewSiniestro(id){
       <td>${esc(h.titulo)}${h.condicional?' <span class="badge gris">condicional</span>':''}</td>
       <td><span class="badge ${ESTADOS_HITO[h.estado]||'gris'}">${LABEL_HITO[h.estado]||h.estado}</span></td>
       <td class="subtle">${h.estado==='no_aplica'?esc(h.motivo_no_aplica||''):(h.fecha_estado?esc(h.fecha_estado):'')}</td>
-      <td>${!['enviado'].includes(h.estado) || h.condicional ? `<button class="btn small secondary" onclick="abrirFormHito(${h.id})">Actualizar</button>` : ''}</td>
+      <td>
+        ${!['enviado'].includes(h.estado) || h.condicional ? `<button class="btn small secondary" onclick="abrirFormHito(${h.id})">Actualizar</button>` : ''}
+        <button class="btn small ghost" onclick="abrirFormIA(${id}, ${h.hito_id})">Preparar con IA</button>
+      </td>
     </tr>`).join('')}
     </tbody></table>
     <h3 style="margin-top:18px;">Tareas</h3>
@@ -416,7 +421,21 @@ async function viewSiniestro(id){
       ${e.canal?` · ${esc(e.canal)}`:''}${e.tipo_evento?` · ${esc(e.tipo_evento)}`:''}<br>${esc(e.mensaje)}
       ${e.compromiso?`<br><span class="subtle">Compromiso: ${esc(e.compromiso)}</span>`:''}
       <span class="subtle"> (${esc(e.autor_nombre||'—')})</span></li>`).join('')}
-    </ul>`}`;
+    </ul>`}
+    <h3 style="margin-top:18px;">Mensajes preparados con IA</h3>
+    <p class="subtle">Borradores armados con el contexto del expediente para pegar en tu ChatGPT. El envío siempre queda a tu criterio.</p>
+    ${mensajesIa.length===0?'<div class="empty">Sin mensajes preparados todavía.</div>':`
+    <table><thead><tr><th>Hito</th><th>Borrador</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${mensajesIa.map(m=>`<tr>
+      <td>${esc(m.hito_titulo||'General')}</td>
+      <td style="max-width:280px;white-space:pre-wrap;">${esc((m.borrador||'').slice(0,180))}${(m.borrador||'').length>180?'…':''}</td>
+      <td><span class="badge ${ESTADOS_IA[m.estado]||'gris'}">${esc(m.estado)}</span></td>
+      <td>
+        ${m.estado==='generado'?`<button class="btn small secondary" onclick="cambiarEstadoMensajeIa(${m.id},'aprobado')">Marcar revisado</button>`:''}
+        ${m.estado!=='enviado'?`<button class="btn small" onclick="cambiarEstadoMensajeIa(${m.id},'enviado')">Marcar enviado</button>`:''}
+      </td>
+    </tr>`).join('')}
+    </tbody></table>`}`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -866,6 +885,46 @@ async function guardarHito(id){
     });
     toast('Hito actualizado.', 'success');
     closeModal(); render();
+  }catch(e){}
+}
+
+/* ===================== MÓDULO ALEJANDRA: copiloto de IA (sin API conectada — copiar/pegar) ===================== */
+async function abrirFormIA(siniestroId, hitoId){
+  const r = await api('GET', `/api/mensajes-ia/contexto?siniestro_id=${siniestroId}${hitoId?`&hito_id=${hitoId}`:''}`);
+  showModal(`
+    <h3>Preparar mensaje con IA</h3>
+    <ol style="padding-left:18px;margin:0 0 10px;">
+      <li>Copia el contexto de abajo.</li>
+      <li>Pégalo en tu ChatGPT y pide que redacte el mensaje para el cliente.</li>
+      <li>Pega aquí la respuesta que te dio la IA y guarda el borrador.</li>
+    </ol>
+    <div class="field"><label>Contexto (solo lectura)</label><textarea id="fia_contexto" readonly style="min-height:180px;">${esc(r.texto)}</textarea></div>
+    <button class="btn small secondary" type="button" onclick="copiarContextoIA()">Copiar contexto</button>
+    <div class="field" style="margin-top:10px;"><label>Borrador de la IA (pégalo aquí)</label><textarea id="fia_borrador" style="min-height:120px;" placeholder="Pega aquí lo que te devolvió tu ChatGPT..."></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button><button class="btn" onclick="guardarMensajeIa(${siniestroId}, ${hitoId||'null'})">Guardar borrador</button></div>
+  `, true);
+}
+function copiarContextoIA(){
+  const el = document.getElementById('fia_contexto');
+  el.select();
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(el.value);
+    else document.execCommand('copy');
+    toast('Contexto copiado.', 'success');
+  }catch(e){ toast('No se pudo copiar automáticamente; selecciona el texto manualmente.', 'warn'); }
+}
+async function guardarMensajeIa(siniestroId, hitoId){
+  const contexto_usado = document.getElementById('fia_contexto').value;
+  const borrador = document.getElementById('fia_borrador').value.trim();
+  await api('POST','/api/mensajes-ia', { siniestro_id: siniestroId, hito_id: hitoId, contexto_usado, borrador });
+  toast('Borrador guardado.', 'success');
+  closeModal(); render();
+}
+async function cambiarEstadoMensajeIa(id, estado){
+  try{
+    await api('PATCH','/api/mensajes-ia/'+id, { estado });
+    toast(estado==='enviado' ? 'Mensaje marcado como enviado y registrado en la bitácora.' : 'Mensaje marcado como revisado.', 'success');
+    render();
   }catch(e){}
 }
 function formNuevoSiniestro(){

@@ -524,3 +524,42 @@ test('FASE3-3: marcar un hito como "no aplica" exige motivo, y marcarlo "enviado
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
 });
+
+/* ===================== FASE 4 — Módulo Alejandra: copiloto de IA (sin API conectada) ===================== */
+test('FASE4-1: el contexto para IA incluye los datos vigentes del expediente y las instrucciones de no inventar', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE4-CONTEXTO', aseguradora: 'GNP', cliente_nombre: 'Contexto Cliente', cliente_telefono: '55-0000-9999', cliente_correo: 'ctx@ctx.com' })).data;
+  const r = await req('GET', '/api/mensajes-ia/contexto?siniestro_id=' + s.id);
+  assert.equal(r.status, 200);
+  assert.match(r.data.texto, /Contexto Cliente/);
+  assert.match(r.data.texto, /55-0000-9999/);
+  assert.match(r.data.texto, /FASE4-CONTEXTO/);
+  assert.match(r.data.texto, /No inventes fechas/);
+});
+
+test('FASE4-2: se puede guardar un borrador pegado desde la IA, marcarlo revisado y luego enviado, y queda en la bitácora', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE4-BORRADOR', aseguradora: 'GNP', cliente_nombre: 'B', cliente_telefono: '1', cliente_correo: 'b@b.com' })).data;
+  const contexto = (await req('GET', '/api/mensajes-ia/contexto?siniestro_id=' + s.id)).data.texto;
+
+  const creado = await req('POST', '/api/mensajes-ia', { siniestro_id: s.id, contexto_usado: contexto, borrador: '' });
+  assert.equal(creado.status, 201);
+  assert.equal(creado.data.estado, 'generado');
+
+  const sinBorrador = await req('PATCH', '/api/mensajes-ia/' + creado.data.id, { estado: 'enviado' });
+  assert.equal(sinBorrador.status, 400, 'no debe poder marcarse enviado sin borrador');
+
+  const conBorrador = await req('PATCH', '/api/mensajes-ia/' + creado.data.id, { borrador: 'Hola, le confirmamos que su vehículo ya está en valuación.', estado: 'aprobado' });
+  assert.equal(conBorrador.status, 200);
+  assert.equal(conBorrador.data.estado, 'aprobado');
+  assert.ok(conBorrador.data.aprobado_por);
+
+  const enviado = await req('PATCH', '/api/mensajes-ia/' + creado.data.id, { estado: 'enviado' });
+  assert.equal(enviado.status, 200);
+  assert.equal(enviado.data.estado, 'enviado');
+  assert.ok(enviado.data.evento_cliente_id);
+
+  const bitacora = (await req('GET', '/api/eventos-cliente?siniestro_id=' + s.id)).data;
+  assert.ok(bitacora.some(e => e.id === enviado.data.evento_cliente_id && e.mensaje.includes('ya está en valuación')));
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
