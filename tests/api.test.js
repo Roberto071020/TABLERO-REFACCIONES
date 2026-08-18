@@ -340,3 +340,74 @@ test('FASE0-5: correr la inicialización de la base dos veces no duplica el cat�
   const despues = db.prepare('SELECT COUNT(*) c FROM catalogo_hitos').get().c;
   assert.equal(antes, despues, 'no debe duplicarse el catálogo al reiniciar el servidor');
 });
+
+/* ===================== FASE 1 — Módulo Alejandra: alta desde recepción + filtro de Daniela ===================== */
+test('FASE1-1: Alejandra existe, puede iniciar sesión, y sus datos básicos de cliente son obligatorios al dar de alta un expediente', async () => {
+  const loginAlejandra = await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  assert.equal(loginAlejandra.status, 200, 'Alejandra debe poder iniciar sesión con la contraseña temporal sembrada');
+  assert.equal(loginAlejandra.data.user.rol, 'atencion_cliente');
+
+  const sinNombre = await req('POST', '/api/siniestros', { numero: 'FASE1-SINDATOS', aseguradora: 'GNP', cliente_telefono: '555', cliente_correo: 'x@x.com' });
+  assert.equal(sinNombre.status, 400, 'debe rechazar sin nombre de cliente cuando lo crea Alejandra');
+
+  const sinTelefono = await req('POST', '/api/siniestros', { numero: 'FASE1-SINDATOS', aseguradora: 'GNP', cliente_nombre: 'Cliente Prueba', cliente_correo: 'x@x.com' });
+  assert.equal(sinTelefono.status, 400, 'debe rechazar sin teléfono de cliente cuando lo crea Alejandra');
+
+  const sinCorreo = await req('POST', '/api/siniestros', { numero: 'FASE1-SINDATOS', aseguradora: 'GNP', cliente_nombre: 'Cliente Prueba', cliente_telefono: '555-000-0000' });
+  assert.equal(sinCorreo.status, 400, 'debe rechazar sin correo de cliente cuando lo crea Alejandra');
+
+  // volver a dejar la sesión como Daniela para no afectar pruebas futuras que dependan de su rol
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
+
+test('FASE1-2: Alejandra puede registrar un expediente completo desde recepción, sin duplicar siniestros', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'FASE1-EXPEDIENTE-1', aseguradora: 'GNP',
+    cliente_nombre: 'Juan Pérez', cliente_telefono: '55-1111-2222', cliente_correo: 'juan.perez@example.com',
+    orden_admision: 'OA-001', canal_origen: 'WhatsApp'
+  })).data;
+  assert.equal(s.cliente_nombre, 'Juan Pérez');
+  assert.equal(s.requiere_refacciones, 'por_definir', 'nace sin definir cuando Alejandra no lo sabe todavía');
+  assert.equal(s.orden_admision, 'OA-001');
+
+  const dup = await req('POST', '/api/siniestros', { numero: 'FASE1-EXPEDIENTE-1', aseguradora: 'GNP', cliente_nombre: 'Otro', cliente_telefono: '1', cliente_correo: 'o@o.com' });
+  assert.equal(dup.status, 409, 'no debe duplicar el expediente aunque lo intente crear de nuevo');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
+
+test('FASE1-3: la vista de Daniela oculta los expedientes marcados "no requiere refacciones", pero conserva "por definir" y "sí"', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const sSi = (await req('POST', '/api/siniestros', { numero: 'FASE1-REQ-SI', aseguradora: 'GNP', cliente_nombre: 'A', cliente_telefono: '1', cliente_correo: 'a@a.com', requiere_refacciones: 'si' })).data;
+  const sNo = (await req('POST', '/api/siniestros', { numero: 'FASE1-REQ-NO', aseguradora: 'GNP', cliente_nombre: 'B', cliente_telefono: '2', cliente_correo: 'b@b.com', requiere_refacciones: 'no' })).data;
+  const sPorDefinir = (await req('POST', '/api/siniestros', { numero: 'FASE1-REQ-PD', aseguradora: 'GNP', cliente_nombre: 'C', cliente_telefono: '3', cliente_correo: 'c@c.com' })).data;
+
+  // Alejandra (y admin) deben poder ver los tres, incluidos los que no requieren refacciones
+  const listaAlejandra = (await req('GET', '/api/siniestros')).data.map(x => x.numero);
+  assert.ok(listaAlejandra.includes('FASE1-REQ-SI') && listaAlejandra.includes('FASE1-REQ-NO') && listaAlejandra.includes('FASE1-REQ-PD'));
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const listaDaniela = (await req('GET', '/api/siniestros')).data.map(x => x.numero);
+  assert.ok(listaDaniela.includes('FASE1-REQ-SI'), 'Daniela debe ver los que sí requieren refacciones');
+  assert.ok(listaDaniela.includes('FASE1-REQ-PD'), 'Daniela debe ver los que están por definir (podría ser ella quien lo determine)');
+  assert.ok(!listaDaniela.includes('FASE1-REQ-NO'), 'Daniela NO debe ver los que explícitamente no requieren refacciones');
+});
+
+test('FASE1-4: crear el primer pedido sobre un expediente "por definir" lo confirma automáticamente como "sí", y queda auditado', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE1-AUTOFLIP', aseguradora: 'GNP' })).data;
+  assert.equal(s.requiere_refacciones, 'por_definir');
+  await req('POST', '/api/pedidos', { numero: 'FASE1-AUTOFLIP-PED1', siniestro_id: s.id });
+  const actualizado = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(actualizado.requiere_refacciones, 'si', 'debe pasar a "sí" automáticamente al crear el primer pedido');
+
+  const auditoria = (await req('GET', `/api/auditoria?entidad_tipo=siniestro&entidad_id=${s.id}`)).data;
+  assert.ok(auditoria.some(a => a.campo === 'requiere_refacciones' && a.valor_anterior === 'por_definir' && a.valor_nuevo === 'si'),
+    'el cambio automático debe quedar en la bitácora de auditoría');
+});
+
+test('FASE1-5: Daniela sigue pudiendo crear un siniestro exactamente igual que antes, sin que se le exijan datos de cliente', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE1-DANIELA-IGUAL', aseguradora: 'GNP', vehiculo: 'Sentra', placas: 'DAN-001-A' })).data;
+  assert.equal(s.numero, 'FASE1-DANIELA-IGUAL');
+  assert.equal(s.completo, 1);
+});

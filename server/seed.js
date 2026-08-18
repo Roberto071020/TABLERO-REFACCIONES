@@ -16,6 +16,16 @@ function seed(){
     console.log('IMPORTANTE: cambiar la contraseña en el primer inicio de sesión (PATCH /api/auth/password).');
   }
 
+  // Cuenta de Alejandra (módulo de atención y seguimiento a clientes) — idempotente,
+  // se agrega aunque los usuarios de Daniela/admin ya existieran de una corrida anterior.
+  const existeAlejandra = db.prepare("SELECT id FROM usuarios WHERE email = ?").get('alejandra@serviciocristian.mx');
+  if(!existeAlejandra){
+    const hashAlejandra = bcrypt.hashSync(TEMP_PASSWORD, 10);
+    db.prepare(`INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)`)
+      .run('Alejandra', 'alejandra@serviciocristian.mx', hashAlejandra, 'atencion_cliente');
+    console.log('Usuario de Alejandra creado (rol atencion_cliente). Contraseña temporal:', TEMP_PASSWORD);
+  }
+
   const provCount = db.prepare('SELECT COUNT(*) n FROM proveedores').get().n;
   if(provCount === 0){
     const provs = [

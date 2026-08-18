@@ -43,6 +43,15 @@ router.post('/', requireAuth, (req, res)=>{
     .run(String(b.numero).trim(), b.cotizacion||'', b.siniestro_id, b.aseguradora||siniestro.aseguradora, fechaCreacion, b.fecha_prevista||'',
          b.estatus_inpart||'Aguardando confirmación', b.total||0, b.tipo_evaluacion||'Inicial', 'Nuevo', req.session.user.id);
   registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user, valor_nuevo:`Pedido ${b.numero} (siniestro ${siniestro.numero})` });
+
+  // Módulo Alejandra (Fase 1): si el expediente maestro todavía no tenía definido si requiere refacciones,
+  // el primer pedido que Daniela crea sobre él lo confirma automáticamente. Queda auditado como cualquier otro cambio.
+  if(siniestro.requiere_refacciones === 'por_definir'){
+    db.prepare("UPDATE siniestros SET requiere_refacciones='si', actualizado_en=datetime('now') WHERE id=?").run(siniestro.id);
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: siniestro.id, accion:'automatico', campo:'requiere_refacciones',
+      valor_anterior:'por_definir', valor_nuevo:'si', usuario:req.session.user });
+  }
+
   const creado = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json({ ...creado, advertencias });
 });

@@ -121,6 +121,7 @@ let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro
 
 const TABS = [
   {k:'inicio', label:'Inicio'},
+  {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
   {k:'kanban', label:'Kanban'},
   {k:'incidencias', label:'Incidencias'},
   {k:'lista', label:'Lista maestra'},
@@ -128,7 +129,8 @@ const TABS = [
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
-  document.getElementById('mainTabs').innerHTML = TABS.map(t=>
+  const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
+  document.getElementById('mainTabs').innerHTML = visibles.map(t=>
     `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}</button>`).join('') +
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
@@ -168,6 +170,7 @@ async function render(){
   app.innerHTML = '<div class="empty">Cargando…</div>';
   try{
     if(state.view==='inicio') app.innerHTML = await viewInicio();
+    else if(state.view==='clientes') app.innerHTML = await viewClientes();
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
     else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
     else if(state.view==='lista') app.innerHTML = await viewLista();
@@ -445,6 +448,7 @@ async function viewSiniestro(id){
       <div>
         <h2 style="margin-bottom:2px;">Siniestro ${esc(s.numero)} <span class="badge azul">${esc(s.aseguradora)}</span></h2>
         <p class="subtle">${esc(s.vehiculo||'')} ${esc(s.anio_modelo||'')} · Placas ${esc(s.placas||'')} · Ingreso: ${esc(s.fecha_ingreso||'')} · Responsable: ${esc(s.responsable||'')}</p>
+        ${s.cliente_nombre?`<p class="subtle">Cliente: ${esc(s.cliente_nombre)}${s.cliente_telefono?' · '+esc(s.cliente_telefono):''}${s.etapa_actual?' · Etapa: '+esc(s.etapa_actual):''}</p>`:''}
       </div>
       <div><button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Editar</button></div>
     </div>
@@ -655,15 +659,95 @@ async function aprobarCorreo(pedidoId, idx, proveedorId){
 
 /* ===================== ALTA / EDICIÓN CON VALIDACIÓN DE DUPLICADOS ===================== */
 function openNuevoMenu(){
+  const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   showModal(`
     <h3>¿Qué deseas registrar?</h3>
     <div style="display:flex;flex-direction:column;gap:8px;">
+      ${esAtencionCliente?`<button class="btn secondary" onclick="closeModal();formNuevoExpediente()">Expediente (recepción de cliente)</button>`:''}
       <button class="btn secondary" onclick="closeModal();formNuevoSiniestro()">Siniestro</button>
       <button class="btn secondary" onclick="closeModal();formNuevoPedido()">Pedido (ligado a un siniestro)</button>
       <button class="btn secondary" onclick="closeModal();formNuevoProveedor()">Proveedor</button>
     </div>
     <div class="modal-actions"><button class="btn ghost" onclick="closeModal()">Cancelar</button></div>
   `);
+}
+
+/* ===================== MÓDULO ALEJANDRA: expediente desde recepción ===================== */
+function formNuevoExpediente(){
+  showModal(`
+    <h3>Nuevo expediente (recepción de cliente)</h3>
+    <div class="row-flex">
+      <div class="field"><label>Nombre del cliente *</label><input id="fx_cliente_nombre" placeholder="Nombre completo"></div>
+      <div class="field"><label>Teléfono / WhatsApp *</label><input id="fx_cliente_telefono" placeholder="55-0000-0000"></div>
+    </div>
+    <div class="field"><label>Correo *</label><input id="fx_cliente_correo" type="email"></div>
+    <div class="field"><label>Notas de contacto (opcional, libre)</label><textarea id="fx_cliente_notas"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Número de siniestro</label><input id="fx_numero" placeholder="Si aún no lo tienes, usa un folio propio"></div>
+      <div class="field"><label>Orden de admisión</label><input id="fx_orden_admision"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Aseguradora</label><select id="fx_aseguradora">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Canal de origen</label><select id="fx_canal"><option>WhatsApp</option><option>Teléfono</option><option>Presencial</option><option>Otro</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Vehículo</label><input id="fx_vehiculo" placeholder="Marca / modelo (si ya se sabe)"></div>
+      <div class="field"><label>Placas</label><input id="fx_placas"></div>
+    </div>
+    <div class="field"><label>¿Requiere cambio de refacciones?</label><select id="fx_requiere_refacciones">
+      <option value="por_definir">Por definir (aún no se sabe)</option>
+      <option value="si">Sí</option>
+      <option value="no">No</option>
+    </select></div>
+    <p class="subtle">* Campos obligatorios. El resto se puede completar después conforme avance el caso.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarExpediente()">Guardar</button></div>
+  `);
+}
+async function guardarExpediente(){
+  const cliente_nombre = document.getElementById('fx_cliente_nombre').value.trim();
+  const cliente_telefono = document.getElementById('fx_cliente_telefono').value.trim();
+  const cliente_correo = document.getElementById('fx_cliente_correo').value.trim();
+  if(!cliente_nombre || !cliente_telefono || !cliente_correo){
+    toast('Nombre, teléfono y correo del cliente son obligatorios.', 'error'); return;
+  }
+  let numero = document.getElementById('fx_numero').value.trim();
+  if(!numero) numero = 'EXP-' + Date.now().toString(36).toUpperCase();
+  try{
+    const s = await api('POST','/api/siniestros', {
+      numero, cliente_nombre, cliente_telefono, cliente_correo,
+      cliente_notas: document.getElementById('fx_cliente_notas').value,
+      orden_admision: document.getElementById('fx_orden_admision').value,
+      aseguradora: document.getElementById('fx_aseguradora').value,
+      canal_origen: document.getElementById('fx_canal').value,
+      vehiculo: document.getElementById('fx_vehiculo').value,
+      placas: document.getElementById('fx_placas').value,
+      requiere_refacciones: document.getElementById('fx_requiere_refacciones').value
+    });
+    toast('Expediente registrado.', 'success');
+    closeModal(); goSiniestro(s.id);
+  }catch(e){
+    if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.id); }
+  }
+}
+async function viewClientes(){
+  const expedientes = await api('GET','/api/siniestros');
+  const REQ_LABEL = { si:'Sí', no:'No', por_definir:'Por definir' };
+  return `
+  <h2>Clientes — expedientes</h2>
+  <p class="subtle">Todos los expedientes desde recepción, tengan o no cambio de refacciones. Da clic en un renglón para abrir su ficha completa.</p>
+  <table><thead><tr><th>Siniestro</th><th>Cliente</th><th>Teléfono</th><th>Aseguradora</th><th>Etapa</th><th>¿Refacciones?</th><th>Responsable</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="7" class="empty">Sin expedientes registrados todavía.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.cliente_nombre||'—')}</td>
+      <td>${esc(s.cliente_telefono||'—')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.etapa_actual||'—')}</td>
+      <td><span class="badge ${s.requiere_refacciones==='si'?'azul':s.requiere_refacciones==='no'?'gris':'ambar'}">${REQ_LABEL[s.requiere_refacciones]||'Por definir'}</span></td>
+      <td>${esc(s.responsable||'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s).</p>`;
 }
 function formNuevoSiniestro(){
   showModal(`
@@ -695,6 +779,8 @@ async function guardarSiniestro(){
 }
 function abrirFormEditarSiniestro(id){
   api('GET','/api/siniestros/'+id).then(s=>{
+    const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
+    const REQ_OPCIONES = [['por_definir','Por definir'],['si','Sí'],['no','No']];
     showModal(`
       <h3>Editar siniestro ${esc(s.numero)}</h3>
       <div class="row-flex">
@@ -706,15 +792,43 @@ function abrirFormEditarSiniestro(id){
         <div class="field"><label>Año/modelo</label><input id="fe_anio" value="${esc(s.anio_modelo||'')}"></div>
       </div>
       <div class="field"><label>Notas</label><textarea id="fe_notas">${esc(s.notas||'')}</textarea></div>
+      ${esAtencionCliente?`
+      <div class="section" style="border-top:1px solid var(--borde,#e5e7eb);margin-top:10px;padding-top:10px;">
+        <h4 style="margin:0 0 8px;">Datos de cliente (módulo Alejandra)</h4>
+        <div class="row-flex">
+          <div class="field"><label>Nombre del cliente</label><input id="fe_cliente_nombre" value="${esc(s.cliente_nombre||'')}"></div>
+          <div class="field"><label>Teléfono / WhatsApp</label><input id="fe_cliente_telefono" value="${esc(s.cliente_telefono||'')}"></div>
+        </div>
+        <div class="field"><label>Correo</label><input id="fe_cliente_correo" type="email" value="${esc(s.cliente_correo||'')}"></div>
+        <div class="field"><label>Notas de contacto</label><textarea id="fe_cliente_notas">${esc(s.cliente_notas||'')}</textarea></div>
+        <div class="row-flex">
+          <div class="field"><label>Orden de admisión</label><input id="fe_orden_admision" value="${esc(s.orden_admision||'')}"></div>
+          <div class="field"><label>Etapa actual</label><input id="fe_etapa_actual" value="${esc(s.etapa_actual||'')}"></div>
+        </div>
+        <div class="field"><label>¿Requiere cambio de refacciones?</label><select id="fe_requiere_refacciones">
+          ${REQ_OPCIONES.map(([v,l])=>`<option value="${v}" ${s.requiere_refacciones===v?'selected':''}>${l}</option>`).join('')}
+        </select></div>
+      </div>`:''}
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionSiniestro(${id})">Guardar cambios</button></div>
     `);
   });
 }
 async function guardarEdicionSiniestro(id){
-  await api('PATCH','/api/siniestros/'+id, {
+  const payload = {
     aseguradora: document.getElementById('fe_aseguradora').value, vehiculo: document.getElementById('fe_vehiculo').value,
     placas: document.getElementById('fe_placas').value, anio_modelo: document.getElementById('fe_anio').value, notas: document.getElementById('fe_notas').value
-  });
+  };
+  const campoCliente = document.getElementById('fe_cliente_nombre');
+  if(campoCliente){
+    payload.cliente_nombre = campoCliente.value;
+    payload.cliente_telefono = document.getElementById('fe_cliente_telefono').value;
+    payload.cliente_correo = document.getElementById('fe_cliente_correo').value;
+    payload.cliente_notas = document.getElementById('fe_cliente_notas').value;
+    payload.orden_admision = document.getElementById('fe_orden_admision').value;
+    payload.etapa_actual = document.getElementById('fe_etapa_actual').value;
+    payload.requiere_refacciones = document.getElementById('fe_requiere_refacciones').value;
+  }
+  await api('PATCH','/api/siniestros/'+id, payload);
   toast('Siniestro actualizado.', 'success');
   closeModal(); render();
 }
