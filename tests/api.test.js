@@ -563,3 +563,65 @@ test('FASE4-2: se puede guardar un borrador pegado desde la IA, marcarlo revisad
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
 });
+
+/* ===================== FASE 5 — Módulo Alejandra: automatizaciones cruzadas ===================== */
+test('FASE5-1: cuando TODOS los pedidos de un expediente quedan en estado terminal, se crea una sola tarea automática (no duplicada)', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE5-REFCOMP', aseguradora: 'GNP', cliente_nombre: 'X', cliente_telefono: '1', cliente_correo: 'x@x.com' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const p1 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-1', siniestro_id: s.id })).data;
+  const p2 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-2', siniestro_id: s.id })).data;
+
+  await req('PATCH', '/api/pedidos/' + p1.id, { estatus_operativo: 'Recibido completo' });
+  let tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.ok(!tareas.some(t => t.disparador === 'refacciones_completas'), 'no debe crearse todavía: falta el segundo pedido');
+
+  await req('PATCH', '/api/pedidos/' + p2.id, { estatus_operativo: 'Recibido completo' });
+  tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  const automaticas = tareas.filter(t => t.disparador === 'refacciones_completas');
+  assert.equal(automaticas.length, 1, 'debe crearse exactamente una tarea cuando TODOS los pedidos ya cerraron');
+  assert.match(automaticas[0].descripcion, /avisar al cliente/i);
+
+  // volver a tocar el estatus no debe duplicar la tarea mientras siga pendiente
+  await req('PATCH', '/api/pedidos/' + p2.id, { estatus_operativo: 'Recibido completo' });
+  tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.equal(tareas.filter(t => t.disparador === 'refacciones_completas').length, 1, 'no debe duplicarse');
+});
+
+test('FASE5-2: cambiar la fecha prometida de un pedido crea una tarea automática de aviso al cliente', async () => {
+  const s = (await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' })) && (await req('POST', '/api/siniestros', { numero: 'FASE5-FECHA', aseguradora: 'GNP', cliente_nombre: 'Y', cliente_telefono: '2', cliente_correo: 'y@y.com' })).data;
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const p = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-FECHA', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+
+  await req('PATCH', '/api/pedidos/' + p.id, { cotizacion: 'sin cambio de fecha' });
+  let tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.ok(!tareas.some(t => t.disparador === 'fecha_promesa_modificada'), 'no debe crear tarea si la fecha no cambió');
+
+  await req('PATCH', '/api/pedidos/' + p.id, { fecha_prevista: '2026-09-10' });
+  tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  const tarea = tareas.find(t => t.disparador === 'fecha_promesa_modificada');
+  assert.ok(tarea, 'debe crear la tarea al cambiar la fecha prometida');
+  assert.match(tarea.descripcion, /2026-09-01/);
+  assert.match(tarea.descripcion, /2026-09-10/);
+});
+
+test('FASE5-3: confirmar el hito de Entrega como enviado programa la postventa automáticamente (2-3 días después) y crea su tarea', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASE5-ENTREGA', aseguradora: 'GNP', cliente_nombre: 'Z', cliente_telefono: '3', cliente_correo: 'z@z.com' })).data;
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const entrega = hitos.find(h => h.clave === 'entrega');
+
+  const r = await req('PATCH', '/api/hitos/' + entrega.id, { estado: 'enviado', mensaje: 'Su unidad ya está lista, la entregamos hoy a las 5pm.' });
+  assert.equal(r.status, 200);
+
+  const actualizado = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.ok(actualizado.postventa_programada, 'debe quedar programada la fecha de postventa');
+
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  const tareaPostventa = tareas.find(t => t.disparador === 'entrega_confirmada');
+  assert.ok(tareaPostventa, 'debe crearse la tarea automática de postventa');
+  assert.equal(tareaPostventa.fecha_limite, actualizado.postventa_programada);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});

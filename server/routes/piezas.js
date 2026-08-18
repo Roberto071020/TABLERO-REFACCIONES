@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { registrarAuditoria, auditarCambios, nowUTC } = require('../utils');
+const { registrarAuditoria, auditarCambios, nowUTC, verificarRefaccionesCompletas } = require('../utils');
 const router = express.Router();
 
 const ESTATUS_PIEZA = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
@@ -86,6 +86,8 @@ router.post('/:id/recibir', requireAuth, (req, res)=>{
     db.prepare(`UPDATE pedidos SET estatus_operativo=?, actualizado_en=datetime('now') WHERE id=?`).run(nuevoEstatus, pieza.pedido_id);
     registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id:pieza.pedido_id, accion:'cierre_automatico', campo:'estatus_operativo', valor_anterior:pedidoAnterior.estatus_operativo, valor_nuevo:nuevoEstatus, usuario:req.session.user });
   }
+  // Módulo Alejandra (Fase 5): si con esto TODO el expediente queda con sus refacciones resueltas, avisarle.
+  verificarRefaccionesCompletas(db, pedidoAnterior.siniestro_id, req.session.user);
   res.json(db.prepare('SELECT * FROM piezas WHERE id = ?').get(req.params.id));
 });
 

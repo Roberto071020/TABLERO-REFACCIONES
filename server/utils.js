@@ -52,4 +52,35 @@ function csvTextForced(value){
   return '"=""' + v + '"""';
 }
 
-module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced };
+
+// Módulo Alejandra (Fase 5): si TODOS los pedidos del expediente quedaron en un estado terminal
+// (Recibido completo / Cancelado / Cerrado), crea una tarea automática para Alejandra, una sola vez.
+function verificarRefaccionesCompletas(db, siniestroId, usuario){
+  const TERMINALES = ['Recibido completo','Cancelado','Cerrado'];
+  const pedidos = db.prepare('SELECT estatus_operativo FROM pedidos WHERE siniestro_id = ?').all(siniestroId);
+  if(pedidos.length === 0) return;
+  const todosTerminales = pedidos.every(p => TERMINALES.includes(p.estatus_operativo));
+  if(!todosTerminales) return;
+
+  const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='refacciones_completas' AND estado IN ('pendiente','en_proceso')`).get(siniestroId);
+  if(yaExiste) return;
+
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,responsable_id,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,?,'pendiente','automatica','refacciones_completas',?)`)
+    .run(siniestroId, 'mensaje', 'Refacciones completas: avisar al cliente y gestionar cita de reingreso.',
+         usuario ? usuario.id : null, new Date().toISOString().slice(0,10), usuario ? usuario.id : null);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: siniestroId, accion:'automatico',
+    valor_nuevo: 'Tarea automática creada: refacciones completas', usuario });
+}
+
+// Fase 5: si la fecha prometida de un pedido cambia, crea tarea para que Alejandra avise al cliente del cambio.
+function crearTareaFechaPromesaModificada(db, { siniestroId, pedidoNumero, fechaAnterior, fechaNueva, usuario }){
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,responsable_id,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,?,'pendiente','automatica','fecha_promesa_modificada',?)`)
+    .run(siniestroId, 'mensaje',
+         `Informar al cliente el cambio de fecha prometida del pedido ${pedidoNumero} (antes: ${fechaAnterior||'sin definir'}, ahora: ${fechaNueva}).`,
+         usuario ? usuario.id : null, new Date().toISOString().slice(0,10), usuario ? usuario.id : null);
+}
+
+module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
+  verificarRefaccionesCompletas, crearTareaFechaPromesaModificada };

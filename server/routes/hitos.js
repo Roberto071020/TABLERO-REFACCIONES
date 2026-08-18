@@ -73,6 +73,22 @@ router.patch('/:id', requireAuth, (req, res)=>{
   registrarAuditoria(db, { entidad_tipo:'siniestro_hito', entidad_id: req.params.id, accion:'edicion', campo:'estado',
     valor_anterior: anterior.estado, valor_nuevo: estado, usuario: req.session.user });
 
+  // Módulo Alejandra (Fase 5): al confirmar el hito de "Entrega" como enviado, programar la postventa automáticamente (2-3 días después).
+  if(estado === 'enviado' && anterior.estado !== 'enviado'){
+    const claveHito = db.prepare('SELECT clave FROM catalogo_hitos WHERE id=?').get(anterior.hito_id);
+    if(claveHito && claveHito.clave === 'entrega'){
+      const fechaPostventa = new Date(Date.now() + 3*86400000).toISOString().slice(0,10);
+      db.prepare("UPDATE siniestros SET postventa_programada=?, actualizado_en=datetime('now') WHERE id=?").run(fechaPostventa, anterior.siniestro_id);
+      const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='entrega_confirmada' AND estado IN ('pendiente','en_proceso')`).get(anterior.siniestro_id);
+      if(!yaExiste){
+        db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,responsable_id,fecha_limite,estado,origen,disparador,creado_por)
+          VALUES (?,?,?,?,?,'pendiente','automatica','entrega_confirmada',?)`)
+          .run(anterior.siniestro_id, 'mensaje', 'Seguimiento postventa: confirmar con el cliente que todo esté bien.',
+               req.session.user.id, fechaPostventa, req.session.user.id);
+      }
+    }
+  }
+
   res.json(db.prepare(`
     SELECT sh.*, ch.orden, ch.clave, ch.titulo, ch.descripcion as hito_descripcion, ch.condicional, u.nombre as responsable_nombre
     FROM siniestro_hitos sh JOIN catalogo_hitos ch ON ch.id=sh.hito_id LEFT JOIN usuarios u ON u.id=sh.responsable_id

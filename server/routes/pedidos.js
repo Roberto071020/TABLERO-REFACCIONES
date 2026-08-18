@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { registrarAuditoria, auditarCambios } = require('../utils');
+const { registrarAuditoria, auditarCambios, verificarRefaccionesCompletas, crearTareaFechaPromesaModificada } = require('../utils');
 const router = express.Router();
 
 const ESTATUS_OPERATIVO = ['Nuevo','Por revisar','Esperando proveedor','En tránsito','Entrega vencida','Recibido parcial','Recibido completo','Con incidencia','Cancelado','Cerrado'];
@@ -68,6 +68,16 @@ router.patch('/:id', requireAuth, (req, res)=>{
   db.prepare(`UPDATE pedidos SET cotizacion=?,aseguradora=?,fecha_creacion=?,fecha_prevista=?,estatus_inpart=?,total=?,tipo_evaluacion=?,estatus_operativo=?,actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.cotizacion, nuevo.aseguradora, nuevo.fecha_creacion, nuevo.fecha_prevista, nuevo.estatus_inpart, nuevo.total, nuevo.tipo_evaluacion, nuevo.estatus_operativo, req.params.id);
   auditarCambios(db, { entidad_tipo:'pedido', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+
+  // Módulo Alejandra (Fase 5): automatizaciones cruzadas.
+  if(nuevo.fecha_prevista && nuevo.fecha_prevista !== anterior.fecha_prevista){
+    crearTareaFechaPromesaModificada(db, { siniestroId: anterior.siniestro_id, pedidoNumero: anterior.numero,
+      fechaAnterior: anterior.fecha_prevista, fechaNueva: nuevo.fecha_prevista, usuario: req.session.user });
+  }
+  if(nuevo.estatus_operativo !== anterior.estatus_operativo){
+    verificarRefaccionesCompletas(db, anterior.siniestro_id, req.session.user);
+  }
+
   res.json(db.prepare('SELECT * FROM pedidos WHERE id = ?').get(req.params.id));
 });
 
