@@ -370,11 +370,40 @@ async function viewProveedorDetalle(id){
 async function viewSiniestro(id){
   const s = await api('GET','/api/siniestros/'+id);
   const peds = await api('GET','/api/pedidos?siniestro_id='+id);
-  const subtabs = [['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']];
+  const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
+  const subtabs = [
+    ...(esAtencionCliente ? [['cliente','Cliente']] : []),
+    ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
+  ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
 
   let body = '';
-  if(state.subtabSiniestro==='pedidos'){
+  if(state.subtabSiniestro==='cliente'){
+    const eventos = await api('GET','/api/eventos-cliente?siniestro_id='+id);
+    const tareas = await api('GET','/api/tareas?siniestro_id='+id);
+    const ESTADOS_TAREA = {pendiente:'ambar', en_proceso:'azul', completada:'verde', cancelada:'gris'};
+    body = `
+    <h3>Tareas</h3>
+    <div style="margin-bottom:8px;"><button class="btn small" onclick="abrirFormNuevaTarea(${id})">+ Nueva tarea</button></div>
+    ${tareas.length===0?'<div class="empty">Sin tareas registradas.</div>':`
+    <table><thead><tr><th>Descripción</th><th>Responsable</th><th>Fecha límite</th><th>Origen</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${tareas.map(t=>`<tr>
+      <td>${esc(t.descripcion)}</td><td>${esc(t.responsable_nombre||'—')}</td>
+      <td>${t.fecha_limite && t.fecha_limite < todayISO() && !['completada','cancelada'].includes(t.estado) ? `<span class="badge rojo">${esc(t.fecha_limite)} vencida</span>` : esc(t.fecha_limite||'—')}</td>
+      <td>${t.origen==='automatica'?'Automática':'Manual'}</td>
+      <td><span class="badge ${ESTADOS_TAREA[t.estado]||'gris'}">${esc(t.estado)}</span></td>
+      <td>${!['completada','cancelada'].includes(t.estado)?`<button class="btn small secondary" onclick="marcarTareaCompletada(${t.id})">Completar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <h3 style="margin-top:18px;">Bitácora de comunicaciones con el cliente</h3>
+    <div style="margin-bottom:8px;"><button class="btn small" onclick="abrirFormNuevoEvento(${id})">+ Registrar comunicación</button></div>
+    ${eventos.length===0?'<div class="empty">Sin comunicaciones registradas todavía.</div>':`<ul class="timeline">
+    ${eventos.map(e=>`<li><b>${esc(e.creado_en)}</b> — <span class="badge ${e.direccion==='entrante'?'azul':'ambar'}">${e.direccion==='entrante'?'Cliente → taller':'Taller → cliente'}</span>
+      ${e.canal?` · ${esc(e.canal)}`:''}${e.tipo_evento?` · ${esc(e.tipo_evento)}`:''}<br>${esc(e.mensaje)}
+      ${e.compromiso?`<br><span class="subtle">Compromiso: ${esc(e.compromiso)}</span>`:''}
+      <span class="subtle"> (${esc(e.autor_nombre||'—')})</span></li>`).join('')}
+    </ul>`}`;
+  } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
       <select onchange="cambiarEstatusOperativo(${p.id}, this.value)">${ESTATUS_OPERATIVO.map(e=>`<option ${e===p.estatus_operativo?'selected':''}>${e}</option>`).join('')}</select>
@@ -730,13 +759,13 @@ async function guardarExpediente(){
   }
 }
 async function viewClientes(){
-  const expedientes = await api('GET','/api/siniestros');
+  const expedientes = await api('GET','/api/reportes/bandeja-clientes');
   const REQ_LABEL = { si:'Sí', no:'No', por_definir:'Por definir' };
   return `
   <h2>Clientes — expedientes</h2>
   <p class="subtle">Todos los expedientes desde recepción, tengan o no cambio de refacciones. Da clic en un renglón para abrir su ficha completa.</p>
-  <table><thead><tr><th>Siniestro</th><th>Cliente</th><th>Teléfono</th><th>Aseguradora</th><th>Etapa</th><th>¿Refacciones?</th><th>Responsable</th></tr></thead><tbody>
-  ${expedientes.length===0?'<tr><td colspan="7" class="empty">Sin expedientes registrados todavía.</td></tr>':expedientes.map(s=>`
+  <table><thead><tr><th>Siniestro</th><th>Cliente</th><th>Teléfono</th><th>Aseguradora</th><th>Etapa</th><th>¿Refacciones?</th><th>Sin actualizar</th><th>Tareas</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="8" class="empty">Sin expedientes registrados todavía.</td></tr>':expedientes.map(s=>`
     <tr>
       <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
       <td>${esc(s.cliente_nombre||'—')}</td>
@@ -744,10 +773,58 @@ async function viewClientes(){
       <td>${esc(s.aseguradora)}</td>
       <td>${esc(s.etapa_actual||'—')}</td>
       <td><span class="badge ${s.requiere_refacciones==='si'?'azul':s.requiere_refacciones==='no'?'gris':'ambar'}">${REQ_LABEL[s.requiere_refacciones]||'Por definir'}</span></td>
-      <td>${esc(s.responsable||'—')}</td>
+      <td>${s.dias_sin_actualizacion!=null ? `<span class="badge ${s.dias_sin_actualizacion>=2?'rojo':'gris'}">${s.dias_sin_actualizacion} día(s)</span>` : '—'}</td>
+      <td>${s.tareas_pendientes>0 ? `<span class="badge ${s.tareas_vencidas>0?'rojo':'azul'}">${s.tareas_pendientes} pend.${s.tareas_vencidas>0?` (${s.tareas_vencidas} vencida${s.tareas_vencidas>1?'s':''})`:''}</span>` : '—'}</td>
     </tr>`).join('')}
   </tbody></table>
-  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s).</p>`;
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
+}
+function abrirFormNuevoEvento(siniestroId){
+  showModal(`
+    <h3>Registrar comunicación con el cliente</h3>
+    <div class="field"><label>Dirección</label><select id="fev_direccion"><option value="saliente">Taller → cliente</option><option value="entrante">Cliente → taller</option></select></div>
+    <div class="row-flex">
+      <div class="field"><label>Canal</label><select id="fev_canal"><option>WhatsApp</option><option>Teléfono</option><option>Correo</option><option>Presencial</option></select></div>
+      <div class="field"><label>Tipo</label><input id="fev_tipo" placeholder="Ej. mensaje, llamada, consulta"></div>
+    </div>
+    <div class="field"><label>Mensaje / resumen</label><textarea id="fev_mensaje" placeholder="Qué se dijo o qué preguntó el cliente"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Compromiso asumido</label><input id="fev_compromiso" placeholder="Ej. avisar mañana cuando lleguen las refacciones"></div>
+      <div class="field"><label>Próxima acción</label><input id="fev_proxima"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoEvento(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoEvento(siniestroId){
+  const mensaje = document.getElementById('fev_mensaje').value.trim();
+  if(!mensaje){ toast('Describe el mensaje o resultado del contacto.', 'error'); return; }
+  await api('POST','/api/eventos-cliente', {
+    siniestro_id: siniestroId, direccion: document.getElementById('fev_direccion').value, canal: document.getElementById('fev_canal').value,
+    tipo_evento: document.getElementById('fev_tipo').value, mensaje, compromiso: document.getElementById('fev_compromiso').value,
+    proxima_accion: document.getElementById('fev_proxima').value
+  });
+  toast('Comunicación registrada.', 'success');
+  closeModal(); render();
+}
+function abrirFormNuevaTarea(siniestroId){
+  showModal(`
+    <h3>Nueva tarea</h3>
+    <div class="field"><label>Descripción</label><textarea id="ft_desc" placeholder="Ej. llamar al cliente mañana a las 10am"></textarea></div>
+    <div class="field"><label>Fecha límite</label><input id="ft_fecha" type="date" value="${todayISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaTarea(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaTarea(siniestroId){
+  const descripcion = document.getElementById('ft_desc').value.trim();
+  if(!descripcion){ toast('Describe la tarea.', 'error'); return; }
+  await api('POST','/api/tareas', { siniestro_id: siniestroId, descripcion, fecha_limite: document.getElementById('ft_fecha').value });
+  toast('Tarea creada.', 'success');
+  closeModal(); render();
+}
+async function marcarTareaCompletada(id){
+  await api('PATCH','/api/tareas/'+id, { estado:'completada' });
+  toast('Tarea marcada como completada.', 'success');
+  render();
 }
 function formNuevoSiniestro(){
   showModal(`

@@ -96,4 +96,20 @@ router.get('/kanban', requireAuth, (req, res)=>{
   res.json(out);
 });
 
+// Módulo Alejandra (Fase 2): bandeja de "Clientes" con indicadores de seguimiento por expediente.
+router.get('/bandeja-clientes', requireAuth, (req, res)=>{
+  const siniestros = db.prepare('SELECT * FROM siniestros ORDER BY creado_en DESC').all();
+  const hoyMs = Date.now();
+  const out = siniestros.map(s=>{
+    const ultimoEvento = db.prepare('SELECT creado_en FROM eventos_cliente WHERE siniestro_id=? ORDER BY creado_en DESC LIMIT 1').get(s.id);
+    const referencia = ultimoEvento ? ultimoEvento.creado_en : s.creado_en;
+    const diasSinActualizacion = referencia ? Math.floor((hoyMs - new Date(referencia.replace(' ','T')+'Z').getTime()) / 86400000) : null;
+    const tareasPendientes = db.prepare("SELECT COUNT(*) n FROM tareas WHERE siniestro_id=? AND estado IN ('pendiente','en_proceso')").get(s.id).n;
+    const hoy = new Date().toISOString().slice(0,10);
+    const tareasVencidas = db.prepare("SELECT COUNT(*) n FROM tareas WHERE siniestro_id=? AND estado IN ('pendiente','en_proceso') AND fecha_limite != '' AND fecha_limite < ?").get(s.id, hoy).n;
+    return { ...s, dias_sin_actualizacion: diasSinActualizacion, tareas_pendientes: tareasPendientes, tareas_vencidas: tareasVencidas };
+  });
+  res.json(out);
+});
+
 module.exports = router;

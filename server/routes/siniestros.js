@@ -56,6 +56,15 @@ router.post('/', requireAuth, (req, res)=>{
          b.canal_origen||'', b.etapa_actual||'', b.prioridad||'', requiereRefacciones);
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user,
     valor_nuevo: `Siniestro ${b.numero} (${b.aseguradora})` });
+
+  // Módulo Alejandra (Fase 2): alta de expediente -> tarea automática de mensaje inicial (regla del punto 7 del documento).
+  if(req.session.user.rol === 'atencion_cliente'){
+    db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,responsable_id,fecha_limite,estado,origen,disparador,creado_por)
+      VALUES (?,?,?,?,?,'pendiente','automatica','alta_expediente',?)`)
+      .run(info.lastInsertRowid, 'mensaje', 'Enviar mensaje inicial: explicar el proceso y confirmar datos de recepción con el cliente.',
+           req.session.user.id, new Date().toISOString().slice(0,10), req.session.user.id);
+  }
+
   const creado = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json({ ...creado, advertencia: completo ? null : 'Faltan datos (vehículo/placas). Queda marcado como Pendiente de completar.' });
 });

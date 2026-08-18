@@ -411,3 +411,67 @@ test('FASE1-5: Daniela sigue pudiendo crear un siniestro exactamente igual que a
   assert.equal(s.numero, 'FASE1-DANIELA-IGUAL');
   assert.equal(s.completo, 1);
 });
+
+/* ===================== FASE 2 — Módulo Alejandra: bitácora, tareas y alertas ===================== */
+test('FASE2-1: al dar de alta un expediente, Alejandra recibe automáticamente la tarea de "mensaje inicial"', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'FASE2-TAREAINICIAL', aseguradora: 'GNP', cliente_nombre: 'X', cliente_telefono: '1', cliente_correo: 'x@x.com'
+  })).data;
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.equal(tareas.length, 1, 'debe crearse exactamente una tarea automática');
+  assert.equal(tareas[0].origen, 'automatica');
+  assert.equal(tareas[0].disparador, 'alta_expediente');
+  assert.match(tareas[0].descripcion, /mensaje inicial/i);
+});
+
+test('FASE2-2: la bitácora de comunicaciones con cliente se registra y lista correctamente (separada de comunicaciones a proveedores)', async () => {
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'FASE2-BITACORA', aseguradora: 'GNP', cliente_nombre: 'Y', cliente_telefono: '2', cliente_correo: 'y@y.com'
+  })).data;
+  const sinDireccion = await req('POST', '/api/eventos-cliente', { siniestro_id: s.id, mensaje: 'hola' });
+  assert.equal(sinDireccion.status, 400, 'debe exigir dirección entrante/saliente');
+
+  const ev = await req('POST', '/api/eventos-cliente', { siniestro_id: s.id, direccion: 'saliente', canal: 'WhatsApp', mensaje: 'Le informamos que su unidad ya está en valuación.' });
+  assert.equal(ev.status, 201);
+  assert.equal(ev.data.autor_nombre, 'Alejandra');
+
+  const lista = (await req('GET', '/api/eventos-cliente?siniestro_id=' + s.id)).data;
+  assert.equal(lista.length, 1);
+  assert.equal(lista[0].direccion, 'saliente');
+});
+
+test('FASE2-3: Alejandra puede crear una tarea suelta (no solo automáticas) y marcarla completada', async () => {
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'FASE2-TAREASUELTA', aseguradora: 'GNP', cliente_nombre: 'Z', cliente_telefono: '3', cliente_correo: 'z@z.com'
+  })).data;
+  const t = await req('POST', '/api/tareas', { siniestro_id: s.id, descripcion: 'Llamar al cliente mañana a las 10am', fecha_limite: '2026-01-01' });
+  assert.equal(t.status, 201);
+  assert.equal(t.data.origen, 'manual');
+  assert.equal(t.data.estado, 'pendiente');
+
+  const completar = await req('PATCH', '/api/tareas/' + t.data.id, { estado: 'completada' });
+  assert.equal(completar.status, 200);
+  assert.equal(completar.data.estado, 'completada');
+  assert.ok(completar.data.completado_en, 'debe registrar cuándo se completó');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
+
+test('FASE2-4: la bandeja de clientes calcula días sin actualización y cuenta tareas pendientes/vencidas', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'FASE2-BANDEJA', aseguradora: 'GNP', cliente_nombre: 'W', cliente_telefono: '4', cliente_correo: 'w@w.com'
+  })).data;
+  await req('POST', '/api/tareas', { siniestro_id: s.id, descripcion: 'Tarea vencida de prueba', fecha_limite: '2020-01-01' });
+
+  const bandeja = (await req('GET', '/api/reportes/bandeja-clientes')).data;
+  const fila = bandeja.find(x => x.numero === 'FASE2-BANDEJA');
+  assert.ok(fila, 'el expediente debe aparecer en la bandeja');
+  assert.equal(typeof fila.dias_sin_actualizacion, 'number');
+  // 2 tareas: la automática de mensaje inicial + la vencida manual -> ambas pendientes, 1 vencida
+  assert.equal(fila.tareas_pendientes, 2);
+  assert.equal(fila.tareas_vencidas, 1);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
