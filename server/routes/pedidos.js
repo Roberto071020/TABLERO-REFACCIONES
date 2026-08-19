@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { registrarAuditoria, auditarCambios, verificarRefaccionesCompletas, crearTareaFechaPromesaModificada } = require('../utils');
+const { registrarAuditoria, auditarCambios, verificarRefaccionesCompletas, crearTareaFechaPromesaModificada, prepararCorreoPedidoNuevo } = require('../utils');
 const router = express.Router();
 
 const ESTATUS_OPERATIVO = ['Nuevo','Por revisar','Esperando proveedor','En tránsito','Entrega vencida','Recibido parcial','Recibido completo','Con incidencia','Cancelado','Cerrado'];
@@ -29,6 +29,7 @@ router.post('/', requireAuth, (req, res)=>{
   const b = req.body;
   if(!b.numero || !String(b.numero).trim()) return res.status(400).json({ error:'El número de pedido es obligatorio.' });
   if(!b.siniestro_id) return res.status(400).json({ error:'El pedido debe ligarse a un siniestro.' });
+  if(!b.fecha_prevista || !String(b.fecha_prevista).trim()) return res.status(400).json({ error:'La fecha promesa (Inpart) es obligatoria en todo pedido.' });
   const siniestro = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(b.siniestro_id);
   if(!siniestro) return res.status(400).json({ error:'El siniestro indicado no existe.' });
   const existente = db.prepare('SELECT * FROM pedidos WHERE numero = ?').get(String(b.numero).trim());
@@ -52,6 +53,9 @@ router.post('/', requireAuth, (req, res)=>{
       valor_anterior:'por_definir', valor_nuevo:'si', usuario:req.session.user });
   }
 
+  // Requerimiento de Daniela: preparar correo en cuanto se detecta un pedido nuevo (aunque no llegue notificación de Inpart).
+  prepararCorreoPedidoNuevo(db, { pedido: db.prepare('SELECT * FROM pedidos WHERE id = ?').get(info.lastInsertRowid), siniestro });
+
   const creado = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json({ ...creado, advertencias });
 });
@@ -62,11 +66,15 @@ router.patch('/:id', requireAuth, (req, res)=>{
   if(req.body.estatus_operativo && !ESTATUS_OPERATIVO.includes(req.body.estatus_operativo)){
     return res.status(400).json({ error:'Estatus operativo inválido.' });
   }
-  const campos = ['cotizacion','aseguradora','fecha_creacion','fecha_prevista','estatus_inpart','total','tipo_evaluacion','estatus_operativo'];
+  const campos = ['cotizacion','aseguradora','fecha_creacion','fecha_prevista','estatus_inpart','total','tipo_evaluacion','estatus_operativo','motivo_cancelacion'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
-  db.prepare(`UPDATE pedidos SET cotizacion=?,aseguradora=?,fecha_creacion=?,fecha_prevista=?,estatus_inpart=?,total=?,tipo_evaluacion=?,estatus_operativo=?,actualizado_en=datetime('now') WHERE id=?`)
-    .run(nuevo.cotizacion, nuevo.aseguradora, nuevo.fecha_creacion, nuevo.fecha_prevista, nuevo.estatus_inpart, nuevo.total, nuevo.tipo_evaluacion, nuevo.estatus_operativo, req.params.id);
+  // Requerimiento de Daniela: los pedidos cancelados deben conservar su motivo.
+  if(nuevo.estatus_operativo === 'Cancelado' && (!nuevo.motivo_cancelacion || !String(nuevo.motivo_cancelacion).trim())){
+    return res.status(400).json({ error:'Para cancelar un pedido debes indicar el motivo (reasignación de proveedor, pérdida total, unidad que no repara u otro).' });
+  }
+  db.prepare(`UPDATE pedidos SET cotizacion=?,aseguradora=?,fecha_creacion=?,fecha_prevista=?,estatus_inpart=?,total=?,tipo_evaluacion=?,estatus_operativo=?,motivo_cancelacion=?,actualizado_en=datetime('now') WHERE id=?`)
+    .run(nuevo.cotizacion, nuevo.aseguradora, nuevo.fecha_creacion, nuevo.fecha_prevista, nuevo.estatus_inpart, nuevo.total, nuevo.tipo_evaluacion, nuevo.estatus_operativo, nuevo.motivo_cancelacion, req.params.id);
   auditarCambios(db, { entidad_tipo:'pedido', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
 
   // Módulo Alejandra (Fase 5): automatizaciones cruzadas.

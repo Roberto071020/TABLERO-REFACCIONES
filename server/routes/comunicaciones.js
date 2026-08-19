@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
-const { requireAuth } = require('../auth');
-const { registrarAuditoria } = require('../utils');
+const { requireAuth, requireRole } = require('../auth');
+const { registrarAuditoria, verificarCorreosPendientes } = require('../utils');
 const router = express.Router();
 
 const CC_GNP = 'cristian.hernandezortiz@gnp.com.mx, luis.ramirezalvarez@gnp.com.mx, roveytia@hotmail.com';
@@ -64,7 +64,8 @@ router.get('/generar-borrador/:pedidoId', requireAuth, (req, res)=>{
 });
 
 // Aprobar y registrar (F-15: guarda proveedor_id explícito, evitando el cruce entre proveedores del reporte).
-router.post('/', requireAuth, (req, res)=>{
+// Requerimiento de Daniela: la aprobación de correos es exclusiva de su rol (operativo) y de admin.
+router.post('/', requireAuth, requireRole('operativo','admin'), (req, res)=>{
   const b = req.body;
   if(!b.pedido_id) return res.status(400).json({ error:'Falta pedido_id.' });
   const pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(b.pedido_id);
@@ -107,6 +108,46 @@ router.post('/exclusiones', requireAuth, (req, res)=>{
     .run(pedido_id, proveedor_id||null, motivo, req.session.user.id);
   registrarAuditoria(db, { entidad_tipo:'exclusion_envio', entidad_id: info.lastInsertRowid, accion:'exclusion_temporal', usuario:req.session.user, valor_nuevo:motivo });
   res.status(201).json({ ok:true, id: info.lastInsertRowid });
+});
+
+
+// Requerimiento de Daniela — Bandeja de correos preparados automáticamente, pendientes de su aprobación.
+// Corre el escaneo idempotente antes de responder (mismo patrón perezoso que el backfill de hitos de Alejandra).
+router.get('/pendientes', requireAuth, (req, res)=>{
+  verificarCorreosPendientes(db);
+  const filas = db.prepare(`SELECT c.*, s.numero as siniestro_numero, s.aseguradora, p.numero as pedido_numero
+                             FROM comunicaciones c
+                             JOIN pedidos p ON p.id = c.pedido_id
+                             JOIN siniestros s ON s.id = c.siniestro_id
+                             WHERE c.estado = 'pendiente_aprobacion'
+                             ORDER BY c.fecha_envio ASC`).all();
+  res.json(filas);
+});
+
+// Aprobar (y opcionalmente ajustar) un correo preparado automáticamente. Exclusivo de Daniela (operativo) y admin.
+// Nunca se envía de verdad — sigue siendo modo borrador/sandbox, igual que el resto del sistema.
+router.patch('/:id/aprobar', requireAuth, requireRole('operativo','admin'), (req, res)=>{
+  const com = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(req.params.id);
+  if(!com) return res.status(404).json({ error:'Comunicación no encontrada.' });
+  if(!req.body.destinatarios && !com.destinatarios) return res.status(400).json({ error:'Falta indicar el destinatario antes de aprobar.' });
+  const destinatarios = req.body.destinatarios !== undefined ? req.body.destinatarios : com.destinatarios;
+  const copia = req.body.copia !== undefined ? req.body.copia : com.copia;
+  const asunto = req.body.asunto !== undefined ? req.body.asunto : com.asunto;
+  const cuerpo = req.body.cuerpo !== undefined ? req.body.cuerpo : com.cuerpo;
+  db.prepare(`UPDATE comunicaciones SET destinatarios=?, copia=?, asunto=?, cuerpo=?, estado='aprobado', aprobado_por=?, aprobado_en=datetime('now') WHERE id=?`)
+    .run(destinatarios, copia, asunto, cuerpo, req.session.user.id, com.id);
+  registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id: com.id, accion:'correo_aprobado', usuario:req.session.user,
+    valor_nuevo:`Asunto: ${asunto} (disparador: ${com.disparador}, modo borrador/sandbox, no se envía automáticamente)` });
+  res.json(db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(com.id));
+});
+
+// Descartar un correo preparado automáticamente (ej. caso ANA de pago de daños, o ya no aplica). Exclusivo de Daniela/admin.
+router.patch('/:id/descartar', requireAuth, requireRole('operativo','admin'), (req, res)=>{
+  const com = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(req.params.id);
+  if(!com) return res.status(404).json({ error:'Comunicación no encontrada.' });
+  db.prepare(`UPDATE comunicaciones SET estado='descartado' WHERE id=?`).run(com.id);
+  registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id: com.id, accion:'correo_descartado', usuario:req.session.user, valor_nuevo: req.body.motivo || '' });
+  res.json({ ok:true });
 });
 
 module.exports = router;

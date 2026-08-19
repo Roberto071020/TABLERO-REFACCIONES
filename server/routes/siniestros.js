@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
-const { requireAuth } = require('../auth');
-const { registrarAuditoria, auditarCambios } = require('../utils');
+const { requireAuth, requireRole } = require('../auth');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos } = require('../utils');
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
@@ -11,7 +11,8 @@ function calcularCompleto(row){
 }
 
 router.get('/', requireAuth, (req, res)=>{
-  const { aseguradora, q } = req.query;
+  archivarSiniestrosVencidos(db);
+  const { aseguradora, q, archivado } = req.query;
   let sql = 'SELECT * FROM siniestros WHERE 1=1';
   const params = [];
   if(aseguradora){ sql += ' AND aseguradora = ?'; params.push(aseguradora); }
@@ -20,6 +21,11 @@ router.get('/', requireAuth, (req, res)=>{
   // relevantes para refacciones. 'por_definir' se sigue mostrando porque ella puede ser quien lo determine
   // al dar de alta el primer pedido. Solo se oculta lo marcado explícitamente como 'no'.
   if(req.session.user.rol === 'operativo'){ sql += " AND requiere_refacciones != 'no'"; }
+  // Requerimiento de Daniela: archivar a los 3 meses de la entrega sin borrar nada, solo para no saturar
+  // la vista diaria. Por default se ocultan los archivados; ?archivado=1 los muestra únicamente a ellos;
+  // ?archivado=all muestra ambos (para búsqueda/historial).
+  if(archivado === '1'){ sql += ' AND archivado = 1'; }
+  else if(archivado !== 'all'){ sql += ' AND archivado = 0'; }
   sql += ' ORDER BY creado_en DESC';
   res.json(db.prepare(sql).all(...params));
 });
@@ -88,6 +94,57 @@ router.patch('/:id', requireAuth, (req, res)=>{
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
+});
+
+
+// Requerimientos de Daniela — Registrar entrega de la unidad.
+// Permitido a Daniela (operativo), la persona de seguimiento a clientes (atencion_cliente) y admin.
+router.patch('/:id/entrega', requireAuth, requireRole('operativo','atencion_cliente','admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  const fecha = req.body.fecha_entrega_real || new Date().toISOString().slice(0,10);
+  // Registrar/editar la entrega es una decisión fresca: si antes se había bloqueado el archivo automático, se reactiva.
+  db.prepare("UPDATE siniestros SET fecha_entrega_real=?, no_auto_archivar=0, actualizado_en=datetime('now') WHERE id=?").run(fecha, s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'entrega_registrada', campo:'fecha_entrega_real',
+    valor_anterior: s.fecha_entrega_real, valor_nuevo: fecha, usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
+// Requerimientos de Daniela — Cierre de siniestro condicionado.
+// Solo puede cerrarse cuando todos los pedidos están en un estado terminal (Recibido completo / Cancelado)
+// y la unidad ya fue entregada (fecha_entrega_real capturada). Permitido a Daniela (operativo), Jefe y admin.
+const ESTATUS_TERMINALES_PEDIDO = ['Recibido completo','Cancelado'];
+router.patch('/:id/cerrar', requireAuth, requireRole('operativo','jefe','admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+
+  const pedidos = db.prepare('SELECT numero, estatus_operativo FROM pedidos WHERE siniestro_id = ?').all(s.id);
+  const pendientes = pedidos.filter(p => !ESTATUS_TERMINALES_PEDIDO.includes(p.estatus_operativo));
+  const problemas = [];
+  if(pendientes.length){
+    problemas.push(`Pedidos sin recibir/cancelar: ${pendientes.map(p=>p.numero).join(', ')}`);
+  }
+  if(!s.fecha_entrega_real){
+    problemas.push('Falta registrar la fecha de entrega de la unidad.');
+  }
+  if(problemas.length){
+    return res.status(400).json({ error:'No se puede cerrar el siniestro todavía.', detalle: problemas });
+  }
+
+  db.prepare("UPDATE siniestros SET estatus_general='Cerrado', actualizado_en=datetime('now') WHERE id=?").run(s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'cierre', campo:'estatus_general',
+    valor_anterior: s.estatus_general, valor_nuevo: 'Cerrado', usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
+
+// Desarchivar manualmente (correcciones/consultas puntuales). Mismo permiso que cerrar/administrar.
+router.patch('/:id/desarchivar', requireAuth, requireRole('operativo','jefe','admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  db.prepare("UPDATE siniestros SET archivado=0, archivado_en=NULL, no_auto_archivar=1 WHERE id=?").run(s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'desarchivado_manual', usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
 });
 
 module.exports = router;

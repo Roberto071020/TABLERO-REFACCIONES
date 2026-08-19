@@ -124,8 +124,10 @@ const TABS = [
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
   {k:'kanban', label:'Kanban'},
   {k:'incidencias', label:'Incidencias'},
+  {k:'correos', label:'Correos pendientes', roles:['operativo','admin']},
   {k:'lista', label:'Lista maestra'},
   {k:'proveedores', label:'Proveedores'},
+  {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
@@ -176,6 +178,8 @@ async function render(){
     else if(state.view==='lista') app.innerHTML = await viewLista();
     else if(state.view==='proveedores') app.innerHTML = await viewProveedores();
     else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
+    else if(state.view==='correos') app.innerHTML = await viewCorreos();
+    else if(state.view==='carga') app.innerHTML = viewCargaMasiva();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
@@ -230,6 +234,120 @@ async function viewKanban(){
   });
   html += `</div>`;
   return html;
+}
+
+/* ===================== VISTA: CORREOS PENDIENTES DE APROBACION (requerimiento de Daniela) ===================== */
+async function viewCorreos(){
+  const pendientes = await api('GET','/api/comunicaciones/pendientes');
+  const LABEL_DISPARADOR = { pedido_nuevo:'Pedido nuevo', vencimiento_dia1:'Vencimiento (día 1)', seguimiento_2dias:'Seguimiento (2 días hábiles)', manual:'Manual' };
+  let html = `<h2>Correos pendientes de aprobación</h2>
+  <p class="subtle">El sistema los prepara solo (pedido nuevo, primer día de vencimiento, seguimiento a 2 días hábiles). Nada se envía sin que lo apruebes aquí.</p>`;
+  if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación por ahora.</div>'; return html; }
+  html += `<table><thead><tr><th>Motivo</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Asunto</th><th></th></tr></thead><tbody>
+  ${pendientes.map(c=>`<tr>
+    <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span></td>
+    <td><a class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero)}</a></td>
+    <td>${esc(c.pedido_numero)}</td>
+    <td>${esc(c.aseguradora)}</td>
+    <td>${esc(c.asunto)}</td>
+    <td><button class="btn small" onclick="abrirRevisarCorreo(${c.id})">Revisar</button></td>
+  </tr>`).join('')}
+  </tbody></table>`;
+  return html;
+}
+async function abrirRevisarCorreo(id){
+  const pendientes = await api('GET','/api/comunicaciones/pendientes');
+  const c = pendientes.find(x=>x.id===id);
+  if(!c){ toast('Este correo ya no está pendiente (alguien más lo revisó).', 'warn'); render(); return; }
+  showModal(`
+    <h3>Revisar correo — ${esc(c.siniestro_numero)} / Pedido ${esc(c.pedido_numero)}</h3>
+    <p class="subtle">Ajusta lo que haga falta antes de aprobar. Sigue en modo borrador: no se envía nada de verdad.</p>
+    <div class="field"><label>Destinatario</label><input id="fcor_dest" value="${esc(c.destinatarios||'')}" placeholder="correo@proveedor.mx"></div>
+    <div class="field"><label>Copia</label><textarea id="fcor_copia">${esc(c.copia||'')}</textarea></div>
+    <div class="field"><label>Asunto</label><input id="fcor_asunto" value="${esc(c.asunto||'')}"></div>
+    <div class="field"><label>Cuerpo</label><textarea id="fcor_cuerpo" style="min-height:160px;">${esc(c.cuerpo||'')}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cerrar</button>
+      <button class="btn danger" onclick="descartarCorreoPendiente(${c.id})">Descartar</button>
+      <button class="btn" onclick="aprobarCorreoPendiente(${c.id})">Aprobar</button>
+    </div>
+  `, true);
+}
+async function aprobarCorreoPendiente(id){
+  const destinatarios = document.getElementById('fcor_dest').value.trim();
+  if(!destinatarios){ toast('Falta el destinatario.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/comunicaciones/${id}/aprobar`, {
+      destinatarios, copia: document.getElementById('fcor_copia').value,
+      asunto: document.getElementById('fcor_asunto').value, cuerpo: document.getElementById('fcor_cuerpo').value
+    });
+    toast('Correo aprobado (sigue en modo borrador/sandbox).', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function descartarCorreoPendiente(id){
+  const ok = await confirmDialog('¿Descartar este correo preparado automáticamente? No se enviará ni se volverá a preparar para este mismo caso.', { textoOk:'Sí, descartar', peligro:true });
+  if(!ok) return;
+  await api('PATCH', `/api/comunicaciones/${id}/descartar`, {});
+  toast('Correo descartado.', 'success');
+  closeModal(); render();
+}
+
+/* ===================== VISTA: CARGA MASIVA (requerimiento de Daniela) ===================== */
+let cargaMasivaValidada = null;
+function viewCargaMasiva(){
+  cargaMasivaValidada = null;
+  return `
+  <h2>Carga masiva</h2>
+  <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar expedientes y pedidos, por ejemplo los activos de GNP. Primero se valida, después confirmas antes de registrar.</p>
+  <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, proveedor, telefono_proveedor, contacto_proveedor</p>
+  <div class="field"><textarea id="fcm_csv" style="min-height:180px;font-family:monospace;" placeholder="numero_siniestro,aseguradora,...,fecha_prevista,..."></textarea></div>
+  <div class="modal-actions" style="justify-content:flex-start;">
+    <button class="btn" onclick="validarCargaMasiva()">Validar</button>
+    <input type="file" id="fcm_archivo" accept=".csv,.txt" style="display:none" onchange="cargarArchivoCsv(event)">
+    <button class="btn secondary" onclick="document.getElementById('fcm_archivo').click()">Cargar desde archivo…</button>
+  </div>
+  <div id="cargaMasivaResultado" style="margin-top:16px;"></div>`;
+}
+function cargarArchivoCsv(ev){
+  const file = ev.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{ document.getElementById('fcm_csv').value = reader.result; };
+  reader.readAsText(file, 'utf-8');
+}
+async function validarCargaMasiva(){
+  const csv = document.getElementById('fcm_csv').value;
+  if(!csv || !csv.trim()){ toast('Pega o carga un archivo CSV primero.', 'error'); return; }
+  try{
+    const r = await api('POST','/api/carga-masiva/validar', { csv });
+    cargaMasivaValidada = r;
+    const cont = document.getElementById('cargaMasivaResultado');
+    cont.innerHTML = `
+    <div class="grid-cards">
+      <div class="card verde"><div class="num">${r.validas.length}</div><div class="label">Filas listas para registrar</div></div>
+      <div class="card rojo"><div class="num">${r.errores.length}</div><div class="label">Filas con error</div></div>
+    </div>
+    ${r.errores.length>0?`<h3>Errores</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Motivo</th></tr></thead><tbody>
+      ${r.errores.map(e=>`<tr><td>${e.fila}</td><td>${esc(e.dato.numero_siniestro)}</td><td>${esc(e.dato.numero_pedido)}</td><td>${esc(e.motivos.join(' '))}</td></tr>`).join('')}
+      </tbody></table>`:''}
+    ${r.validas.length>0?`<h3 style="margin-top:14px;">Listas para registrar</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Fecha promesa</th></tr></thead><tbody>
+      ${r.validas.map(v=>`<tr><td>${v.fila}</td><td>${esc(v.dato.numero_siniestro)}</td><td>${esc(v.dato.numero_pedido)}</td><td>${esc(v.dato.aseguradora)}</td><td>${esc(v.dato.fecha_prevista)}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="modal-actions" style="justify-content:flex-start;margin-top:10px;"><button class="btn" onclick="confirmarCargaMasiva()">Confirmar y registrar ${r.validas.length} fila(s)</button></div>`:''}`;
+  }catch(e){}
+}
+async function confirmarCargaMasiva(){
+  if(!cargaMasivaValidada || cargaMasivaValidada.validas.length===0) return;
+  const ok = await confirmDialog(`¿Registrar ${cargaMasivaValidada.validas.length} fila(s) válidas? Las filas con error no se tocan.`, { textoOk:'Sí, registrar' });
+  if(!ok) return;
+  try{
+    const r = await api('POST','/api/carga-masiva/confirmar', { filas: cargaMasivaValidada.validas.map(v=>v.dato) });
+    toast(`Carga completa: ${r.siniestrosCreados} siniestro(s) nuevo(s), ${r.pedidosCreados} pedido(s) registrados.`, 'success');
+    cargaMasivaValidada = null;
+    document.getElementById('fcm_csv').value = '';
+    document.getElementById('cargaMasivaResultado').innerHTML = r.omitidos.length ? `<p class="subtle">${r.omitidos.length} fila(s) se omitieron por ya existir.</p>` : '';
+  }catch(e){}
 }
 
 /* ===================== VISTA: INCIDENCIAS (bandeja dedicada) ===================== */
@@ -502,27 +620,88 @@ async function viewSiniestro(id){
     body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${esc(e.fecha)}</b> — ${esc(e.accion)}${e.campo?` (${esc(e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
   }
 
+  const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
+  const puedeEntregar = currentUser && ['operativo','atencion_cliente','admin'].includes(currentUser.rol);
   return `
   <button class="btn ghost small no-print" onclick="goTo('kanban')">← Volver</button>
   <div class="section" style="margin-top:10px;">
     ${s.completo===0?`<div class="banner ambar">Este siniestro está <b>Pendiente de completar</b> (faltan vehículo o placas). <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Completar datos</button></div>`:''}
+    ${s.estatus_general==='Cerrado'?`<div class="banner verde">Siniestro cerrado.</div>`:''}
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
-        <h2 style="margin-bottom:2px;">Siniestro ${esc(s.numero)} <span class="badge azul">${esc(s.aseguradora)}</span></h2>
+        <h2 style="margin-bottom:2px;">Siniestro ${esc(s.numero)} <span class="badge azul">${esc(s.aseguradora)}</span> <span class="badge ${s.estatus_general==='Cerrado'?'verde':'gris'}">${esc(s.estatus_general)}</span></h2>
         <p class="subtle">${esc(s.vehiculo||'')} ${esc(s.anio_modelo||'')} · Placas ${esc(s.placas||'')} · Ingreso: ${esc(s.fecha_ingreso||'')} · Responsable: ${esc(s.responsable||'')}</p>
         ${s.cliente_nombre?`<p class="subtle">Cliente: ${esc(s.cliente_nombre)}${s.cliente_telefono?' · '+esc(s.cliente_telefono):''}${s.etapa_actual?' · Etapa: '+esc(s.etapa_actual):''}</p>`:''}
+        <p class="subtle">Entrega de unidad: ${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</p>
       </div>
-      <div><button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Editar</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+        ${puedeEntregar && s.estatus_general!=='Cerrado'?`<button class="btn small secondary" onclick="abrirFormEntrega(${s.id})">${s.fecha_entrega_real?'Editar entrega':'Registrar entrega'}</button>`:''}
+        ${puedeCerrar && s.estatus_general!=='Cerrado'?`<button class="btn small" onclick="intentarCerrarSiniestro(${s.id})">Cerrar siniestro</button>`:''}
+        <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Editar</button>
+      </div>
     </div>
   </div>
   <div class="tabs-sub no-print">${subtabs.map(t=>`<button class="${state.subtabSiniestro===t[0]?'active':''}" onclick="setSubtabSiniestro('${t[0]}')">${t[1]}</button>`).join('')}</div>
   <div class="section">${body}</div>`;
 }
+function abrirFormEntrega(siniestroId){
+  showModal(`
+    <h3>Registrar entrega de la unidad</h3>
+    <div class="field"><label>Fecha de entrega</label><input id="fent_fecha" type="date" value="${todayISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEntrega(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarEntrega(siniestroId){
+  const fecha = document.getElementById('fent_fecha').value;
+  if(!fecha){ toast('Indica la fecha de entrega.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/siniestros/${siniestroId}/entrega`, { fecha_entrega_real: fecha });
+    toast('Entrega registrada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function intentarCerrarSiniestro(siniestroId){
+  const ok = await confirmDialog('¿Cerrar este siniestro? Solo se puede si todos sus pedidos están recibidos/cancelados y ya se registró la entrega.', { textoOk:'Sí, cerrar' });
+  if(!ok) return;
+  try{
+    await api('PATCH', `/api/siniestros/${siniestroId}/cerrar`, {});
+    toast('Siniestro cerrado.', 'success');
+    render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede cerrar todavía</h3><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
 
 async function cambiarEstatusOperativo(pedidoId, val){
+  if(val === 'Cancelado'){
+    showModal(`
+      <h3>Cancelar pedido</h3>
+      <p class="subtle">Requerimiento de Daniela: todo pedido cancelado debe conservar su motivo.</p>
+      <div class="field"><label>Motivo</label>
+        <select id="fcanc_motivo_sel" onchange="document.getElementById('fcanc_motivo_otro').style.display=this.value==='Otro'?'block':'none'">
+          <option>Reasignación de proveedor</option><option>Pérdida total</option><option>Unidad que no repara</option><option>Otro</option>
+        </select>
+        <textarea id="fcanc_motivo_otro" style="display:none;margin-top:6px;" placeholder="Describe el motivo"></textarea>
+      </div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal();render()">Cancelar</button><button class="btn" onclick="guardarCancelacionPedido(${pedidoId})">Guardar</button></div>
+    `);
+    return;
+  }
   await api('PATCH','/api/pedidos/'+pedidoId, { estatus_operativo: val });
   toast('Estatus actualizado.', 'success');
   render();
+}
+async function guardarCancelacionPedido(pedidoId){
+  const sel = document.getElementById('fcanc_motivo_sel').value;
+  const motivo = sel === 'Otro' ? document.getElementById('fcanc_motivo_otro').value.trim() : sel;
+  if(!motivo){ toast('Describe el motivo de cancelación.', 'error'); return; }
+  try{
+    await api('PATCH','/api/pedidos/'+pedidoId, { estatus_operativo:'Cancelado', motivo_cancelacion: motivo });
+    toast('Pedido cancelado.', 'success');
+    closeModal(); render();
+  }catch(e){}
 }
 
 async function marcarRecibida(piezaId){

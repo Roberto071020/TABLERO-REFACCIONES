@@ -48,7 +48,7 @@ test('CA-01: dos pedidos del mismo siniestro aparecen juntos en su ficha', async
 
 test('CA-03 / F-01 / F-02: una pieza con incidencia NUNCA aparece en el borrador de correo', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'CA03-TEST', aseguradora: 'Mapfre' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'CA03-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'CA03-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   const z1 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Espejo lateral derecho' })).data;
   const z2 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro delantero' })).data;
   // marcar z1 como recibida (sin incidencia)
@@ -62,7 +62,7 @@ test('CA-03 / F-01 / F-02: una pieza con incidencia NUNCA aparece en el borrador
 
 test('CA-04 / R-05: si todas las piezas están recibidas o canceladas, no se requiere correo', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'CA04-TEST', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'CA04-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'CA04-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre' })).data;
   await req('POST', `/api/piezas/${z.id}/recibir`);
   const borrador = (await req('GET', `/api/comunicaciones/generar-borrador/${p.id}`)).data;
@@ -72,7 +72,7 @@ test('CA-04 / R-05: si todas las piezas están recibidas o canceladas, no se req
 test('CA-05 / R-07 / F-14: la exclusión de proveedor es temporal, no bloquea envíos futuros', async () => {
   const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor CA05 SA' })).data;
   const s = (await req('POST', '/api/siniestros', { numero: 'CA05-TEST', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'CA05-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'CA05-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   const exSinMotivo = await req('POST', '/api/comunicaciones/exclusiones', { pedido_id: p.id, proveedor_id: prov.id });
   assert.equal(exSinMotivo.status, 400, 'el motivo debe ser obligatorio');
   const ex = await req('POST', '/api/comunicaciones/exclusiones', { pedido_id: p.id, proveedor_id: prov.id, motivo: 'Revisión de precio, solo este envío' });
@@ -83,7 +83,7 @@ test('CA-05 / R-07 / F-14: la exclusión de proveedor es temporal, no bloquea en
 
 test('CA-06 / R-06: un pedido Facturado en Inpart sigue como pendiente hasta recepción física', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'CA06-TEST', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'CA06-PED', siniestro_id: s.id, estatus_inpart: 'Facturado' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'CA06-PED', siniestro_id: s.id, estatus_inpart: 'Facturado' , fecha_prevista: '2026-09-01' })).data;
   assert.equal(p.estatus_operativo, 'Nuevo');
   assert.notEqual(p.estatus_operativo, 'Cerrado');
   assert.notEqual(p.estatus_operativo, 'Recibido completo');
@@ -118,7 +118,7 @@ test('CA-09: los filtros de GNP devuelven únicamente registros de GNP', async (
 
 test('CA-10 / F-17: la exportación CSV conserva ceros iniciales y neutraliza fórmulas', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: '0009900001A', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: '00777', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: '00777', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: '=CMD|"/c calc"!A1' }); // intento de inyección de fórmula
   const res = await fetch(BASE + '/api/reportes/lista-maestra.csv?q=0009900001A', { headers: { Cookie: cookie } });
   const text = await res.text();
@@ -132,7 +132,7 @@ test('CA-10 / F-17: la exportación CSV conserva ceros iniciales y neutraliza f�
 
 test('F-03: el Kanban nunca oculta pedidos con incidencia, cancelados o vencidos', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'F03-TEST', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'F03-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'F03-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   await req('PATCH', '/api/pedidos/' + p.id, { estatus_operativo: 'Cancelado' });
   const kanban = (await req('GET', '/api/reportes/kanban')).data;
   assert.ok(kanban.some(k => k.numero === 'F03-PED'), 'el pedido cancelado debe seguir presente en la respuesta del Kanban');
@@ -140,7 +140,7 @@ test('F-03: el Kanban nunca oculta pedidos con incidencia, cancelados o vencidos
 
 test('F-05: un pedido sin piezas capturadas es visible en la Lista maestra', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'F05-TEST', aseguradora: 'GNP' })).data;
-  await req('POST', '/api/pedidos', { numero: 'F05-PED', siniestro_id: s.id });
+  await req('POST', '/api/pedidos', { numero: 'F05-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' });
   const filas = (await req('GET', '/api/reportes/lista-maestra?q=F05-PED')).data;
   assert.equal(filas.length, 1);
   assert.equal(filas[0].pieza_id, null, 'no debe tener pieza asociada');
@@ -148,7 +148,7 @@ test('F-05: un pedido sin piezas capturadas es visible en la Lista maestra', asy
 
 test('F-10 / F-11: no se puede recibir una pieza con incidencia abierta; recibir queda ligado al usuario autenticado', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'F1011-TEST', aseguradora: 'Mapfre' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'F1011-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'F1011-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Espejo lateral derecho' })).data;
   await req('POST', '/api/incidencias', { pieza_id: z.id, tipo: 'incorrecta', accion_solicitada: 'cambio' });
 
@@ -168,7 +168,7 @@ test('F-10 / F-11: no se puede recibir una pieza con incidencia abierta; recibir
 
 test('F-12: se puede registrar la respuesta de un proveedor a un correo', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'F12-TEST', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'F12-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'F12-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   const com = (await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'prueba@proveedor.mx', asunto: 'Test', cuerpo: 'Cuerpo' })).data;
   const resp = await req('PATCH', `/api/comunicaciones/${com.id}/respuesta`, { respuesta_texto: 'Llega la próxima semana', compromiso_fecha: '2026-09-05' });
   assert.equal(resp.status, 200);
@@ -179,7 +179,7 @@ test('F-15: las comunicaciones quedan ligadas al proveedor correcto cuando el pe
   const provA = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor A F15' })).data;
   const provB = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor B F15' })).data;
   const s = (await req('POST', '/api/siniestros', { numero: 'F15-TEST', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'F15-PED', siniestro_id: s.id })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'F15-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   await req('POST', '/api/piezas', { pedido_id: p.id, proveedor_id: provA.id, descripcion: 'Pieza de A' });
   await req('POST', '/api/piezas', { pedido_id: p.id, proveedor_id: provB.id, descripcion: 'Pieza de B' });
   const borrador = (await req('GET', `/api/comunicaciones/generar-borrador/${p.id}`)).data;
@@ -196,7 +196,7 @@ test('Caso real de Daniela (siniestro 4264105314000171 / pedido 337196 / espejo 
   const dupIntento = await req('POST', '/api/siniestros', { numero: '4264105314000171-REPRO', aseguradora: 'Mapfre' });
   assert.equal(dupIntento.status, 409, 'no debe duplicar el siniestro');
 
-  r = await req('POST', '/api/pedidos', { numero: '337196-REPRO', siniestro_id: siniestro.id, estatus_inpart: 'Entregado' });
+  r = await req('POST', '/api/pedidos', { numero: '337196-REPRO', siniestro_id: siniestro.id, estatus_inpart: 'Entregado' , fecha_prevista: '2026-09-01' });
   const pedido = r.data;
 
   // 2. Agregar la pieza Espejo lateral derecho.
@@ -230,8 +230,8 @@ test('Caso real de Daniela (siniestro 4264105314000171 / pedido 337196 / espejo 
   const borrador = (await req('GET', `/api/comunicaciones/generar-borrador/${pedido.id}`)).data;
   assert.equal(borrador.requiereCorreo, true);
   assert.equal(borrador.borradores[0].tipo_plantilla, 'incidencia', 'debe usar la plantilla de incidencia, no la genérica de estatus');
-  const comunicacionesAntes = (await req('GET', '/api/comunicaciones?pedido_id=' + pedido.id)).data.length;
-  assert.equal(comunicacionesAntes, 0, 'generar el borrador no debe enviar ni registrar nada todavía');
+  const comunicacionesAntes = (await req('GET', '/api/comunicaciones?pedido_id=' + pedido.id)).data.filter(c => c.estado === 'aprobado').length;
+  assert.equal(comunicacionesAntes, 0, 'generar el borrador no debe enviar ni registrar nada todavía (puede existir el correo automático de "pedido nuevo", pero sigue pendiente de aprobación)');
 
   const aprobado = await req('POST', '/api/comunicaciones', {
     pedido_id: pedido.id, proveedor_id: borrador.borradores[0].proveedor_id,
@@ -397,7 +397,7 @@ test('FASE1-3: la vista de Daniela oculta los expedientes marcados "no requiere 
 test('FASE1-4: crear el primer pedido sobre un expediente "por definir" lo confirma automáticamente como "sí", y queda auditado', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'FASE1-AUTOFLIP', aseguradora: 'GNP' })).data;
   assert.equal(s.requiere_refacciones, 'por_definir');
-  await req('POST', '/api/pedidos', { numero: 'FASE1-AUTOFLIP-PED1', siniestro_id: s.id });
+  await req('POST', '/api/pedidos', { numero: 'FASE1-AUTOFLIP-PED1', siniestro_id: s.id , fecha_prevista: '2026-09-01' });
   const actualizado = (await req('GET', '/api/siniestros/' + s.id)).data;
   assert.equal(actualizado.requiere_refacciones, 'si', 'debe pasar a "sí" automáticamente al crear el primer pedido');
 
@@ -570,8 +570,8 @@ test('FASE5-1: cuando TODOS los pedidos de un expediente quedan en estado termin
   const s = (await req('POST', '/api/siniestros', { numero: 'FASE5-REFCOMP', aseguradora: 'GNP', cliente_nombre: 'X', cliente_telefono: '1', cliente_correo: 'x@x.com' })).data;
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
-  const p1 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-1', siniestro_id: s.id })).data;
-  const p2 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-2', siniestro_id: s.id })).data;
+  const p1 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-1', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
+  const p2 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-2', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
 
   await req('PATCH', '/api/pedidos/' + p1.id, { estatus_operativo: 'Recibido completo' });
   let tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
@@ -623,5 +623,226 @@ test('FASE5-3: confirmar el hito de Entrega como enviado programa la postventa a
   assert.ok(tareaPostventa, 'debe crearse la tarea automática de postventa');
   assert.equal(tareaPostventa.fecha_limite, actualizado.postventa_programada);
 
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
+
+test('REQ-DANIELA-1: solo Daniela (operativo) o admin pueden aprobar/registrar un correo; consulta no puede', async () => {
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ1-SIN', aseguradora: 'Mapfre' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ1-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+
+  const okDaniela = await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'prov@x.com', asunto: 'a', cuerpo: 'b' });
+  assert.equal(okDaniela.status, 201, 'Daniela (operativo) sí puede aprobar/registrar un correo');
+
+  // Un usuario de solo consulta no debería poder.
+  await req('POST', '/api/auth/usuarios', { nombre: 'Consulta Test', email: 'consulta.req1@serviciocristian.mx', password: 'Password123!', rol: 'consulta' });
+  // crearUsuario requiere admin; hacemos login como admin primero solo para crear al usuario de prueba.
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/usuarios', { nombre: 'Consulta Test', email: 'consulta.req1@serviciocristian.mx', password: 'Password123!', rol: 'consulta' });
+  await req('POST', '/api/auth/login', { email: 'consulta.req1@serviciocristian.mx', password: 'Password123!' });
+  const bloqueado = await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'prov@x.com', asunto: 'a', cuerpo: 'b' });
+  assert.equal(bloqueado.status, 403, 'un usuario de consulta no debe poder aprobar correos');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+});
+
+test('REQ-DANIELA-2: no se puede cerrar un siniestro con pedidos pendientes o sin fecha de entrega; sí cuando ambos se cumplen', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ2-SIN', aseguradora: 'Mapfre' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ2-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+
+  const intento1 = await req('PATCH', `/api/siniestros/${s.id}/cerrar`, {});
+  assert.equal(intento1.status, 400);
+  assert.match(intento1.data.detalle.join(' '), /Pedidos sin recibir/);
+
+  await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Recibido completo' });
+  const intento2 = await req('PATCH', `/api/siniestros/${s.id}/cerrar`, {});
+  assert.equal(intento2.status, 400, 'todavía falta la fecha de entrega');
+  assert.match(intento2.data.detalle.join(' '), /entrega/);
+
+  const entrega = await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: '2026-08-20' });
+  assert.equal(entrega.status, 200);
+
+  const cierre = await req('PATCH', `/api/siniestros/${s.id}/cerrar`, {});
+  assert.equal(cierre.status, 200);
+  assert.equal(cierre.data.estatus_general, 'Cerrado');
+});
+
+test('REQ-DANIELA-3: un pedido cancelado cuenta como terminal para poder cerrar el siniestro', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ3-SIN', aseguradora: 'Inbursa' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Cancelado', motivo_cancelacion: 'Pérdida total' });
+  await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: '2026-08-20' });
+  const cierre = await req('PATCH', `/api/siniestros/${s.id}/cerrar`, {});
+  assert.equal(cierre.status, 200);
+});
+
+test('REQ-DANIELA-4: la fecha promesa es obligatoria al crear un pedido', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ4-SIN', aseguradora: 'Afirme' })).data;
+  const sinFecha = await req('POST', '/api/pedidos', { numero: 'REQ4-PED', siniestro_id: s.id });
+  assert.equal(sinFecha.status, 400);
+  assert.match(sinFecha.data.error, /fecha promesa/i);
+
+  const conFecha = await req('POST', '/api/pedidos', { numero: 'REQ4-PED-OK', siniestro_id: s.id, fecha_prevista: '2026-09-01' });
+  assert.equal(conFecha.status, 201);
+});
+
+test('REQ-DANIELA-5: cancelar un pedido exige motivo y lo conserva', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ5-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ5-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+
+  const sinMotivo = await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Cancelado' });
+  assert.equal(sinMotivo.status, 400);
+  assert.match(sinMotivo.data.error, /motivo/i);
+
+  const conMotivo = await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Cancelado', motivo_cancelacion: 'Reasignación de proveedor' });
+  assert.equal(conMotivo.status, 200);
+  assert.equal(conMotivo.data.motivo_cancelacion, 'Reasignación de proveedor');
+});
+
+test('REQ-DANIELA-6: crear un pedido prepara automáticamente un correo de "pedido nuevo", pendiente de aprobación', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ6-SIN', aseguradora: 'Mapfre' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ6-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const propio = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
+  assert.ok(propio, 'debe existir un correo automático de pedido nuevo pendiente de aprobación');
+  assert.equal(propio.estado, 'pendiente_aprobacion');
+  assert.match(propio.copia, /Jorge Contreras/, 'debe sugerir la copia conocida de Mapfre');
+
+  // No debe duplicarse si se vuelve a consultar la bandeja.
+  const pendientes2 = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  assert.equal(pendientes2.filter(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo').length, 1);
+});
+
+test('REQ-DANIELA-7: un pedido con fecha promesa vencida genera correo automático de vencimiento (día 1)', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ7-SIN', aseguradora: 'Afirme' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ7-PED', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const vencido = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'vencimiento_dia1');
+  assert.ok(vencido, 'debe prepararse el correo de vencimiento');
+  assert.match(vencido.copia, /Nancy Monserrat/, 'debe sugerir la copia conocida de Afirme');
+});
+
+test('REQ-DANIELA-8: solo Daniela/admin pueden aprobar o descartar un correo de la bandeja; aprobar exige destinatario', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ8-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ8-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const com = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
+
+  const sinDestinatario = await req('PATCH', `/api/comunicaciones/${com.id}/aprobar`, {});
+  assert.equal(sinDestinatario.status, 400);
+
+  const aprobado = await req('PATCH', `/api/comunicaciones/${com.id}/aprobar`, { destinatarios: 'proveedor@ejemplo.mx' });
+  assert.equal(aprobado.status, 200);
+  assert.equal(aprobado.data.estado, 'aprobado');
+  assert.ok(aprobado.data.aprobado_en);
+
+  // Descartar: crear otro caso y verificar el permiso.
+  const p2 = (await req('POST', '/api/pedidos', { numero: 'REQ8-PED-2', siniestro_id: s.id, fecha_prevista: '2026-12-02' })).data;
+  const pendientes2 = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const com2 = pendientes2.find(c => c.pedido_id === p2.id && c.disparador === 'pedido_nuevo');
+
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const bloqueadoAprobar = await req('PATCH', `/api/comunicaciones/${com2.id}/aprobar`, { destinatarios: 'x@x.com' });
+  assert.equal(bloqueadoAprobar.status, 403);
+  const bloqueadoDescartar = await req('PATCH', `/api/comunicaciones/${com2.id}/descartar`, {});
+  assert.equal(bloqueadoDescartar.status, 403);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const descartado = await req('PATCH', `/api/comunicaciones/${com2.id}/descartar`, { motivo: 'Duplicado' });
+  assert.equal(descartado.status, 200);
+});
+
+test('REQ-DANIELA-9: el resumen diario refleja los correos realmente pendientes de aprobación', async () => {
+  const antes = (await req('GET', '/api/reportes/resumen')).data.correosPendientes;
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ9-SIN', aseguradora: 'Inbursa' })).data;
+  await req('POST', '/api/pedidos', { numero: 'REQ9-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' });
+  const despues = (await req('GET', '/api/reportes/resumen')).data.correosPendientes;
+  assert.ok(despues > antes, 'debe aumentar el conteo de correos pendientes de aprobación');
+});
+
+test('REQ-DANIELA-10: sumarDiasHabiles salta fines de semana correctamente', () => {
+  const { sumarDiasHabiles } = require('../server/utils');
+  assert.equal(sumarDiasHabiles('2026-08-19', 2), '2026-08-21'); // miércoles + 2 hábiles = viernes
+  assert.equal(sumarDiasHabiles('2026-08-20', 2), '2026-08-24'); // jueves + 2 hábiles = lunes (salta sáb/dom)
+});
+
+test('REQ-DANIELA-11: un siniestro entregado hace más de 3 meses se archiva solo, se oculta de la vista diaria y sigue disponible con ?archivado=1', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REQ11-SIN', aseguradora: 'Mapfre' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REQ11-PED', siniestro_id: s.id, fecha_prevista: '2026-01-01' })).data;
+  await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Recibido completo' });
+  // Fecha de entrega hace más de 90 días respecto a "hoy" (el entorno de pruebas usa la fecha real del sistema).
+  const hace100dias = new Date(Date.now() - 100*86400000).toISOString().slice(0,10);
+  await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: hace100dias });
+
+  const listaDefault = (await req('GET', '/api/siniestros')).data;
+  assert.ok(!listaDefault.some(x => x.numero === 'REQ11-SIN'), 'no debe verse en la vista diaria por default');
+
+  const soloArchivados = (await req('GET', '/api/siniestros?archivado=1')).data;
+  assert.ok(soloArchivados.some(x => x.numero === 'REQ11-SIN'), 'debe seguir disponible consultando archivados');
+  assert.equal(soloArchivados.find(x => x.numero === 'REQ11-SIN').archivado, 1);
+
+  const todos = (await req('GET', '/api/siniestros?archivado=all')).data;
+  assert.ok(todos.some(x => x.numero === 'REQ11-SIN'), 'debe seguir en el histórico completo (no se borra nada)');
+
+  const kanban = (await req('GET', '/api/reportes/kanban')).data;
+  assert.ok(!kanban.some(k => k.numero === 'REQ11-PED'), 'no debe verse en Kanban una vez archivado');
+
+  // Se puede desarchivar manualmente.
+  const desarch = await req('PATCH', `/api/siniestros/${s.id}/desarchivar`, {});
+  assert.equal(desarch.status, 200);
+  const listaDespues = (await req('GET', '/api/siniestros')).data;
+  assert.ok(listaDespues.some(x => x.numero === 'REQ11-SIN'), 'debe reaparecer en la vista diaria tras desarchivar');
+});
+
+test('REQ-DANIELA-12: carga masiva - validar detecta filas correctas, duplicados dentro del archivo y errores de columnas', async () => {
+  const csv = [
+    'numero_siniestro,aseguradora,vehiculo,placas,fecha_ingreso,responsable,numero_pedido,fecha_creacion_pedido,fecha_prevista,estatus_inpart,estatus_operativo,proveedor,telefono_proveedor,contacto_proveedor',
+    'CM-SIN-1,GNP,Nissan Versa,ABC123,2026-08-01,Daniela,CM-PED-1,2026-08-01,2026-09-01,Aguardando confirmación,Nuevo,Proveedor Uno,555-1111,Juan',
+    'CM-SIN-1,GNP,Nissan Versa,ABC123,2026-08-01,Daniela,CM-PED-2,2026-08-02,2026-09-05,Aguardando confirmación,Nuevo,Proveedor Uno,555-1111,Juan',
+    'CM-SIN-2,Mapfre,,,,,CM-PED-3,,,,,,,',
+    'CM-SIN-3,Afirme,,,,,CM-PED-1,,2026-09-10,,,,,',
+  ].join('\n');
+
+  const r = await req('POST', '/api/carga-masiva/validar', { csv });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.total, 4);
+  assert.equal(r.data.validas.length, 2, 'las primeras 2 filas están completas y sin duplicado');
+  assert.equal(r.data.errores.length, 2);
+  const errorFaltantes = r.data.errores.find(e => e.dato.numero_pedido === 'CM-PED-3');
+  assert.ok(errorFaltantes.motivos.some(m => /fecha promesa/i.test(m)));
+  const errorDup = r.data.errores.find(e => e.dato.numero_pedido === 'CM-PED-1' && e.dato.numero_siniestro === 'CM-SIN-3');
+  assert.ok(errorDup.motivos.some(m => /duplicado dentro del mismo archivo/i.test(m)));
+});
+
+test('REQ-DANIELA-13: carga masiva - confirmar registra solo lo válido, agrupa pedidos bajo el mismo siniestro y evita duplicados reales', async () => {
+  const csv = [
+    'numero_siniestro,aseguradora,vehiculo,placas,numero_pedido,fecha_prevista,proveedor',
+    'CM2-SIN-1,GNP,Chevrolet Aveo,XYZ999,CM2-PED-1,2026-09-01,Proveedor Dos',
+    'CM2-SIN-1,GNP,Chevrolet Aveo,XYZ999,CM2-PED-2,2026-09-03,Proveedor Dos',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  assert.equal(validado.validas.length, 2);
+
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { filas: validado.validas.map(v => v.dato) });
+  assert.equal(confirmar.status, 200);
+  assert.equal(confirmar.data.siniestrosCreados, 1, 'un solo siniestro para los 2 pedidos');
+  assert.equal(confirmar.data.pedidosCreados, 2);
+
+  const siniestro = (await req('GET', '/api/siniestros?q=CM2-SIN-1')).data[0];
+  const pedidos = (await req('GET', '/api/pedidos?siniestro_id=' + siniestro.id)).data;
+  assert.equal(pedidos.length, 2, 'ambos pedidos quedaron bajo el mismo expediente (no solo el encabezado)');
+
+  // Reintentar la misma carga no debe duplicar (los pedidos ya existen).
+  const segundaVez = await req('POST', '/api/carga-masiva/confirmar', { filas: validado.validas.map(v => v.dato) });
+  assert.equal(segundaVez.data.pedidosCreados, 0);
+  assert.equal(segundaVez.data.omitidos.length, 2);
+});
+
+test('REQ-DANIELA-14: carga masiva exclusiva de Daniela/admin; consulta no puede', async () => {
+  await req('POST', '/api/auth/login', { email: 'consulta.req1@serviciocristian.mx', password: 'Password123!' });
+  const bloqueado = await req('POST', '/api/carga-masiva/validar', { csv: 'numero_siniestro,aseguradora,numero_pedido,fecha_prevista\nA,B,C,2026-01-01' });
+  assert.equal(bloqueado.status, 403);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
 });

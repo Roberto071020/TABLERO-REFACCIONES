@@ -319,4 +319,43 @@ if(hitosCount === 0){
   for(const h of HITOS) insHito.run(...h);
 }
 
+
+/* ===================== MIGRACIONES ADITIVAS — Requerimientos de Daniela (Fase 0) =====================
+   Igual que las anteriores: aditivas e idempotentes, seguras de correr sobre la base ya poblada. */
+
+// 1) Motivo de cancelación en pedidos (para conservar el motivo cuando un pedido se cancela).
+if(!tieneColumna('pedidos', 'motivo_cancelacion')){
+  db.exec("ALTER TABLE pedidos ADD COLUMN motivo_cancelacion TEXT;");
+}
+
+// 2) Bandeja de aprobación de correos: estado, disparador y quién/cuándo aprobó.
+//    Las comunicaciones ya existentes (todas creadas y aprobadas en un solo paso hasta ahora)
+//    quedan con estado='aprobado' por default, para no alterar su significado histórico.
+if(!tieneColumna('comunicaciones', 'estado')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN estado TEXT NOT NULL DEFAULT 'aprobado';");
+}
+if(!tieneColumna('comunicaciones', 'disparador')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN disparador TEXT NOT NULL DEFAULT 'manual';");
+}
+if(!tieneColumna('comunicaciones', 'aprobado_por')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN aprobado_por INTEGER REFERENCES usuarios(id);");
+}
+if(!tieneColumna('comunicaciones', 'aprobado_en')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN aprobado_en TEXT;");
+}
+
+// 3) Archivo de siniestros a 3 meses de la entrega: no se borra nada, solo se marca y se oculta de vistas diarias.
+if(!tieneColumna('siniestros', 'archivado')){
+  db.exec("ALTER TABLE siniestros ADD COLUMN archivado INTEGER NOT NULL DEFAULT 0;");
+}
+if(!tieneColumna('siniestros', 'archivado_en')){
+  db.exec("ALTER TABLE siniestros ADD COLUMN archivado_en TEXT;");
+}
+if(!tieneColumna('siniestros', 'no_auto_archivar')){
+  db.exec("ALTER TABLE siniestros ADD COLUMN no_auto_archivar INTEGER NOT NULL DEFAULT 0;");
+}
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_comunicaciones_estado ON comunicaciones(estado);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_siniestros_archivado ON siniestros(archivado);`);
+
 module.exports = db;
