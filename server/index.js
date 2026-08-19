@@ -5,6 +5,7 @@ const multer = require('multer');
 
 const db = require('./db');
 require('./seed'); // idempotente: crea usuarios/proveedores/caso de prueba solo si no existen
+require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: solo rellena campos vacíos en expedientes ya existentes
 const { login, logout, me, crearUsuario, requireAuth, requireRole } = require('./auth');
 const bcrypt = require('bcryptjs');
 

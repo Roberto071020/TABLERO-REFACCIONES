@@ -855,3 +855,29 @@ test('REQ-DANIELA-15: exportar expedientes en CSV incluye siniestros aunque no t
   assert.match(texto, /CSV-SIN-SINPEDIDO/);
   assert.match(texto, /"Siniestro","Aseguradora","Vehiculo"/);
 });
+
+test('REQ-DANIELA-16: enriquecerDesdeLibreta completa solo campos vacíos de expedientes existentes, nunca crea ni sobreescribe', async () => {
+  const { enriquecerDesdeLibreta } = require('../server/enriquecerDesdeLibreta');
+  const db = require('../server/db');
+
+  await req('POST', '/api/siniestros', { numero: '0185278777A', aseguradora: 'GNP', vehiculo: 'Chrysler', placas: 'PYM6258' });
+  await req('POST', '/api/siniestros', { numero: '0186365300A', aseguradora: 'GNP', vehiculo: 'Mercedes-Benz', placas: 'RDJ972E' });
+  db.prepare("UPDATE siniestros SET cliente_nombre='NOMBRE YA CAPTURADO', vin='VIN-YA-CAPTURADO', anio_modelo='1999' WHERE numero='0186365300A'").run();
+
+  enriquecerDesdeLibreta();
+
+  const s1 = (await req('GET', '/api/siniestros?q=0185278777A')).data[0];
+  assert.equal(s1.vin, '1C4PJLDB6FW554383');
+  assert.equal(s1.cliente_nombre, 'MARIA DEL ROCIO BUENDIA');
+  assert.equal(s1.anio_modelo, '2015');
+
+  const s2 = (await req('GET', '/api/siniestros?q=0186365300A')).data[0];
+  assert.equal(s2.cliente_nombre, 'NOMBRE YA CAPTURADO', 'no debe sobreescribir un dato ya capturado');
+  assert.equal(s2.vin, 'VIN-YA-CAPTURADO');
+  assert.equal(s2.anio_modelo, '1999');
+
+  const totalAntes = (await req('GET', '/api/siniestros?archivado=all')).data.length;
+  enriquecerDesdeLibreta();
+  const totalDespues = (await req('GET', '/api/siniestros?archivado=all')).data.length;
+  assert.equal(totalAntes, totalDespues, 'correrlo de nuevo no debe crear duplicados ni nada nuevo');
+});

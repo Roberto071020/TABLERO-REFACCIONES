@@ -1,0 +1,668 @@
+[
+  {
+    "numero": "0185278777A",
+    "vin": "1C4PJLDB6FW554383",
+    "cliente_nombre": "MARIA DEL ROCIO BUENDIA",
+    "anio_modelo": "2015"
+  },
+  {
+    "numero": "0186365300A",
+    "vin": "WDDWF4FB9FF185475",
+    "cliente_nombre": "ABELARDO CASTRO",
+    "anio_modelo": "2015"
+  },
+  {
+    "numero": "0185300688A",
+    "vin": "3CZRE38589G000440",
+    "cliente_nombre": "LORENZO PEREZ",
+    "anio_modelo": "2009"
+  },
+  {
+    "numero": "0185737566A",
+    "vin": "3N6AD33A6HK853695",
+    "cliente_nombre": "WILMER GARCIA",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "0185307410A",
+    "vin": "3N1CK3CD8GL246107",
+    "cliente_nombre": "MA DEL SOCORRO MEDINA",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "0185345931A",
+    "vin": "MEX512606HT042888",
+    "cliente_nombre": "HECTOR HUERTA",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "0184368611A",
+    "vin": "9BFUP3PF8B8598406",
+    "cliente_nombre": "CARLOS BRITO",
+    "anio_modelo": "2011"
+  },
+  {
+    "numero": "0185229192A",
+    "vin": "9BWDL5BZ6NP013017",
+    "cliente_nombre": "YOLANDA ACOSTA",
+    "anio_modelo": "2022"
+  },
+  {
+    "numero": "0184317212A",
+    "vin": "3KPC24B55LE118919",
+    "cliente_nombre": "MARTHA RAMIREZ",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "0183895168A",
+    "vin": "ML3AA28J2JH003904",
+    "cliente_nombre": "RAQUEL PALESTINO",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "0183707645A",
+    "vin": "3MZBM2V75FM142202",
+    "cliente_nombre": "XOCHITL CARBAJAL",
+    "anio_modelo": "2015"
+  },
+  {
+    "numero": "0182989426A",
+    "vin": "3MZBM2V7XGM300437",
+    "cliente_nombre": "EDUARDO JARDON",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "0184388437A",
+    "vin": "9BWKB45U0PP022853",
+    "cliente_nombre": "PEDRO FARANONI",
+    "anio_modelo": "2023"
+  },
+  {
+    "numero": "0185117132A",
+    "vin": "9BWKB45U4KP034559",
+    "cliente_nombre": "FEDERICO MARIN",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "0184817260A",
+    "vin": "JM1DKCC73K1405336",
+    "cliente_nombre": "NADIA PIANA",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "0185198694A",
+    "vin": "MR0EX32G3C0002103",
+    "cliente_nombre": "ALAN HERNANDEZ",
+    "anio_modelo": "2012"
+  },
+  {
+    "numero": "0184590032A",
+    "vin": "3C6YRAAG2EG285465",
+    "cliente_nombre": "RAFAEL ASTUDILLO",
+    "anio_modelo": "2014"
+  },
+  {
+    "numero": "0184602845A",
+    "vin": "3N1CN7AD7CL907542",
+    "cliente_nombre": "JOSE ROMAN",
+    "anio_modelo": "2012"
+  },
+  {
+    "numero": "0183062785A",
+    "vin": "3N6DD21T69K043190",
+    "cliente_nombre": "DAVID NEGRETE",
+    "anio_modelo": "2009"
+  },
+  {
+    "numero": "0176618452A",
+    "vin": "9FB461JT5JM416556",
+    "cliente_nombre": "BLANCA GUILLERMO",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "0184230233A",
+    "vin": "3VW4D6168CM001309",
+    "cliente_nombre": "LUIS OCHOA",
+    "anio_modelo": "2012"
+  },
+  {
+    "numero": "0183383272A",
+    "vin": "VF1LZ12T5DC266682",
+    "cliente_nombre": "LUIS BLANCAS",
+    "anio_modelo": "2013"
+  },
+  {
+    "numero": "0184145944A",
+    "vin": "3KPA35AC5JE100833",
+    "cliente_nombre": "JOSE DIAZ",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "5782326001",
+    "vin": "JN8AT3MT5RW018039",
+    "cliente_nombre": "IRMA RANGEL",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "5759326001",
+    "vin": "3MDDJBUV0MM408424",
+    "cliente_nombre": "ELIZABETH REYNIER",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "4264116996001741",
+    "vin": "1C4PJMBS6GW339922",
+    "cliente_nombre": "ALMEXA ALUMINIO SA",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "4264116619077371",
+    "vin": "MR0EX8DD5K0264171",
+    "cliente_nombre": "MANIOBRAS OPTIMIZADAS DE VERACRUZ",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "4264116619077121",
+    "vin": "93CXM8026BC116863",
+    "cliente_nombre": "JOSE CUBILLAS",
+    "anio_modelo": "2011"
+  },
+  {
+    "numero": "4264116619075331",
+    "vin": "3KPC25B50NE156146",
+    "cliente_nombre": "ALARII MONTESINO",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "4264116619074591",
+    "vin": "3KPFB4AA7RE014338",
+    "cliente_nombre": "KAREN MEDEL",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264116619073351",
+    "vin": "1GYS47KJ9FR606679",
+    "cliente_nombre": "LEONARDO LANDA",
+    "anio_modelo": "2015"
+  },
+  {
+    "numero": "4264116619069161",
+    "vin": "3N1CK3CE7RL206600",
+    "cliente_nombre": "FINANK SAPI DE CV SOFOMENR",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "7975844",
+    "vin": "9BFUT35F958686061",
+    "cliente_nombre": "LORENZO RIVERA",
+    "anio_modelo": "2005"
+  },
+  {
+    "numero": "7961320",
+    "vin": "1GNDV33L25D218331",
+    "cliente_nombre": "WILIAMS CARRILLO",
+    "anio_modelo": "2005"
+  },
+  {
+    "numero": "7960076",
+    "vin": "3FAFP4AJ5KM125344",
+    "cliente_nombre": "MANUEL RAMIREZ",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "4264116393002471",
+    "vin": "3KPA24AC1JE032012",
+    "cliente_nombre": "GABRIEL NARVAEZ",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "4264110418152941",
+    "vin": "TSMYD21S3JM392910",
+    "cliente_nombre": "ANA GARCIA",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "4264106632062611",
+    "vin": "9FBB62JS2EM105581",
+    "cliente_nombre": "RICARDO TELLO",
+    "anio_modelo": "2014"
+  },
+  {
+    "numero": "4264106519002741",
+    "vin": "3GNCJ7CE8HL203900",
+    "cliente_nombre": "OCTAVIANO VELEZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264106519002691",
+    "vin": "JN8AS58T5BW752324",
+    "cliente_nombre": "ARTURO GONZALEZ",
+    "anio_modelo": "2011"
+  },
+  {
+    "numero": "4264106519002571",
+    "vin": "3FA6P0H75GR150046",
+    "cliente_nombre": "DAVID COUTIÑO",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "4264100167016791",
+    "vin": "9BD281G56PYY70788",
+    "cliente_nombre": "CARLOS MOLINA",
+    "anio_modelo": "2023"
+  },
+  {
+    "numero": "4264100167005011",
+    "vin": "3VW1M1AJ6EM264122",
+    "cliente_nombre": "REYNA FIERRO",
+    "anio_modelo": "2014"
+  },
+  {
+    "numero": "4264100116001201",
+    "vin": "JTDKAMFU8M3132449",
+    "cliente_nombre": "GUSTAVO USVANA",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "AVER1625-26-4",
+    "vin": "MEX5A2606MT143259",
+    "cliente_nombre": "ANGEL ORTIZ",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "AVER1463-26-2",
+    "vin": "LZWMLMGN2RF111853",
+    "cliente_nombre": "YOLANDA BARRERA",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "AVER1442-26-2",
+    "vin": "MA6CB6AD1GT022044",
+    "cliente_nombre": "LIZETH ALBA",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "AVER1340-26-2",
+    "vin": "MA6CB5CD7JT032804",
+    "cliente_nombre": "RODRIGO SALAZAR",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "5705126003",
+    "vin": "KL1PD5C56AK615432",
+    "cliente_nombre": "NORMA CARDENAS",
+    "anio_modelo": "2010"
+  },
+  {
+    "numero": "5649726001",
+    "vin": "LZWPPMGN8RF003156",
+    "cliente_nombre": "VICENTE ROCHA",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "5601826001",
+    "vin": "MALA84BC8GM121872",
+    "cliente_nombre": "MA DEL CARMEN DOMINGUEZ",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "5556526001",
+    "vin": "4T1BF3EK7BU695278",
+    "cliente_nombre": "FIDEL COLORADO",
+    "anio_modelo": "2011"
+  },
+  {
+    "numero": "4264116519000431",
+    "vin": "3VW2W2AJ5DM224097",
+    "cliente_nombre": "KARLO CHAPARRO",
+    "anio_modelo": "2013"
+  },
+  {
+    "numero": "4264115397000221",
+    "vin": "LZWPRMGN2RF970310",
+    "cliente_nombre": "IGLESIA UNIVERSAL DEL REINO DE DIOS ORACIÓN FUERTE AL",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264110423001501",
+    "vin": "9BWAB45U2HP020194",
+    "cliente_nombre": "WILBER SANCHEZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264110418142771",
+    "vin": "W0LXC913X84053715",
+    "cliente_nombre": "GIOVANNA ZAMUDIO",
+    "anio_modelo": "2008"
+  },
+  {
+    "numero": "4264110418133611",
+    "vin": "1FMJK1MT0KEA39410",
+    "cliente_nombre": "ROSA GRANDA",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "4264110418053581",
+    "vin": "WDDWF4AB5HF402983",
+    "cliente_nombre": "MARIANA FLANDES",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264106850000391",
+    "vin": "ML3ABT6J7RH003527",
+    "cliente_nombre": "JORGE OSORIO",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264106711000141",
+    "vin": "9BWAB05U2BP076037",
+    "cliente_nombre": "NILVIA DIAZ",
+    "anio_modelo": "2011"
+  },
+  {
+    "numero": "4264106633039993",
+    "vin": "JM1BN1L33J1182410",
+    "cliente_nombre": "MARCO MARTINEZ",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "4264106628000321",
+    "vin": "JM3KFACL4R0390706",
+    "cliente_nombre": "CIPRIANO ALTAMIRANO",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264106519002601",
+    "vin": "MHKMF5CE5JK001774",
+    "cliente_nombre": "MARIA MONTECLARO",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "LAT2026009865A",
+    "vin": "KNDJ22AE8N7812942",
+    "cliente_nombre": "MIGUEL LEYVA",
+    "anio_modelo": "2022"
+  },
+  {
+    "numero": "LAT2026010276A",
+    "vin": "3KPA34AC9ME369691",
+    "cliente_nombre": "MARGARITA RODRIGUEZ",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "LAT2026009299A",
+    "vin": "MA6CB5FDXMT009419",
+    "cliente_nombre": "FRANCISCO ROJAS",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "LAT2026000302A",
+    "vin": "3N1CN7AE8SK401134",
+    "cliente_nombre": "SARAI PIO",
+    "anio_modelo": "2025"
+  },
+  {
+    "numero": "LAT2026007967A",
+    "vin": "MAJFP1MD5HA140405",
+    "cliente_nombre": "TEODORO LOPEZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "LAT2026007160A",
+    "vin": "MEX4G2605FT025376",
+    "cliente_nombre": "ADRIAN BERANZA",
+    "anio_modelo": "2015"
+  },
+  {
+    "numero": "7972257",
+    "vin": "KL1JJ51Z17K719503",
+    "cliente_nombre": "MARIO AGUILAR",
+    "anio_modelo": "2007"
+  },
+  {
+    "numero": "7967160",
+    "vin": "93CXM19R33C126937",
+    "cliente_nombre": "YENSUNY CHAPARRO",
+    "anio_modelo": "2003"
+  },
+  {
+    "numero": "7942972",
+    "vin": "3N6AD35C2JK824442",
+    "cliente_nombre": "MIGUEL HERNANDEZ",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "7938632",
+    "vin": "8AFWR5AA0H6004815",
+    "cliente_nombre": "EDUARDO FERNANDEZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264106519002511",
+    "vin": "3G1TA5AF0GL111017",
+    "cliente_nombre": "TOMAS RODRIGUEZ",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "4264106519002381",
+    "vin": "LSGKB54H8LV065352",
+    "cliente_nombre": "ERICK RODRIGUEZ",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "4264106519002371",
+    "vin": "3MDDJBCV8RM508862",
+    "cliente_nombre": "MARTIN CUERVO",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264105293001635",
+    "vin": "3VW1W1AJ9HM267207",
+    "cliente_nombre": "DAVID HERNANDEZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "2752102",
+    "vin": "3N1CK3CD5HL208027",
+    "cliente_nombre": "VIVIANA ZAPATA",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "5603526001",
+    "vin": "5YFBPRBE7LP028812",
+    "cliente_nombre": "FRANCISCO SAURY",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "5510926001",
+    "vin": "VSSAAAKM8NR058964",
+    "cliente_nombre": "JOSE ENRIQUEZ",
+    "anio_modelo": "2022"
+  },
+  {
+    "numero": "5457226001",
+    "vin": "5GAEV7KW5LJ156603",
+    "cliente_nombre": "CARLOS VILLAVICENCIO",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "4264116619051891",
+    "vin": "YV1XZK9A6R2254352",
+    "cliente_nombre": "NORMA GARCIA",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264115858005401",
+    "vin": "3G1SF61X86S101139",
+    "cliente_nombre": "YOLANDA CHIMAL",
+    "anio_modelo": "2006"
+  },
+  {
+    "numero": "4264110418102271",
+    "vin": "2T1BU4EE4DC927121",
+    "cliente_nombre": "DORA MALARD",
+    "anio_modelo": "2013"
+  },
+  {
+    "numero": "4264110418088602",
+    "vin": "1FTRW08L62KE30899",
+    "cliente_nombre": "ALEJANDRO CORDOBA",
+    "anio_modelo": "2002"
+  },
+  {
+    "numero": "4264106868000141",
+    "vin": "2FMPK3AP1JBC08809",
+    "cliente_nombre": "ANTONIO RENDON",
+    "anio_modelo": "2018"
+  },
+  {
+    "numero": "4264106632029861",
+    "vin": "5XYPG4A34HG260806",
+    "cliente_nombre": "MARIA MARTINEZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264106555005621",
+    "vin": "JTDBT9K30F1436782",
+    "cliente_nombre": "ANTONIO VEYTIA",
+    "anio_modelo": "2015"
+  },
+  {
+    "numero": "4264106519002181",
+    "vin": "2A4RR5D17AR167986",
+    "cliente_nombre": "NORMA ADRIANA",
+    "anio_modelo": "2010"
+  },
+  {
+    "numero": "4264106519002121",
+    "vin": "MAJBS2MS6KC288558",
+    "cliente_nombre": "BENIGNO CORDOBA",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "4264106519002091",
+    "vin": "9BD341ABXMY730138",
+    "cliente_nombre": "CARMEN MERODIO",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "4264106519001781",
+    "vin": "LS4ASE2E9RA954887",
+    "cliente_nombre": "PAULINA OLIVIER",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "4264106519000931",
+    "vin": "MA6CC6CDXHT009367",
+    "cliente_nombre": "MARIO BARRIOS",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264105812000014",
+    "vin": "3N1AB7AD9HL622543",
+    "cliente_nombre": "CARLOS GARCÍA",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "4264105812000011",
+    "vin": "MA6CB5CD8KT035082",
+    "cliente_nombre": "CONCEPCION MONTOYA",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "7959680",
+    "vin": "3N1CN7AD4HL872773",
+    "cliente_nombre": "MARIO CABAÑAS",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "7956223",
+    "vin": "3N1BDAB14VK001252",
+    "cliente_nombre": "ISAIAS VAZQUEZ",
+    "anio_modelo": "1997"
+  },
+  {
+    "numero": "7955444",
+    "vin": "3N1CK3CD3HL214554",
+    "cliente_nombre": "IRVING PEREZ",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "7955140",
+    "vin": "MALB25BC9MM106868",
+    "cliente_nombre": "MARIA RODRIGUEZ",
+    "anio_modelo": "2021"
+  },
+  {
+    "numero": "7954699",
+    "vin": "9BWKL45U5RP037798",
+    "cliente_nombre": "STORM INDUSTRIES  SA DE CV",
+    "anio_modelo": "2024"
+  },
+  {
+    "numero": "7953846",
+    "vin": "3FAFP4AJ5KM125344",
+    "cliente_nombre": "MANUEL RAMIREZ",
+    "anio_modelo": "2019"
+  },
+  {
+    "numero": "7952359",
+    "vin": "3N1CN7AD0HK401015",
+    "cliente_nombre": "MARTHA ZARATE",
+    "anio_modelo": "2017"
+  },
+  {
+    "numero": "7950795",
+    "vin": "9BWDL5BZ5NP015373",
+    "cliente_nombre": "MIGUEL ALVAREZ",
+    "anio_modelo": "2022"
+  },
+  {
+    "numero": "4264105404000871",
+    "vin": "MRHGM6668EP069288",
+    "cliente_nombre": "ROEL ALCOCER",
+    "anio_modelo": "2014"
+  },
+  {
+    "numero": "4264100547001061",
+    "vin": "3GNCJ7EE9GL269996",
+    "cliente_nombre": "DAVID SALAZAR",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "4264100279001211",
+    "vin": "3HGRM387XEG001160",
+    "cliente_nombre": "ANDRÉS",
+    "anio_modelo": "2014"
+  },
+  {
+    "numero": "4264100116000821",
+    "vin": "LSJW74U63PZ061701",
+    "cliente_nombre": "JEFSIBA RAMIREZ",
+    "anio_modelo": "2023"
+  },
+  {
+    "numero": "4264100116000661",
+    "vin": "ML3AB26J5LH005326",
+    "cliente_nombre": "MARIA HERNANDEZ",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "4264100116000592",
+    "vin": "MA6CB5CD2LT010244",
+    "cliente_nombre": "RENE RAMON",
+    "anio_modelo": "2020"
+  },
+  {
+    "numero": "4254105666000231",
+    "vin": "3GNCJ7CE5GL272834",
+    "cliente_nombre": "SANTIAGO TORRES",
+    "anio_modelo": "2016"
+  },
+  {
+    "numero": "4264105314000171",
+    "vin": "JTDBT923981218617",
+    "cliente_nombre": "TOMAS BALTAZAR",
+    "anio_modelo": "2008"
+  }
+]
