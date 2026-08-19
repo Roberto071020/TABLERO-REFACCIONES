@@ -58,6 +58,34 @@ router.get('/lista-maestra.csv', requireAuth, (req, res)=>{
   res.send('﻿' + lines.join('\r\n'));
 });
 
+// Exporta el listado base de expedientes (siniestros), incluidos los que todavía no tienen ningún
+// pedido capturado — la lista maestra de pedidos no los muestra porque parte de un JOIN desde pedidos.
+router.get('/siniestros.csv', requireAuth, (req, res)=>{
+  archivarSiniestrosVencidos(db);
+  const { aseguradora, q, archivado } = req.query;
+  let sql = 'SELECT * FROM siniestros WHERE 1=1';
+  const params = [];
+  if(aseguradora){ sql += ' AND aseguradora = ?'; params.push(aseguradora); }
+  if(q){ sql += ' AND (numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ?)'; const like = `%${q}%`; params.push(like,like,like); }
+  if(archivado === '1'){ sql += ' AND archivado = 1'; }
+  else if(archivado !== 'all'){ sql += ' AND archivado = 0'; }
+  sql += ' ORDER BY creado_en DESC';
+  const filas = db.prepare(sql).all(...params);
+  const header = ['Siniestro','Aseguradora','Vehiculo','Anio','Placas','VIN','Fecha ingreso','Responsable','Cliente','Telefono','Correo','Requiere refacciones','Completo','Archivado'];
+  const lines = [header.map(csvCell).join(',')];
+  filas.forEach(f=>{
+    lines.push([
+      csvTextForced(f.numero), csvCell(f.aseguradora), csvCell(f.vehiculo||''), csvCell(f.anio_modelo||''),
+      csvTextForced(f.placas||''), csvTextForced(f.vin||''), csvCell(f.fecha_ingreso||''), csvCell(f.responsable||''),
+      csvCell(f.cliente_nombre||''), csvTextForced(f.cliente_telefono||''), csvCell(f.cliente_correo||''),
+      csvCell(f.requiere_refacciones||''), csvCell(f.completo?'Si':'No'), csvCell(f.archivado?'Si':'No')
+    ].join(','));
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="expedientes_siniestros.csv"');
+  res.send('\ufeff' + lines.join('\r\n'));
+});
+
 router.get('/resumen', requireAuth, (req, res)=>{
   verificarCorreosPendientes(db);
   archivarSiniestrosVencidos(db);

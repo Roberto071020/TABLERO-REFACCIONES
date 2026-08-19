@@ -413,6 +413,7 @@ async function viewLista(){
     <button class="btn small" onclick="render()">Buscar</button>
     <button class="btn secondary small" onclick="state.filtros={};render()">Limpiar filtros</button>
     <button class="btn small" onclick="exportarCSV()">Exportar CSV</button>
+    <button class="btn small secondary" onclick="exportarExpedientesCSV()">Exportar expedientes (CSV)</button>
     <button class="btn secondary small" onclick="window.print()">Imprimir / PDF</button>
   </div>
   <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Pedido</th><th>Proveedor</th><th>Pieza</th><th>Estatus</th><th>Fecha prometida</th><th>Alerta</th></tr></thead>
@@ -439,6 +440,15 @@ function exportarCSV(){
   if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
   if(f.q) params.set('q', f.q);
   window.location.href = '/api/reportes/lista-maestra.csv?'+params.toString();
+}
+// Incluye TODOS los expedientes (con o sin pedido capturado), a diferencia del CSV de Lista maestra
+// que parte de los pedidos y por eso no muestra los siniestros que todavía no tienen ninguno.
+function exportarExpedientesCSV(){
+  const f = state.filtros;
+  const params = new URLSearchParams();
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.q) params.set('q', f.q);
+  window.location.href = '/api/reportes/siniestros.csv?'+params.toString();
 }
 
 /* ===================== VISTA: PROVEEDORES ===================== */

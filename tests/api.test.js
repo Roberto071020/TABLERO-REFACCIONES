@@ -846,3 +846,12 @@ test('REQ-DANIELA-14: carga masiva exclusiva de Daniela/admin; consulta no puede
   assert.equal(bloqueado.status, 403);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
 });
+
+test('REQ-DANIELA-15: exportar expedientes en CSV incluye siniestros aunque no tengan ningún pedido capturado', async () => {
+  await req('POST', '/api/siniestros', { numero: 'CSV-SIN-SINPEDIDO', aseguradora: 'GNP', vehiculo: 'Test', placas: 'ABC123' });
+  const res = await fetch(BASE + '/api/reportes/siniestros.csv', withCookie());
+  assert.equal(res.status, 200);
+  const texto = await res.text();
+  assert.match(texto, /CSV-SIN-SINPEDIDO/);
+  assert.match(texto, /"Siniestro","Aseguradora","Vehiculo"/);
+});
