@@ -133,6 +133,7 @@ const TABS = [
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
   {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
   {k:'expediente', label:'Armado de expediente', roles:['vanessa','admin','jefe']},
+  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
@@ -187,6 +188,7 @@ async function render(){
     else if(state.view==='carga') app.innerHTML = viewCargaMasiva();
     else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
     else if(state.view==='expediente') app.innerHTML = await viewExpediente();
+    else if(state.view==='valuacion') app.innerHTML = await viewValuacion();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
@@ -521,7 +523,7 @@ async function viewSiniestro(id){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   const subtabs = [
     ...(esAtencionCliente ? [['cliente','Cliente']] : []),
-    ['admision','Admisión / técnica'],['expediente','Expediente digital'],
+    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],
     ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
   ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
@@ -663,6 +665,34 @@ async function viewSiniestro(id){
     </tr>`).join('')}
     </tbody></table>`}
     ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoDocumento(${id})">+ Agregar documento</button></div>`:''}`;
+  } else if(state.subtabSiniestro==='valuacion'){
+    const puedeValuacion = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
+    const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
+    const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
+    body = `
+    <h3>Valuación</h3>
+    <p class="subtle">Sección 5.6 del documento maestro. Sistema de valuación tomado del expediente digital (${esc(s.sistema_valuacion||'sin definir')}).</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado de valuación</td><td>${esc(LABEL_VAL[s.estado_valuacion]||'Sin iniciar')}</td></tr>
+      <tr><td>Folio / versión</td><td>${esc(s.valuacion_folio||'—')} ${s.valuacion_version?('· v'+s.valuacion_version):''}</td></tr>
+      <tr><td>Importe</td><td>${s.valuacion_importe!=null?fmtMoney(s.valuacion_importe):'—'}</td></tr>
+      <tr><td>Fecha de envío</td><td>${esc(s.valuacion_fecha_envio||'—')}</td></tr>
+      <tr><td>Observaciones</td><td>${esc(s.valuacion_observaciones||'—')}</td></tr>
+    </tbody></table>
+    ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormValuacion(${id})">Actualizar valuación</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Autorización</h3>
+    <p class="subtle">Sección 5.7. Las piezas autorizadas a cambio alimentan la regla GNP 1-3 = autosurtido obligatorio.</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado de autorización</td><td><span class="badge ${s.estado_autorizacion==='autorizada'?'verde':s.estado_autorizacion==='rechazada'?'rojo':'ambar'}">${esc(LABEL_AUT[s.estado_autorizacion]||'Sin iniciar')}</span></td></tr>
+      <tr><td>Piezas autorizadas a cambio</td><td>${s.piezas_autorizadas_cambio!=null?s.piezas_autorizadas_cambio:'—'}</td></tr>
+      <tr><td>Ruta de refacciones aplicada</td><td>${esc(s.aseguradora_ruta_refacciones||'—')}<div class="subtle">${esc(s.aseguradora_regla_aplicada||'')}</div></td></tr>
+      <tr><td>Autorizador</td><td>${esc(s.autorizador||'—')}</td></tr>
+      <tr><td>Fecha envío / respuesta</td><td>${esc(s.autorizacion_fecha_envio||'—')} / ${esc(s.autorizacion_fecha_respuesta||'—')}</td></tr>
+      <tr><td>Importe autorizado</td><td>${s.autorizacion_importe!=null?fmtMoney(s.autorizacion_importe):'—'}</td></tr>
+      <tr><td>Restricciones</td><td>${esc(s.autorizacion_restricciones||'—')}</td></tr>
+    </tbody></table>
+    ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAutorizacion(${id})">Actualizar autorización</button></div>`:''}`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -1064,6 +1094,92 @@ async function guardarEdicionDocumento(documentoId){
   }catch(e){}
 }
 
+function abrirFormValuacion(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar valuación</h3>
+      <p class="subtle">Sistema: ${esc(s.sistema_valuacion||'sin definir en el expediente digital')}</p>
+      <div class="field"><label>Estado de valuación</label><select id="fval_estado">
+        <option value="" ${!s.estado_valuacion?'selected':''}>Sin iniciar</option>
+        <option value="borrador" ${s.estado_valuacion==='borrador'?'selected':''}>Borrador</option>
+        <option value="enviada" ${s.estado_valuacion==='enviada'?'selected':''}>Enviada</option>
+        <option value="observada" ${s.estado_valuacion==='observada'?'selected':''}>Observada</option>
+        <option value="ajustada" ${s.estado_valuacion==='ajustada'?'selected':''}>Ajustada</option>
+        <option value="autorizada_parcial" ${s.estado_valuacion==='autorizada_parcial'?'selected':''}>Autorizada parcial</option>
+        <option value="autorizada_total" ${s.estado_valuacion==='autorizada_total'?'selected':''}>Autorizada total</option>
+        <option value="rechazada" ${s.estado_valuacion==='rechazada'?'selected':''}>Rechazada</option>
+      </select></div>
+      <div class="row-flex">
+        <div class="field"><label>Folio</label><input id="fval_folio" value="${esc(s.valuacion_folio||'')}"></div>
+        <div class="field"><label>Versión</label><input id="fval_version" type="number" min="1" value="${s.valuacion_version||1}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Importe</label><input id="fval_importe" type="number" step="0.01" value="${s.valuacion_importe!=null?s.valuacion_importe:''}"></div>
+        <div class="field"><label>Fecha de envío</label><input id="fval_fecha" type="date" value="${esc(s.valuacion_fecha_envio||'')}"></div>
+      </div>
+      <div class="field"><label>Observaciones</label><textarea id="fval_observaciones">${esc(s.valuacion_observaciones||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarValuacion(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarValuacion(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      estado_valuacion: document.getElementById('fval_estado').value,
+      valuacion_folio: document.getElementById('fval_folio').value,
+      valuacion_version: Number(document.getElementById('fval_version').value)||1,
+      valuacion_importe: document.getElementById('fval_importe').value===''?null:Number(document.getElementById('fval_importe').value),
+      valuacion_fecha_envio: document.getElementById('fval_fecha').value,
+      valuacion_observaciones: document.getElementById('fval_observaciones').value
+    });
+    toast('Valuación actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormAutorizacion(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar autorización</h3>
+      <div class="field"><label>Estado de autorización</label><select id="faut_estado">
+        <option value="" ${!s.estado_autorizacion?'selected':''}>Sin iniciar</option>
+        <option value="en_autorizacion" ${s.estado_autorizacion==='en_autorizacion'?'selected':''}>En autorización</option>
+        <option value="autorizada" ${s.estado_autorizacion==='autorizada'?'selected':''}>Autorizada</option>
+        <option value="parcial" ${s.estado_autorizacion==='parcial'?'selected':''}>Parcial</option>
+        <option value="rechazada" ${s.estado_autorizacion==='rechazada'?'selected':''}>Rechazada</option>
+        <option value="por_aclarar" ${s.estado_autorizacion==='por_aclarar'?'selected':''}>Por aclarar</option>
+      </select></div>
+      <div class="field"><label>Piezas autorizadas a cambio</label><input id="faut_piezas" type="number" min="0" value="${s.piezas_autorizadas_cambio!=null?s.piezas_autorizadas_cambio:''}">
+        <p class="subtle" style="margin:4px 0 0;">Con GNP: 1 a 3 piezas activa autosurtido obligatorio; más de 3, Inpart. Se recalcula al guardar.</p></div>
+      <div class="row-flex">
+        <div class="field"><label>Fecha de envío</label><input id="faut_fecha_envio" type="date" value="${esc(s.autorizacion_fecha_envio||'')}"></div>
+        <div class="field"><label>Fecha de respuesta</label><input id="faut_fecha_respuesta" type="date" value="${esc(s.autorizacion_fecha_respuesta||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Autorizador</label><input id="faut_autorizador" value="${esc(s.autorizador||'')}" placeholder="Ajustador / plataforma / propietario"></div>
+        <div class="field"><label>Importe autorizado</label><input id="faut_importe" type="number" step="0.01" value="${s.autorizacion_importe!=null?s.autorizacion_importe:''}"></div>
+      </div>
+      <div class="field"><label>Restricciones</label><textarea id="faut_restricciones">${esc(s.autorizacion_restricciones||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarAutorizacion(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarAutorizacion(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      estado_autorizacion: document.getElementById('faut_estado').value,
+      piezas_autorizadas_cambio: document.getElementById('faut_piezas').value===''?null:Number(document.getElementById('faut_piezas').value),
+      autorizacion_fecha_envio: document.getElementById('faut_fecha_envio').value,
+      autorizacion_fecha_respuesta: document.getElementById('faut_fecha_respuesta').value,
+      autorizador: document.getElementById('faut_autorizador').value,
+      autorizacion_importe: document.getElementById('faut_importe').value===''?null:Number(document.getElementById('faut_importe').value),
+      autorizacion_restricciones: document.getElementById('faut_restricciones').value
+    });
+    toast('Autorización actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
 async function intentarCerrarSiniestro(siniestroId){
   const ok = await confirmDialog('¿Cerrar este siniestro? Solo se puede si todos sus pedidos están recibidos/cancelados y ya se registró la entrega.', { textoOk:'Sí, cerrar' });
   if(!ok) return;
@@ -1395,6 +1511,29 @@ async function viewClientes(){
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
+/* ===================== VISTA: VALUACIÓN / AUTORIZACIÓN ===================== */
+async function viewValuacion(){
+  const expedientes = await api('GET','/api/reportes/bandeja-valuacion');
+  const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
+  const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
+  const BADGE_AUT = { autorizada:'verde', parcial:'ambar', rechazada:'rojo', por_aclarar:'ambar', en_autorizacion:'gris' };
+  return `
+  <h2>Valuación y autorización</h2>
+  <p class="subtle">Expedientes con checklist documental listo, pendientes de resolver su valuación y autorización. La ruta de refacciones (Inpart/autosurtido/pago de daños) se recalcula sola según la aseguradora y las piezas autorizadas.</p>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Sistema</th><th>Valuación</th><th>Autorización</th><th>Ruta refacciones</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de valuación/autorización.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.sistema_valuacion||'—')}</td>
+      <td>${esc(LABEL_VAL[s.estado_valuacion]||'Sin iniciar')}</td>
+      <td><span class="badge ${BADGE_AUT[s.estado_autorizacion]||'gris'}">${LABEL_AUT[s.estado_autorizacion]||'Sin iniciar'}</span></td>
+      <td>${esc(s.aseguradora_ruta_refacciones||'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Valuación / autorización".</p>`;
+}
+
 /* ===================== VISTA: ARMADO DE EXPEDIENTE (Vanessa) ===================== */
 async function viewExpediente(){
   const expedientes = await api('GET','/api/reportes/bandeja-expediente');

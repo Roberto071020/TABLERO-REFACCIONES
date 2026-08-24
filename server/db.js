@@ -512,4 +512,32 @@ CREATE TABLE IF NOT EXISTS documentos_expediente (
 CREATE INDEX IF NOT EXISTS idx_documentos_expediente_siniestro ON documentos_expediente(siniestro_id);
 `);
 
+
+
+/* ===================== MIGRACIONES ADITIVAS — Documento Maestro / Fase D (2026-08-24) =====================
+   Valuación y autorización, secciones 5.6/5.7 y tablas 10/11 del documento maestro. El motor de reglas por
+   aseguradora (calcularRutaAseguradora) y el campo sistema_valuacion ya existían (Fases A y C) y se reutilizan
+   tal cual, sin duplicarlos. estado_valuacion también ya existía (Fase A) pero sin usarse: aquí se activa. */
+
+const NUEVAS_COLUMNAS_FASE_D = [
+  // 5.6 Valuación (tabla 10)
+  ['valuacion_folio', 'TEXT'],
+  ['valuacion_version', 'INTEGER'],
+  ['valuacion_importe', 'REAL'],
+  ['valuacion_fecha_envio', 'TEXT'],
+  ['valuacion_observaciones', 'TEXT'],
+  // 5.7 Autorización (tabla 11) — dimensión separada de estado_valuacion, tal como pide la sección 4.2
+  ['estado_autorizacion', 'TEXT'],           // 'en_autorizacion' | 'autorizada' | 'parcial' | 'rechazada' | 'por_aclarar'
+  ['autorizacion_fecha_envio', 'TEXT'],
+  ['autorizacion_fecha_respuesta', 'TEXT'],
+  ['autorizador', 'TEXT'],
+  ['autorizacion_importe', 'REAL'],
+  ['autorizacion_restricciones', 'TEXT']
+];
+for(const [col, def] of NUEVAS_COLUMNAS_FASE_D){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
 module.exports = db;

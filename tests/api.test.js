@@ -1120,3 +1120,52 @@ test('DOC-MAESTRO-C-4: bandeja de expediente de Vanessa lista pendientes y los e
   bandeja = await req('GET', '/api/reportes/bandeja-expediente');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'ya no debe aparecer una vez listo para valuación');
 });
+
+/* ===================== Documento Maestro / Fase D: valuación, autorización y motor de reglas ===================== */
+
+test('DOC-MAESTRO-D-1: marcar la valuación como enviada/observada/etc. exige fecha de envío', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASED-VAL1', aseguradora: 'GNP' })).data;
+  const sinFecha = await req('PATCH', '/api/siniestros/' + s.id, { estado_valuacion: 'enviada' });
+  assert.equal(sinFecha.status, 400);
+  const conFecha = await req('PATCH', '/api/siniestros/' + s.id, { estado_valuacion: 'enviada', valuacion_fecha_envio: '2026-08-24', valuacion_folio: 'V-001' });
+  assert.equal(conFecha.status, 200);
+  assert.equal(conFecha.data.estado_valuacion, 'enviada');
+  assert.equal(conFecha.data.valuacion_folio, 'V-001');
+});
+
+test('DOC-MAESTRO-D-2: autorizar (total o parcial) exige fecha de respuesta y autorizador', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASED-AUT1', aseguradora: 'GNP' })).data;
+  const incompleto = await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada' });
+  assert.equal(incompleto.status, 400);
+  const completo = await req('PATCH', '/api/siniestros/' + s.id, {
+    estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador GNP', autorizacion_importe: 15000
+  });
+  assert.equal(completo.status, 200);
+  assert.equal(completo.data.estado_autorizacion, 'autorizada');
+  assert.equal(completo.data.autorizador, 'Ajustador GNP');
+});
+
+test('DOC-MAESTRO-D-3: la autorización de piezas (GNP 1-3) recalcula la ruta de refacciones a autosurtido obligatorio', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASED-GNP2', aseguradora: 'GNP' })).data;
+  assert.equal(s.aseguradora_ruta_refacciones, 'pendiente_confirmar');
+  const r = await req('PATCH', '/api/siniestros/' + s.id, {
+    estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador GNP', piezas_autorizadas_cambio: 2
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.aseguradora_ruta_refacciones, 'autosurtido');
+  assert.match(r.data.aseguradora_regla_aplicada, /autosurtido OBLIGATORIO/);
+});
+
+test('DOC-MAESTRO-D-4: bandeja de valuación solo incluye expedientes con checklist documental listo y excluye autorizados/rechazados', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASED-BANDEJA1', aseguradora: 'GNP' })).data;
+  let bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'no debe aparecer sin expediente listo para valuación');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
+  assert.ok(bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'debe aparecer una vez listo para valuación');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador' });
+  bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'ya no debe aparecer una vez autorizado');
+});

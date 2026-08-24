@@ -197,4 +197,14 @@ router.get('/bandeja-expediente', requireAuth, (req, res)=>{
   res.json(out);
 });
 
+
+// Documento Maestro / Fase D — bandeja de valuación/autorización: expedientes cuyo checklist documental
+// ya está listo (Fase C) y que todavía no tienen una autorización total o rechazo definitivo.
+router.get('/bandeja-valuacion', requireAuth, (req, res)=>{
+  const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0 AND estado_expediente = 'listo_para_valuacion'
+    AND (estado_autorizacion IS NULL OR estado_autorizacion NOT IN ('autorizada','rechazada'))
+    ORDER BY creado_en DESC`).all();
+  res.json(siniestros);
+});
+
 module.exports = router;

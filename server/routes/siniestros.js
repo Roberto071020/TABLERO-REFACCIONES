@@ -91,7 +91,10 @@ router.patch('/:id', requireAuth, (req, res)=>{
     'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
     'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
     // Documento Maestro / Fase C: captura y armado de expediente (Vanessa)
-    'estado_expediente','sistema_valuacion','expediente_folio'];
+    'estado_expediente','sistema_valuacion','expediente_folio',
+    // Documento Maestro / Fase D: valuación y autorización
+    'valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_observaciones',
+    'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
   nuevo.completo = calcularCompleto(nuevo);
@@ -119,6 +122,22 @@ router.patch('/:id', requireAuth, (req, res)=>{
     }
   }
 
+  // Documento Maestro / Fase D, tabla 10: "criterio de salida: valuación enviada y resolución registrada."
+  const ESTADOS_VALUACION_CON_ENVIO = ['enviada','observada','ajustada','autorizada_parcial','autorizada_total','rechazada'];
+  if(ESTADOS_VALUACION_CON_ENVIO.includes(nuevo.estado_valuacion) && !(nuevo.valuacion_fecha_envio && String(nuevo.valuacion_fecha_envio).trim())){
+    return res.status(400).json({ error:'Indica la fecha de envío de la valuación antes de marcarla en este estado.' });
+  }
+  // Tabla 11: "criterio de salida: alcance autorizado y restricciones conocidas." Autorizada/parcial exige
+  // quién autorizó y cuándo respondió (mismos datos que pide la tabla: "fecha envío/respuesta, autorizador").
+  if(['autorizada','parcial'].includes(nuevo.estado_autorizacion)){
+    if(!(nuevo.autorizacion_fecha_respuesta && String(nuevo.autorizacion_fecha_respuesta).trim())){
+      return res.status(400).json({ error:'Indica la fecha de respuesta de la autorización.' });
+    }
+    if(!(nuevo.autorizador && String(nuevo.autorizador).trim())){
+      return res.status(400).json({ error:'Indica quién autorizó (ajustador/plataforma/propietario).' });
+    }
+  }
+
   // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
   // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
   const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
@@ -133,6 +152,8 @@ router.patch('/:id', requireAuth, (req, res)=>{
       cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
       estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
       estado_expediente=?,sistema_valuacion=?,expediente_folio=?,
+      valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_observaciones=?,
+      estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
@@ -142,6 +163,8 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
       nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
       nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio,
+      nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_observaciones,
+      nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
