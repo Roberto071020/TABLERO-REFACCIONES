@@ -182,4 +182,19 @@ router.get('/bandeja-tecnica', requireAuth, (req, res)=>{
   res.json(out);
 });
 
+
+// Documento Maestro / Fase C — bandeja de armado de expediente de Vanessa: expedientes admitidos que
+// todavía no están listos para valuación, con el conteo de documentos por estado.
+router.get('/bandeja-expediente', requireAuth, (req, res)=>{
+  const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0
+    AND (estado_expediente IS NULL OR estado_expediente != 'listo_para_valuacion')
+    ORDER BY creado_en DESC`).all();
+  const out = siniestros.map(s=>{
+    const total = db.prepare('SELECT COUNT(*) n FROM documentos_expediente WHERE siniestro_id=?').get(s.id).n;
+    const faltantes = db.prepare("SELECT COUNT(*) n FROM documentos_expediente WHERE siniestro_id=? AND estado IN ('faltante','no_legible')").get(s.id).n;
+    return { ...s, documentos_total: total, documentos_faltantes: faltantes };
+  });
+  res.json(out);
+});
+
 module.exports = router;

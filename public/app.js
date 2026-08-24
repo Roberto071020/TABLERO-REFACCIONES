@@ -132,6 +132,7 @@ const TABS = [
   {k:'proveedores', label:'Proveedores'},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
   {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
+  {k:'expediente', label:'Armado de expediente', roles:['vanessa','admin','jefe']},
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
@@ -185,6 +186,7 @@ async function render(){
     else if(state.view==='correos') app.innerHTML = await viewCorreos();
     else if(state.view==='carga') app.innerHTML = viewCargaMasiva();
     else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
+    else if(state.view==='expediente') app.innerHTML = await viewExpediente();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
@@ -519,7 +521,7 @@ async function viewSiniestro(id){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   const subtabs = [
     ...(esAtencionCliente ? [['cliente','Cliente']] : []),
-    ['admision','Admisión / técnica'],
+    ['admision','Admisión / técnica'],['expediente','Expediente digital'],
     ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
   ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
@@ -631,6 +633,36 @@ async function viewSiniestro(id){
     </tr>`).join('')}
     </tbody></table>`}
     ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}`;
+  } else if(state.subtabSiniestro==='expediente'){
+    const documentos = await api('GET','/api/documentos-expediente?siniestro_id='+id);
+    const puedeExpediente = currentUser && ['vanessa','admin','jefe'].includes(currentUser.rol);
+    const LABEL_EXP = { en_captura:'En captura', incompleto:'Incompleto', listo_para_valuacion:'Listo para valuación' };
+    const LABEL_DOC = { faltante:'Faltante', recibido:'Recibido', no_legible:'No legible', no_aplica:'No aplica' };
+    const BADGE_DOC = { faltante:'rojo', recibido:'verde', no_legible:'ambar', no_aplica:'gris' };
+    body = `
+    <h3>Expediente digital</h3>
+    <p class="subtle">Sección 5.5 del documento maestro: checklist documental, versiones, legibilidad y sistema de valuación (módulo de Vanessa).</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado del expediente</td><td><span class="badge ${s.estado_expediente==='listo_para_valuacion'?'verde':s.estado_expediente==='incompleto'?'rojo':'ambar'}">${LABEL_EXP[s.estado_expediente]||'Sin iniciar'}</span></td></tr>
+      <tr><td>Sistema de valuación</td><td>${esc(s.sistema_valuacion||'—')}</td></tr>
+      <tr><td>Folio de expediente</td><td>${esc(s.expediente_folio||'—')}</td></tr>
+    </tbody></table>
+    ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormExpedienteDigital(${id})">Actualizar expediente</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Checklist documental</h4>
+    ${documentos.length===0?'<div class="empty">Sin documentos registrados todavía.</div>':`
+    <table><thead><tr><th>Documento</th><th>Versión</th><th>Estado</th><th>Folio</th><th>Archivo</th><th>Autor</th><th></th></tr></thead><tbody>
+    ${documentos.map(d=>`<tr>
+      <td>${esc(d.tipo_documento)}${d.notas?`<div class="subtle">${esc(d.notas)}</div>`:''}</td>
+      <td>${d.version}</td>
+      <td><span class="badge ${BADGE_DOC[d.estado]||'gris'}">${LABEL_DOC[d.estado]||d.estado}</span></td>
+      <td>${esc(d.folio||'—')}</td>
+      <td>${d.archivo_id?`<a class="link" href="/api/archivos/${d.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
+      <td class="subtle">${esc(d.autor_nombre||'—')}</td>
+      <td>${puedeExpediente?`<button class="btn small secondary" onclick="abrirFormEditarDocumento(${d.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoDocumento(${id})">+ Agregar documento</button></div>`:''}`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -924,6 +956,110 @@ async function guardarEdicionHallazgo(hallazgoId){
       archivo_id: document.getElementById('fhe_archivo').value || null, observaciones: document.getElementById('fhe_observaciones').value
     });
     toast('Hallazgo actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormExpedienteDigital(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar expediente digital</h3>
+      <div class="field"><label>Estado del expediente</label><select id="fex_estado">
+        <option value="" ${!s.estado_expediente?'selected':''}>Sin iniciar</option>
+        <option value="en_captura" ${s.estado_expediente==='en_captura'?'selected':''}>En captura</option>
+        <option value="incompleto" ${s.estado_expediente==='incompleto'?'selected':''}>Incompleto</option>
+        <option value="listo_para_valuacion" ${s.estado_expediente==='listo_para_valuacion'?'selected':''}>Listo para valuación</option>
+      </select></div>
+      <div class="field"><label>Sistema de valuación</label><select id="fex_sistema">
+        <option value="" ${!s.sistema_valuacion?'selected':''}>Sin definir</option>
+        <option value="ACG" ${s.sistema_valuacion==='ACG'?'selected':''}>ACG</option>
+        <option value="BDEO" ${s.sistema_valuacion==='BDEO'?'selected':''}>BDEO</option>
+        <option value="Sistema propio (Zurich)" ${s.sistema_valuacion==='Sistema propio (Zurich)'?'selected':''}>Sistema propio (Zurich)</option>
+      </select><p class="subtle" style="margin:4px 0 0;">Sugerido según aseguradora; confírmalo o corrígelo si el caso lo requiere.</p></div>
+      <div class="field"><label>Folio de expediente</label><input id="fex_folio" value="${esc(s.expediente_folio||'')}"></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarExpedienteDigital(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarExpedienteDigital(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      estado_expediente: document.getElementById('fex_estado').value,
+      sistema_valuacion: document.getElementById('fex_sistema').value,
+      expediente_folio: document.getElementById('fex_folio').value
+    });
+    toast('Expediente actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede marcar como listo</h3><p class="subtle">Faltan o no son legibles estos documentos:</p><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
+
+async function abrirFormNuevoDocumento(siniestroId){
+  showModal(`
+    <h3>Agregar documento</h3>
+    <div class="row-flex">
+      <div class="field"><label>Tipo de documento</label><input id="fdoc_tipo" placeholder="Ej. tarjeta de circulación, identificación, póliza"></div>
+      <div class="field"><label>Versión</label><input id="fdoc_version" type="number" value="1" min="1"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Estado</label><select id="fdoc_estado">
+        <option value="faltante">Faltante</option><option value="recibido">Recibido</option><option value="no_legible">No legible</option><option value="no_aplica">No aplica</option>
+      </select></div>
+      <div class="field"><label>Folio</label><input id="fdoc_folio"></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="fdoc_notas"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoDocumento(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoDocumento(siniestroId){
+  const tipo = document.getElementById('fdoc_tipo').value.trim();
+  if(!tipo){ toast('Indica el tipo de documento.', 'error'); return; }
+  try{
+    await api('POST','/api/documentos-expediente', {
+      siniestro_id: siniestroId, tipo_documento: tipo, version: Number(document.getElementById('fdoc_version').value)||1,
+      estado: document.getElementById('fdoc_estado').value, folio: document.getElementById('fdoc_folio').value,
+      notas: document.getElementById('fdoc_notas').value
+    });
+    toast('Documento agregado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarDocumento(documentoId){
+  const todos = await api('GET','/api/documentos-expediente');
+  const d = todos.find(x=>x.id===documentoId);
+  if(!d){ toast('Documento no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar documento</h3>
+    <div class="row-flex">
+      <div class="field"><label>Tipo de documento</label><input id="fdoce_tipo" value="${esc(d.tipo_documento)}"></div>
+      <div class="field"><label>Versión</label><input id="fdoce_version" type="number" min="1" value="${d.version}"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Estado</label><select id="fdoce_estado">
+        <option value="faltante" ${d.estado==='faltante'?'selected':''}>Faltante</option>
+        <option value="recibido" ${d.estado==='recibido'?'selected':''}>Recibido</option>
+        <option value="no_legible" ${d.estado==='no_legible'?'selected':''}>No legible</option>
+        <option value="no_aplica" ${d.estado==='no_aplica'?'selected':''}>No aplica</option>
+      </select></div>
+      <div class="field"><label>Folio</label><input id="fdoce_folio" value="${esc(d.folio||'')}"></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="fdoce_notas">${esc(d.notas||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionDocumento(${documentoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionDocumento(documentoId){
+  const tipo = document.getElementById('fdoce_tipo').value.trim();
+  if(!tipo){ toast('Indica el tipo de documento.', 'error'); return; }
+  try{
+    await api('PATCH','/api/documentos-expediente/'+documentoId, {
+      tipo_documento: tipo, version: Number(document.getElementById('fdoce_version').value)||1,
+      estado: document.getElementById('fdoce_estado').value, folio: document.getElementById('fdoce_folio').value,
+      notas: document.getElementById('fdoce_notas').value
+    });
+    toast('Documento actualizado.', 'success');
     closeModal(); render();
   }catch(e){}
 }
@@ -1259,6 +1395,28 @@ async function viewClientes(){
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
+/* ===================== VISTA: ARMADO DE EXPEDIENTE (Vanessa) ===================== */
+async function viewExpediente(){
+  const expedientes = await api('GET','/api/reportes/bandeja-expediente');
+  const LABEL_EXP = { en_captura:'En captura', incompleto:'Incompleto', listo_para_valuacion:'Listo para valuación' };
+  const BADGE_EXP = { en_captura:'ambar', incompleto:'rojo', listo_para_valuacion:'verde' };
+  return `
+  <h2>Armado de expediente</h2>
+  <p class="subtle">Expedientes admitidos pendientes de digitalizar y validar documentalmente antes de enviarlos a valuación (módulo de Vanessa).</p>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Sistema valuación</th><th>Estado expediente</th><th>Documentos</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de armar.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.sistema_valuacion||'—')}</td>
+      <td><span class="badge ${BADGE_EXP[s.estado_expediente]||'gris'}">${LABEL_EXP[s.estado_expediente]||'Sin iniciar'}</span></td>
+      <td>${s.documentos_total>0?`${s.documentos_total} total${s.documentos_faltantes>0?` <span class="badge rojo">${s.documentos_faltantes} faltante${s.documentos_faltantes>1?'s':''}</span>`:''}`:'—'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Expediente digital", para el checklist documental.</p>`;
+}
+
 /* ===================== VISTA: REVISIÓN TÉCNICA (Orlando) ===================== */
 async function viewTecnica(){
   const expedientes = await api('GET','/api/reportes/bandeja-tecnica');

@@ -235,7 +235,19 @@ function calcularRutaAseguradora(aseguradora, piezasAutorizadasCambio){
   return { ruta: 'inpart', regla: `${aseguradora || 'Aseguradora'}: ACG y migración a Inpart, salvo excepción documentada.` };
 }
 
+
+// Documento Maestro / Fase C (5.5, tabla 9): "¿Sistema de valuación correcto según aseguradora?" es una
+// decisión que Vanessa debe confirmar, no algo que el sistema imponga solo. Se ofrece como SUGERENCIA
+// (Vanessa/Orlando la confirman o corrigen en el expediente), reutilizando la misma regla por aseguradora
+// que ya rige la ruta de refacciones (sección 12), sin inventar un catálogo nuevo.
+function sistemaValuacionSugerido(aseguradora){
+  if(aseguradora === 'ANA') return 'BDEO';
+  if(aseguradora === 'Zurich') return 'Sistema propio (Zurich)';
+  if(aseguradora) return 'ACG';
+  return '';
+}
+
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, esDiaHabil, sumarDiasHabiles,
-  archivarSiniestrosVencidos, calcularRutaAseguradora };
+  archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido };

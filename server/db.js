@@ -474,4 +474,42 @@ CREATE TABLE IF NOT EXISTS danos_evidencia (
 CREATE INDEX IF NOT EXISTS idx_danos_evidencia_siniestro ON danos_evidencia(siniestro_id);
 `);
 
+
+
+/* ===================== MIGRACIONES ADITIVAS — Documento Maestro / Fase C (2026-08-24) =====================
+   Captura y armado del expediente digital (Vanessa), sección 5.5 y tabla 9 del documento maestro.
+   Todo aditivo; no toca nada de recepción/admisión/revisión técnica (Fase B) ni de Daniela/Alejandra. */
+
+const NUEVAS_COLUMNAS_FASE_C = [
+  ['estado_expediente', 'TEXT'],       // 'en_captura' | 'incompleto' | 'listo_para_valuacion'
+  ['sistema_valuacion', 'TEXT'],       // 'ACG' | 'BDEO' | 'Sistema propio (Zurich)' — confirmado por Vanessa/Orlando
+  ['expediente_folio', 'TEXT']         // folio/número de expediente en el sistema de valuación, cuando exista
+];
+for(const [col, def] of NUEVAS_COLUMNAS_FASE_C){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
+// Checklist documental del expediente (tabla 9: "checklist documental, versiones, legibilidad, folios y
+// faltantes"). No se define aquí un catálogo fijo de documentos por aseguradora porque el propio documento
+// maestro (sección 19) marca ese requisito como pendiente de confirmación: tipo_documento queda libre para
+// que Vanessa lo use según el caso, sin inventar una política no confirmada.
+db.exec(`
+CREATE TABLE IF NOT EXISTS documentos_expediente (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  tipo_documento TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  estado TEXT NOT NULL DEFAULT 'faltante' CHECK(estado IN ('faltante','recibido','no_legible','no_aplica')),
+  folio TEXT,
+  notas TEXT,
+  archivo_id INTEGER REFERENCES archivos(id),
+  autor_id INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_documentos_expediente_siniestro ON documentos_expediente(siniestro_id);
+`);
+
 module.exports = db;

@@ -1072,3 +1072,51 @@ test('DOC-MAESTRO-B-6: bandeja técnica de Orlando lista expedientes pendientes 
   bandeja = await req('GET', '/api/reportes/bandeja-tecnica');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEB-BANDEJA1'), 'ya no debe aparecer una vez terminada la revisión');
 });
+
+/* ===================== Documento Maestro / Fase C: captura y armado de expediente (Vanessa) ===================== */
+
+test('DOC-MAESTRO-C-1: al crear un siniestro se sugiere el sistema de valuación según la aseguradora (ACG/BDEO/propio)', async () => {
+  const gnp = (await req('POST', '/api/siniestros', { numero: 'FASEC-GNP1', aseguradora: 'GNP' })).data;
+  assert.equal(gnp.sistema_valuacion, 'ACG');
+  const ana = (await req('POST', '/api/siniestros', { numero: 'FASEC-ANA1', aseguradora: 'ANA' })).data;
+  assert.equal(ana.sistema_valuacion, 'BDEO');
+  const zurich = (await req('POST', '/api/siniestros', { numero: 'FASEC-ZUR1', aseguradora: 'Zurich' })).data;
+  assert.equal(zurich.sistema_valuacion, 'Sistema propio (Zurich)');
+});
+
+test('DOC-MAESTRO-C-2: no se puede marcar el expediente como listo para valuación con documentos faltantes/no legibles', async () => {
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEC-DOC1', aseguradora: 'GNP' })).data;
+  const doc = (await req('POST', '/api/documentos-expediente', { siniestro_id: s.id, tipo_documento: 'Identificación oficial', estado: 'faltante' })).data;
+  assert.equal(doc.estado, 'faltante');
+
+  const bloqueado = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.equal(bloqueado.status, 400, 'debe bloquearse mientras haya documentos faltantes');
+  assert.ok(bloqueado.data.detalle.includes('Identificación oficial'));
+
+  const editado = await req('PATCH', '/api/documentos-expediente/' + doc.id, { estado: 'recibido' });
+  assert.equal(editado.status, 200);
+  assert.equal(editado.data.estado, 'recibido');
+
+  const listo = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.equal(listo.status, 200, 'ya sin faltantes debe permitirse marcarlo listo');
+  assert.equal(listo.data.estado_expediente, 'listo_para_valuacion');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-C-3: solo vanessa/admin/jefe pueden capturar documentos del expediente (operativo no puede)', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEC-DOC2', aseguradora: 'GNP' })).data;
+  const r = await req('POST', '/api/documentos-expediente', { siniestro_id: s.id, tipo_documento: 'Póliza' });
+  assert.equal(r.status, 403, 'operativo (Daniela) no debe poder capturar documentos del expediente');
+});
+
+test('DOC-MAESTRO-C-4: bandeja de expediente de Vanessa lista pendientes y los excluye al quedar listos para valuación', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEC-BANDEJA1', aseguradora: 'GNP' })).data;
+  let bandeja = await req('GET', '/api/reportes/bandeja-expediente');
+  assert.ok(bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'debe aparecer pendiente de armar expediente');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  bandeja = await req('GET', '/api/reportes/bandeja-expediente');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'ya no debe aparecer una vez listo para valuación');
+});
