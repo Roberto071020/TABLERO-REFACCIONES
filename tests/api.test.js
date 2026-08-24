@@ -996,3 +996,79 @@ test('DOC-MAESTRO-3: los 3 roles nuevos (Orlando, Vanessa, Beto) existen y puede
   }
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando) ===================== */
+
+test('DOC-MAESTRO-B-1: admisión condicionada o no admitida exige motivo', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-ADM1', aseguradora: 'GNP' })).data;
+  const sinMotivo = await req('PATCH', '/api/siniestros/' + s.id, { estado_admision: 'condicionado' });
+  assert.equal(sinMotivo.status, 400, 'sin motivo debe rechazarse');
+  const conMotivo = await req('PATCH', '/api/siniestros/' + s.id, { estado_admision: 'condicionado', motivo_admision: 'Falta tarjeta de circulación' });
+  assert.equal(conMotivo.status, 200);
+  assert.equal(conMotivo.data.estado_admision, 'condicionado');
+  assert.equal(conMotivo.data.motivo_admision, 'Falta tarjeta de circulación');
+});
+
+test('DOC-MAESTRO-B-2: riesgo de seguridad exige motivo técnico', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-RIESGO1', aseguradora: 'GNP' })).data;
+  const sinMotivo = await req('PATCH', '/api/siniestros/' + s.id, { riesgo_seguridad: 1 });
+  assert.equal(sinMotivo.status, 400, 'riesgo sin motivo debe rechazarse');
+  const conMotivo = await req('PATCH', '/api/siniestros/' + s.id, { riesgo_seguridad: 1, riesgo_seguridad_motivo: 'Fuga de frenos, no debe circular' });
+  assert.equal(conMotivo.status, 200);
+  assert.equal(conMotivo.data.riesgo_seguridad, 1);
+});
+
+test('DOC-MAESTRO-B-3: campos de admisión (tabla 21, circulando vs grúa) se guardan y reutilizan ingreso_tipo/ingreso_seguro de Fase A', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-ADM2', aseguradora: 'GNP' })).data;
+  const r = await req('PATCH', '/api/siniestros/' + s.id, {
+    ingreso_tipo: 'grua', ingreso_seguro: 0, grua_operador: 'Grúas Rápidas SA', grua_hora: '08:30',
+    fecha_admision: '2026-08-24', kilometraje: '45000', combustible_nivel: '1/4', llaves_entregadas: 1,
+    pertenencias: 'Gato, herramienta básica', estado_admision: 'admitido'
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ingreso_tipo, 'grua');
+  assert.equal(r.data.ingreso_seguro, 0);
+  assert.equal(r.data.grua_operador, 'Grúas Rápidas SA');
+  assert.equal(r.data.llaves_entregadas, 1);
+  assert.equal(r.data.estado_admision, 'admitido');
+});
+
+test('DOC-MAESTRO-B-4: crear un hallazgo de daños/evidencia exige zona/pieza y expediente válido', async () => {
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-HALL1', aseguradora: 'GNP' })).data;
+  const sinZona = await req('POST', '/api/danos-evidencia', { siniestro_id: s.id });
+  assert.equal(sinZona.status, 400);
+  const r = await req('POST', '/api/danos-evidencia', {
+    siniestro_id: s.id, zona_pieza: 'Puerta delantera derecha', tipo_dano: 'Golpe', visibilidad: 'oculto',
+    relacionado: 1, severidad: 'media', operacion_preliminar: 'Reparar y pintar', observaciones: 'Requiere desarme para confirmar alcance'
+  });
+  assert.equal(r.status, 201);
+  assert.equal(r.data.visibilidad, 'oculto');
+  assert.equal(r.data.autor_nombre, 'Orlando');
+
+  const lista = await req('GET', '/api/danos-evidencia?siniestro_id=' + s.id);
+  assert.equal(lista.data.length, 1);
+
+  const edit = await req('PATCH', '/api/danos-evidencia/' + r.data.id, { severidad: 'severa', observaciones: 'Confirmado daño oculto tras desarme' });
+  assert.equal(edit.status, 200);
+  assert.equal(edit.data.severidad, 'severa');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-B-5: solo orlando/vanessa/admin/jefe pueden registrar hallazgos (operativo no puede)', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-HALL2', aseguradora: 'GNP' })).data;
+  // sesión actual: daniela (rol operativo)
+  const r = await req('POST', '/api/danos-evidencia', { siniestro_id: s.id, zona_pieza: 'Cofre' });
+  assert.equal(r.status, 403, 'operativo (Daniela) no debe poder registrar hallazgos técnicos');
+});
+
+test('DOC-MAESTRO-B-6: bandeja técnica de Orlando lista expedientes pendientes y los excluye al terminar la revisión', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-BANDEJA1', aseguradora: 'GNP' })).data;
+  let bandeja = await req('GET', '/api/reportes/bandeja-tecnica');
+  assert.ok(bandeja.data.some(x => x.numero === 'FASEB-BANDEJA1'), 'debe aparecer pendiente de revisión técnica');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  bandeja = await req('GET', '/api/reportes/bandeja-tecnica');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASEB-BANDEJA1'), 'ya no debe aparecer una vez terminada la revisión');
+});

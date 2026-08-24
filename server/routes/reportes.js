@@ -167,4 +167,19 @@ router.get('/bandeja-clientes', requireAuth, (req, res)=>{
   res.json(out);
 });
 
+
+// Documento Maestro / Fase B — bandeja de revisión técnica de Orlando: expedientes admitidos que
+// todavía no tienen revisión terminada, con el conteo de hallazgos ya capturados y el flag de riesgo.
+router.get('/bandeja-tecnica', requireAuth, (req, res)=>{
+  const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0
+    AND (estado_revision_tecnica IS NULL OR estado_revision_tecnica != 'revision_terminada')
+    ORDER BY creado_en DESC`).all();
+  const out = siniestros.map(s=>{
+    const hallazgos = db.prepare('SELECT COUNT(*) n FROM danos_evidencia WHERE siniestro_id=?').get(s.id).n;
+    const ocultos = db.prepare("SELECT COUNT(*) n FROM danos_evidencia WHERE siniestro_id=? AND visibilidad='oculto'").get(s.id).n;
+    return { ...s, hallazgos, hallazgos_ocultos: ocultos };
+  });
+  res.json(out);
+});
+
 module.exports = router;

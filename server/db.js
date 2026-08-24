@@ -419,4 +419,59 @@ for(const [col, def] of NUEVAS_COLUMNAS_FASE_A){
   }
 }
 
+
+
+/* ===================== MIGRACIONES ADITIVAS — Documento Maestro / Fase B (2026-08-24) =====================
+   Recepción, admisión y revisión técnica (Orlando), secciones 5.1-5.4 y tabla 21 del documento maestro.
+   Todo aditivo. ingreso_tipo/ingreso_seguro ya existían desde Fase A (tabla 21 los reutiliza tal cual,
+   no se duplican). Nada de esto toca los módulos ya usados por Daniela, Alejandra u Orlando/Vanessa/Beto
+   como cuentas de acceso (Fase A). */
+
+const NUEVAS_COLUMNAS_FASE_B = [
+  // 5.1 Recepción y primer contacto
+  ['cita_fecha', 'TEXT'],
+  ['grua_operador', 'TEXT'],
+  ['grua_hora', 'TEXT'],
+  // 5.2 Orden de admisión e ingreso físico
+  ['fecha_admision', 'TEXT'],
+  ['kilometraje', 'TEXT'],
+  ['combustible_nivel', 'TEXT'],
+  ['llaves_entregadas', 'INTEGER'],
+  ['pertenencias', 'TEXT'],
+  ['estado_admision', 'TEXT'],           // 'admitido' | 'condicionado' | 'no_admitido'
+  ['motivo_admision', 'TEXT'],           // obligatorio si condicionado/no_admitido
+  // 5.3 Revisión de daños (Orlando)
+  ['estado_revision_tecnica', 'TEXT'],   // 'en_revision' | 'requiere_desarme' | 'revision_terminada'
+  ['riesgo_seguridad', 'INTEGER'],       // 1/0 — vehículo no seguro para circular
+  ['riesgo_seguridad_motivo', 'TEXT'],   // obligatorio si riesgo_seguridad = 1
+  // 5.4 Fotografías y desarme — estado agregado del paquete de evidencia (el detalle vive en danos_evidencia)
+  ['estado_evidencia', 'TEXT']           // 'evidencia_completa' | 'desarme_parcial' | 'dano_oculto_detectado'
+];
+for(const [col, def] of NUEVAS_COLUMNAS_FASE_B){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
+// Daños y evidencia (entidad propia del documento maestro, tabla 3): un renglón por hallazgo/zona,
+// opcionalmente ligado a una foto ya subida por el endpoint de archivos existente (no se duplica esa infraestructura).
+db.exec(`
+CREATE TABLE IF NOT EXISTS danos_evidencia (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  zona_pieza TEXT NOT NULL,
+  tipo_dano TEXT,
+  visibilidad TEXT NOT NULL DEFAULT 'visible' CHECK(visibilidad IN ('visible','oculto')),
+  relacionado INTEGER NOT NULL DEFAULT 1,
+  severidad TEXT,
+  operacion_preliminar TEXT,
+  observaciones TEXT,
+  archivo_id INTEGER REFERENCES archivos(id),
+  autor_id INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_danos_evidencia_siniestro ON danos_evidencia(siniestro_id);
+`);
+
 module.exports = db;

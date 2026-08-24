@@ -131,6 +131,7 @@ const TABS = [
   {k:'lista', label:'Lista maestra'},
   {k:'proveedores', label:'Proveedores'},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
+  {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
@@ -183,6 +184,7 @@ async function render(){
     else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
     else if(state.view==='correos') app.innerHTML = await viewCorreos();
     else if(state.view==='carga') app.innerHTML = viewCargaMasiva();
+    else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
@@ -517,6 +519,7 @@ async function viewSiniestro(id){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   const subtabs = [
     ...(esAtencionCliente ? [['cliente','Cliente']] : []),
+    ['admision','Admisión / técnica'],
     ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
   ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
@@ -580,6 +583,54 @@ async function viewSiniestro(id){
       </td>
     </tr>`).join('')}
     </tbody></table>`}`;
+  } else if(state.subtabSiniestro==='admision'){
+    const hallazgos = await api('GET','/api/danos-evidencia?siniestro_id='+id);
+    const archivosDisp = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
+    const puedeAdmision = currentUser && ['atencion_cliente','vanessa','admin','jefe'].includes(currentUser.rol);
+    const puedeTecnica = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
+    const LABEL_ADM = { admitido:'Admitido', condicionado:'Condicionado', no_admitido:'No admitido' };
+    const BADGE_ADM = { admitido:'verde', condicionado:'ambar', no_admitido:'rojo' };
+    const LABEL_REV = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
+    const LABEL_EVID = { evidencia_completa:'Evidencia completa', desarme_parcial:'Desarme parcial', dano_oculto_detectado:'Daño oculto detectado' };
+    body = `
+    <h3>Recepción y admisión</h3>
+    <p class="subtle">Secciones 5.1/5.2 y regla de circulando vs. grúa del documento maestro.</p>
+    <table class="kv"><tbody>
+      <tr><td>Ingreso</td><td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo==='grua'?'ambar':'gris'}">${s.ingreso_tipo==='grua'?'Grúa':'Circulando'}</span>${s.ingreso_seguro===0?' <span class="badge rojo">No seguro</span>':''}`:'—'}</td></tr>
+      <tr><td>Cita</td><td>${esc(s.cita_fecha||'—')}</td></tr>
+      ${s.ingreso_tipo==='grua'?`<tr><td>Grúa</td><td>${esc(s.grua_operador||'—')} ${s.grua_hora?('· '+esc(s.grua_hora)):''}</td></tr>`:''}
+      <tr><td>Fecha de admisión</td><td>${esc(s.fecha_admision||'—')}</td></tr>
+      <tr><td>Kilometraje / combustible</td><td>${esc(s.kilometraje||'—')} ${s.combustible_nivel?('· '+esc(s.combustible_nivel)):''}</td></tr>
+      <tr><td>Llaves entregadas</td><td>${s.llaves_entregadas?'Sí':'No'}</td></tr>
+      <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
+      <tr><td>Estado de admisión</td><td><span class="badge ${BADGE_ADM[s.estado_admision]||'gris'}">${LABEL_ADM[s.estado_admision]||'Pendiente'}</span>${s.motivo_admision?` — ${esc(s.motivo_admision)}`:''}</td></tr>
+    </tbody></table>
+    ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Revisión técnica (Orlando)</h3>
+    <p class="subtle">Secciones 5.3/5.4 del documento maestro: daño relacionado/no relacionado, visible/oculto, y si requiere desarme.</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado de revisión</td><td><span class="badge ${s.estado_revision_tecnica==='revision_terminada'?'verde':s.estado_revision_tecnica==='requiere_desarme'?'ambar':'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span></td></tr>
+      <tr><td>Riesgo de seguridad</td><td>${s.riesgo_seguridad?`<span class="badge rojo">No seguro</span> — ${esc(s.riesgo_seguridad_motivo||'')}`:'No'}</td></tr>
+      <tr><td>Estado de evidencia</td><td>${s.estado_evidencia?esc(LABEL_EVID[s.estado_evidencia]||s.estado_evidencia):'—'}</td></tr>
+    </tbody></table>
+    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormRevisionTecnica(${id})">Actualizar revisión técnica</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Daños y hallazgos</h4>
+    ${hallazgos.length===0?'<div class="empty">Sin hallazgos registrados todavía.</div>':`
+    <table><thead><tr><th>Zona/pieza</th><th>Tipo de daño</th><th>Visibilidad</th><th>Relacionado</th><th>Severidad</th><th>Foto</th><th>Autor</th><th></th></tr></thead><tbody>
+    ${hallazgos.map(h=>`<tr>
+      <td>${esc(h.zona_pieza)}${h.observaciones?`<div class="subtle">${esc(h.observaciones)}</div>`:''}</td>
+      <td>${esc(h.tipo_dano||'—')}</td>
+      <td><span class="badge ${h.visibilidad==='oculto'?'rojo':'gris'}">${h.visibilidad==='oculto'?'Oculto':'Visible'}</span></td>
+      <td>${h.relacionado?'Sí':'No'}</td>
+      <td>${esc(h.severidad||'—')}</td>
+      <td>${h.archivo_id?`<a class="link" href="/api/archivos/${h.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
+      <td class="subtle">${esc(h.autor_nombre||'—')}</td>
+      <td>${puedeTecnica?`<button class="btn small secondary" onclick="abrirFormEditarHallazgo(${h.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -686,6 +737,197 @@ async function guardarEntrega(siniestroId){
     closeModal(); render();
   }catch(e){}
 }
+function abrirFormAdmision(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Recepción y admisión</h3>
+      <div class="row-flex">
+        <div class="field"><label>Ingreso</label><select id="fad_ingreso_tipo">
+          <option value="" ${!s.ingreso_tipo?'selected':''}>Sin definir</option>
+          <option value="circulando" ${s.ingreso_tipo==='circulando'?'selected':''}>Circulando</option>
+          <option value="grua" ${s.ingreso_tipo==='grua'?'selected':''}>Grúa</option>
+        </select></div>
+        <div class="field"><label>¿Es seguro que circule?</label><select id="fad_ingreso_seguro">
+          <option value="" ${s.ingreso_seguro===null||s.ingreso_seguro===undefined?'selected':''}>Sin definir</option>
+          <option value="1" ${s.ingreso_seguro===1?'selected':''}>Sí</option>
+          <option value="0" ${s.ingreso_seguro===0?'selected':''}>No</option>
+        </select></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Cita</label><input id="fad_cita_fecha" type="date" value="${esc(s.cita_fecha||'')}"></div>
+        <div class="field"><label>Fecha de admisión</label><input id="fad_fecha_admision" type="date" value="${esc(s.fecha_admision||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Operador de grúa</label><input id="fad_grua_operador" value="${esc(s.grua_operador||'')}"></div>
+        <div class="field"><label>Hora de grúa</label><input id="fad_grua_hora" type="time" value="${esc(s.grua_hora||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Kilometraje</label><input id="fad_kilometraje" value="${esc(s.kilometraje||'')}"></div>
+        <div class="field"><label>Nivel de combustible</label><input id="fad_combustible" value="${esc(s.combustible_nivel||'')}" placeholder="Ej. 1/2"></div>
+      </div>
+      <div class="field"><label>¿Llaves entregadas?</label><select id="fad_llaves">
+        <option value="1" ${s.llaves_entregadas?'selected':''}>Sí</option>
+        <option value="0" ${!s.llaves_entregadas?'selected':''}>No</option>
+      </select></div>
+      <div class="field"><label>Pertenencias del vehículo</label><textarea id="fad_pertenencias">${esc(s.pertenencias||'')}</textarea></div>
+      <div class="field"><label>Estado de admisión</label><select id="fad_estado_admision" onchange="document.getElementById('fad_motivo_wrap').style.display=(this.value==='condicionado'||this.value==='no_admitido')?'block':'none'">
+        <option value="" ${!s.estado_admision?'selected':''}>Pendiente</option>
+        <option value="admitido" ${s.estado_admision==='admitido'?'selected':''}>Admitido</option>
+        <option value="condicionado" ${s.estado_admision==='condicionado'?'selected':''}>Condicionado por faltante</option>
+        <option value="no_admitido" ${s.estado_admision==='no_admitido'?'selected':''}>No admitido</option>
+      </select></div>
+      <div id="fad_motivo_wrap" class="field" style="display:${['condicionado','no_admitido'].includes(s.estado_admision)?'block':'none'}"><label>Motivo</label><textarea id="fad_motivo_admision">${esc(s.motivo_admision||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarAdmision(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarAdmision(siniestroId){
+  const payload = {
+    ingreso_tipo: document.getElementById('fad_ingreso_tipo').value,
+    ingreso_seguro: document.getElementById('fad_ingreso_seguro').value === '' ? null : Number(document.getElementById('fad_ingreso_seguro').value),
+    cita_fecha: document.getElementById('fad_cita_fecha').value,
+    fecha_admision: document.getElementById('fad_fecha_admision').value,
+    grua_operador: document.getElementById('fad_grua_operador').value,
+    grua_hora: document.getElementById('fad_grua_hora').value,
+    kilometraje: document.getElementById('fad_kilometraje').value,
+    combustible_nivel: document.getElementById('fad_combustible').value,
+    llaves_entregadas: Number(document.getElementById('fad_llaves').value),
+    pertenencias: document.getElementById('fad_pertenencias').value,
+    estado_admision: document.getElementById('fad_estado_admision').value,
+    motivo_admision: document.getElementById('fad_motivo_admision').value
+  };
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, payload);
+    toast('Admisión actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormRevisionTecnica(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Revisión técnica</h3>
+      <div class="field"><label>Estado de revisión</label><select id="frt_estado">
+        <option value="" ${!s.estado_revision_tecnica?'selected':''}>Sin iniciar</option>
+        <option value="en_revision" ${s.estado_revision_tecnica==='en_revision'?'selected':''}>En revisión</option>
+        <option value="requiere_desarme" ${s.estado_revision_tecnica==='requiere_desarme'?'selected':''}>Requiere desarme</option>
+        <option value="revision_terminada" ${s.estado_revision_tecnica==='revision_terminada'?'selected':''}>Revisión terminada</option>
+      </select></div>
+      <div class="field"><label>Estado de evidencia</label><select id="frt_evidencia">
+        <option value="" ${!s.estado_evidencia?'selected':''}>Sin definir</option>
+        <option value="evidencia_completa" ${s.estado_evidencia==='evidencia_completa'?'selected':''}>Evidencia completa</option>
+        <option value="desarme_parcial" ${s.estado_evidencia==='desarme_parcial'?'selected':''}>Desarme parcial</option>
+        <option value="dano_oculto_detectado" ${s.estado_evidencia==='dano_oculto_detectado'?'selected':''}>Daño oculto detectado</option>
+      </select></div>
+      <div class="field"><label>¿Riesgo de seguridad (vehículo no seguro)?</label><select id="frt_riesgo" onchange="document.getElementById('frt_riesgo_motivo_wrap').style.display=this.value==='1'?'block':'none'">
+        <option value="0" ${!s.riesgo_seguridad?'selected':''}>No</option>
+        <option value="1" ${s.riesgo_seguridad?'selected':''}>Sí</option>
+      </select></div>
+      <div id="frt_riesgo_motivo_wrap" class="field" style="display:${s.riesgo_seguridad?'block':'none'}"><label>Motivo técnico del riesgo</label><textarea id="frt_riesgo_motivo">${esc(s.riesgo_seguridad_motivo||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarRevisionTecnica(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarRevisionTecnica(siniestroId){
+  const payload = {
+    estado_revision_tecnica: document.getElementById('frt_estado').value,
+    estado_evidencia: document.getElementById('frt_evidencia').value,
+    riesgo_seguridad: Number(document.getElementById('frt_riesgo').value),
+    riesgo_seguridad_motivo: document.getElementById('frt_riesgo_motivo').value
+  };
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, payload);
+    toast('Revisión técnica actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+async function abrirFormNuevoHallazgo(siniestroId){
+  const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+siniestroId);
+  showModal(`
+    <h3>Agregar hallazgo</h3>
+    <div class="row-flex">
+      <div class="field"><label>Zona / pieza</label><input id="fh_zona" placeholder="Ej. puerta delantera derecha"></div>
+      <div class="field"><label>Tipo de daño</label><input id="fh_tipo"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Visibilidad</label><select id="fh_visibilidad"><option value="visible">Visible</option><option value="oculto">Oculto</option></select></div>
+      <div class="field"><label>¿Relacionado con el siniestro?</label><select id="fh_relacionado"><option value="1">Sí</option><option value="0">No</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Severidad</label><input id="fh_severidad" placeholder="Leve / media / severa"></div>
+      <div class="field"><label>Operación preliminar</label><input id="fh_operacion"></div>
+    </div>
+    <div class="field"><label>Foto asociada (opcional, ya subida en Archivos)</label><select id="fh_archivo">
+      <option value="">Sin foto</option>
+      ${archivos.map(a=>`<option value="${a.id}">${esc(a.nombre_original)}</option>`).join('')}
+    </select></div>
+    <div class="field"><label>Observaciones</label><textarea id="fh_observaciones"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoHallazgo(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoHallazgo(siniestroId){
+  const zona = document.getElementById('fh_zona').value.trim();
+  if(!zona){ toast('Indica la zona o pieza afectada.', 'error'); return; }
+  try{
+    await api('POST','/api/danos-evidencia', {
+      siniestro_id: siniestroId, zona_pieza: zona, tipo_dano: document.getElementById('fh_tipo').value,
+      visibilidad: document.getElementById('fh_visibilidad').value, relacionado: Number(document.getElementById('fh_relacionado').value),
+      severidad: document.getElementById('fh_severidad').value, operacion_preliminar: document.getElementById('fh_operacion').value,
+      archivo_id: document.getElementById('fh_archivo').value || null, observaciones: document.getElementById('fh_observaciones').value
+    });
+    toast('Hallazgo agregado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarHallazgo(hallazgoId){
+  const todos = await api('GET','/api/danos-evidencia');
+  const h = todos.find(x=>x.id===hallazgoId);
+  if(!h){ toast('Hallazgo no encontrado.', 'error'); return; }
+  const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+h.siniestro_id);
+  showModal(`
+    <h3>Editar hallazgo</h3>
+    <div class="row-flex">
+      <div class="field"><label>Zona / pieza</label><input id="fhe_zona" value="${esc(h.zona_pieza)}"></div>
+      <div class="field"><label>Tipo de daño</label><input id="fhe_tipo" value="${esc(h.tipo_dano||'')}"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Visibilidad</label><select id="fhe_visibilidad">
+        <option value="visible" ${h.visibilidad==='visible'?'selected':''}>Visible</option>
+        <option value="oculto" ${h.visibilidad==='oculto'?'selected':''}>Oculto</option>
+      </select></div>
+      <div class="field"><label>¿Relacionado?</label><select id="fhe_relacionado">
+        <option value="1" ${h.relacionado?'selected':''}>Sí</option>
+        <option value="0" ${!h.relacionado?'selected':''}>No</option>
+      </select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Severidad</label><input id="fhe_severidad" value="${esc(h.severidad||'')}"></div>
+      <div class="field"><label>Operación preliminar</label><input id="fhe_operacion" value="${esc(h.operacion_preliminar||'')}"></div>
+    </div>
+    <div class="field"><label>Foto asociada</label><select id="fhe_archivo">
+      <option value="">Sin foto</option>
+      ${archivos.map(a=>`<option value="${a.id}" ${h.archivo_id===a.id?'selected':''}>${esc(a.nombre_original)}</option>`).join('')}
+    </select></div>
+    <div class="field"><label>Observaciones</label><textarea id="fhe_observaciones">${esc(h.observaciones||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionHallazgo(${hallazgoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionHallazgo(hallazgoId){
+  const zona = document.getElementById('fhe_zona').value.trim();
+  if(!zona){ toast('Indica la zona o pieza afectada.', 'error'); return; }
+  try{
+    await api('PATCH','/api/danos-evidencia/'+hallazgoId, {
+      zona_pieza: zona, tipo_dano: document.getElementById('fhe_tipo').value,
+      visibilidad: document.getElementById('fhe_visibilidad').value, relacionado: Number(document.getElementById('fhe_relacionado').value),
+      severidad: document.getElementById('fhe_severidad').value, operacion_preliminar: document.getElementById('fhe_operacion').value,
+      archivo_id: document.getElementById('fhe_archivo').value || null, observaciones: document.getElementById('fhe_observaciones').value
+    });
+    toast('Hallazgo actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
 async function intentarCerrarSiniestro(siniestroId){
   const ok = await confirmDialog('¿Cerrar este siniestro? Solo se puede si todos sus pedidos están recibidos/cancelados y ya se registró la entrega.', { textoOk:'Sí, cerrar' });
   if(!ok) return;
@@ -1017,6 +1259,30 @@ async function viewClientes(){
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
+/* ===================== VISTA: REVISIÓN TÉCNICA (Orlando) ===================== */
+async function viewTecnica(){
+  const expedientes = await api('GET','/api/reportes/bandeja-tecnica');
+  const LABEL_REV = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
+  const BADGE_REV = { en_revision:'ambar', requiere_desarme:'rojo', revision_terminada:'verde' };
+  return `
+  <h2>Revisión técnica</h2>
+  <p class="subtle">Expedientes admitidos pendientes de revisión de daños, desarme y evidencia (módulo de Orlando).</p>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Ingreso</th><th>Admisión</th><th>Revisión</th><th>Hallazgos</th><th>Riesgo</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="8" class="empty">Sin expedientes pendientes de revisión técnica.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo==='grua'?'ambar':'gris'}">${s.ingreso_tipo==='grua'?'Grúa':'Circulando'}</span>`:'—'}</td>
+      <td>${esc(s.estado_admision||'Pendiente')}</td>
+      <td><span class="badge ${BADGE_REV[s.estado_revision_tecnica]||'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span></td>
+      <td>${s.hallazgos>0?`${s.hallazgos}${s.hallazgos_ocultos>0?` (${s.hallazgos_ocultos} oculto${s.hallazgos_ocultos>1?'s':''})`:''}`:'—'}</td>
+      <td>${s.riesgo_seguridad?'<span class="badge rojo">No seguro</span>':'—'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Admisión / técnica", para capturar la admisión y los hallazgos.</p>`;
+}
+
 function abrirFormNuevoEvento(siniestroId){
   showModal(`
     <h3>Registrar comunicación con el cliente</h3>

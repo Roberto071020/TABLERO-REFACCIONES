@@ -85,10 +85,25 @@ router.patch('/:id', requireAuth, (req, res)=>{
   const campos = ['aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
     'cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen','etapa_actual','prioridad',
     'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada',
-    'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio'];
+    'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio',
+    // Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando)
+    'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
+    'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
   nuevo.completo = calcularCompleto(nuevo);
+
+  // F-17/F-21 del documento maestro: una excepción o condición fuera de lo normal debe traer motivo,
+  // igual que Daniela exige motivo de cancelación en pedidos. Mismo criterio aquí para admisión y riesgo.
+  if(['condicionado','no_admitido'].includes(nuevo.estado_admision) && !(nuevo.motivo_admision && String(nuevo.motivo_admision).trim())){
+    return res.status(400).json({ error:'Indica el motivo cuando la admisión queda condicionada o no admitida.' });
+  }
+  const riesgoActivo = nuevo.riesgo_seguridad===1 || nuevo.riesgo_seguridad===true || nuevo.riesgo_seguridad==='1';
+  if(riesgoActivo && !(nuevo.riesgo_seguridad_motivo && String(nuevo.riesgo_seguridad_motivo).trim())){
+    return res.status(400).json({ error:'Indica el motivo técnico cuando se marca riesgo de seguridad.' });
+  }
+  nuevo.riesgo_seguridad = riesgoActivo ? 1 : (nuevo.riesgo_seguridad ? 1 : 0);
+  nuevo.llaves_entregadas = (nuevo.llaves_entregadas===1||nuevo.llaves_entregadas===true||nuevo.llaves_entregadas==='1') ? 1 : (nuevo.llaves_entregadas ? 1 : 0);
 
   // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
   // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
@@ -101,12 +116,16 @@ router.patch('/:id', requireAuth, (req, res)=>{
       requiere_refacciones=?,deducible=?,forma_pago=?,fecha_entrega_prevista=?,fecha_entrega_real=?,postventa_programada=?,postventa_completada=?,
       estado_valuacion=?,estado_produccion=?,estado_calidad=?,ingreso_tipo=?,ingreso_seguro=?,piezas_autorizadas_cambio=?,
       aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
+      cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
+      estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
       nuevo.requiere_refacciones, nuevo.deducible, nuevo.forma_pago, nuevo.fecha_entrega_prevista, nuevo.fecha_entrega_real, nuevo.postventa_programada, nuevo.postventa_completada,
       nuevo.estado_valuacion, nuevo.estado_produccion, nuevo.estado_calidad, nuevo.ingreso_tipo, nuevo.ingreso_seguro, nuevo.piezas_autorizadas_cambio,
       nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
+      nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
+      nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
