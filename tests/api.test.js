@@ -881,3 +881,20 @@ test('REQ-DANIELA-16: enriquecerDesdeLibreta completa solo campos vacíos de exp
   const totalDespues = (await req('GET', '/api/siniestros?archivado=all')).data.length;
   assert.equal(totalAntes, totalDespues, 'correrlo de nuevo no debe crear duplicados ni nada nuevo');
 });
+
+test('REQ-DANIELA-17: las sesiones sobreviven aunque se cree un almacén completamente nuevo (simula reinicio del proceso)', async () => {
+  const db = require('../server/db');
+  const SqliteSessionStore = require('../server/sqliteSessionStore');
+
+  const store1 = new SqliteSessionStore(db);
+  const sesionFalsa = { cookie: { maxAge: 1000*60*60*12 }, user: { id: 999, nombre: 'Prueba Reinicio', rol: 'operativo' } };
+  await new Promise((resolve, reject)=> store1.set('sid-de-prueba-reinicio', sesionFalsa, (err)=> err?reject(err):resolve()));
+
+  // Un SEGUNDO store, construido desde cero (sin memoria compartida con store1), debe ver la misma sesión.
+  const store2 = new SqliteSessionStore(db);
+  const leida = await new Promise((resolve, reject)=> store2.get('sid-de-prueba-reinicio', (err, sess)=> err?reject(err):resolve(sess)));
+  assert.ok(leida, 'la sesión debe sobrevivir en un almacén nuevo (antes se perdía con MemoryStore)');
+  assert.equal(leida.user.nombre, 'Prueba Reinicio');
+
+  await new Promise((resolve, reject)=> store1.destroy('sid-de-prueba-reinicio', (err)=> err?reject(err):resolve()));
+});

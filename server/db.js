@@ -358,4 +358,18 @@ if(!tieneColumna('siniestros', 'no_auto_archivar')){
 db.exec(`CREATE INDEX IF NOT EXISTS idx_comunicaciones_estado ON comunicaciones(estado);`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_siniestros_archivado ON siniestros(archivado);`);
 
+
+/* ===================== Almacén de sesiones persistente (corrige "Sesión expirada" reportado por Daniela) =====================
+   express-session usaba MemoryStore por default: se vacía cada vez que el proceso se reinicia (cada
+   despliegue, o cualquier reinicio de Render), invalidando a todos los usuarios conectados de golpe.
+   Esta tabla vive en la misma base de datos, así que sobrevive a reinicios del proceso. */
+db.exec(`
+CREATE TABLE IF NOT EXISTS sesiones (
+  sid TEXT PRIMARY KEY,
+  datos TEXT NOT NULL,
+  expira_en INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sesiones_expira ON sesiones(expira_en);
+`);
+
 module.exports = db;

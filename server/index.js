@@ -4,6 +4,7 @@ const path = require('path');
 const multer = require('multer');
 
 const db = require('./db');
+const SqliteSessionStore = require('./sqliteSessionStore');
 require('./seed'); // idempotente: crea usuarios/proveedores/caso de prueba solo si no existen
 require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: solo rellena campos vacíos en expedientes ya existentes
 const { login, logout, me, crearUsuario, requireAuth, requireRole } = require('./auth');
@@ -12,6 +13,7 @@ const bcrypt = require('bcryptjs');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(session({
+  store: new SqliteSessionStore(db), // corrige "Sesión expirada" tras cada reinicio (antes: MemoryStore)
   secret: process.env.SESSION_SECRET || 'cambia-este-secreto-en-produccion',
   resave: false,
   saveUninitialized: false,
