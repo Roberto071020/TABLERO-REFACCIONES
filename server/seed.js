@@ -26,6 +26,22 @@ function seed(){
     console.log('Usuario de Alejandra creado (rol atencion_cliente). Contraseña temporal:', TEMP_PASSWORD);
   }
 
+  // Documento Maestro / Fase A: cuentas de Orlando (revisión técnica), Vanessa (digitalización/expediente)
+  // y Beto (producción). Angélica queda fuera por instrucción explícita de Roberto.
+  const nuevosRoles = [
+    ['Orlando', 'orlando@serviciocristian.mx', 'orlando'],
+    ['Vanessa', 'vanessa@serviciocristian.mx', 'vanessa'],
+    ['Beto', 'beto@serviciocristian.mx', 'beto']
+  ];
+  for(const [nombre, email, rol] of nuevosRoles){
+    const existe = db.prepare('SELECT id FROM usuarios WHERE email = ?').get(email);
+    if(!existe){
+      const hash = bcrypt.hashSync(TEMP_PASSWORD, 10);
+      db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)').run(nombre, email, hash, rol);
+      console.log(`Usuario de ${nombre} creado (rol ${rol}). Contraseña temporal:`, TEMP_PASSWORD);
+    }
+  }
+
   const provCount = db.prepare('SELECT COUNT(*) n FROM proveedores').get().n;
   if(provCount === 0){
     const provs = [

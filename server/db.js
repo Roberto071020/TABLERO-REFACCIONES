@@ -372,4 +372,51 @@ CREATE TABLE IF NOT EXISTS sesiones (
 CREATE INDEX IF NOT EXISTS idx_sesiones_expira ON sesiones(expira_en);
 `);
 
+
+/* ===================== MIGRACIONES ADITIVAS — Documento Maestro / Fase A (2026-08-24) =====================
+   Roles nuevos (Orlando, Vanessa, Beto) y modelo de estado ampliado del expediente, siguiendo la
+   especificación del "Documento Maestro de Operación y Reglas de Negocio". Todo aditivo: no se toca
+   nada de lo que ya usan Daniela ni Alejandra. Angélica/facturación queda fuera por instrucción de Roberto. */
+
+// 1) Nuevos roles: recrear tabla usuarios preservando datos (mismo patrón que el rol 'atencion_cliente').
+const usuariosSqlFaseA = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='usuarios'").get();
+if(usuariosSqlFaseA && !usuariosSqlFaseA.sql.includes('orlando')){
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    CREATE TABLE usuarios_new_a (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      rol TEXT NOT NULL DEFAULT 'operativo' CHECK(rol IN ('operativo','jefe','consulta','admin','atencion_cliente','orlando','vanessa','beto')),
+      activo INTEGER NOT NULL DEFAULT 1,
+      creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO usuarios_new_a (id,nombre,email,password_hash,rol,activo,creado_en)
+      SELECT id,nombre,email,password_hash,rol,activo,creado_en FROM usuarios;
+    DROP TABLE usuarios;
+    ALTER TABLE usuarios_new_a RENAME TO usuarios;
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
+}
+
+// 2) Modelo de estado ampliado: el documento pide separar dimensiones de estado en vez de una sola bandera.
+//    etapa_actual ya existía (agregada para Alejandra) pero libre/sin usar; aquí se formaliza su secuencia
+//    conceptual. Se agregan además las dimensiones que todavía no tenían ningún campo propio.
+const NUEVAS_COLUMNAS_FASE_A = [
+  ['estado_valuacion', 'TEXT'],       // Borrador/enviada/observada/ajustada/autorizada parcial/total/rechazada
+  ['estado_produccion', 'TEXT'],      // Programado/en laminado/mecánica/preparación/pintura/armado/detenido/terminado
+  ['estado_calidad', 'TEXT'],         // En inspección/rechazado a retrabajo/reinspección/liberado
+  ['ingreso_tipo', 'TEXT'],           // 'circulando' | 'grua'
+  ['ingreso_seguro', 'INTEGER'],      // 1/0 — ¿es seguro que circule?
+  ['aseguradora_ruta_refacciones', 'TEXT'],  // 'inpart' | 'autosurtido' | 'pago_danos' | 'pendiente_confirmar'
+  ['aseguradora_regla_aplicada', 'TEXT'],    // texto de la regla aplicada, para trazabilidad (F-17 del documento)
+  ['piezas_autorizadas_cambio', 'INTEGER']   // conteo usado para la regla GNP 1-3 piezas
+];
+for(const [col, def] of NUEVAS_COLUMNAS_FASE_A){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
 module.exports = db;

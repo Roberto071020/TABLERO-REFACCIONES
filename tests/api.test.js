@@ -959,3 +959,40 @@ test('REQ-ROBERTO-1: el resumen diario incluye indicadores de atención a client
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('DOC-MAESTRO-1: motor de reglas por aseguradora — GNP 1-3 piezas = autosurtido obligatorio, 4+ = Inpart', async () => {
+  const { calcularRutaAseguradora } = require('../server/utils');
+  assert.equal(calcularRutaAseguradora('GNP', 1).ruta, 'autosurtido');
+  assert.equal(calcularRutaAseguradora('GNP', 3).ruta, 'autosurtido');
+  assert.equal(calcularRutaAseguradora('GNP', 4).ruta, 'inpart');
+  assert.equal(calcularRutaAseguradora('GNP', null).ruta, 'pendiente_confirmar');
+  assert.equal(calcularRutaAseguradora('ANA', 1).ruta, 'pago_danos');
+  assert.equal(calcularRutaAseguradora('ANA', 10).ruta, 'pago_danos', 'ANA nunca migra a Inpart sin importar el número de piezas');
+  assert.equal(calcularRutaAseguradora('Zurich', 2).ruta, 'inpart');
+  assert.match(calcularRutaAseguradora('Zurich', 2).regla, /CONFIRMAR CASO POR CASO/);
+  assert.equal(calcularRutaAseguradora('Inbursa', 5).ruta, 'inpart');
+  assert.equal(calcularRutaAseguradora('Mapfre', null).ruta, 'inpart');
+});
+
+test('DOC-MAESTRO-2: el expediente recalcula la ruta de refacciones al cambiar aseguradora o piezas autorizadas', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'DOCM2-SIN', aseguradora: 'GNP' })).data;
+  assert.equal(s.aseguradora_ruta_refacciones, 'pendiente_confirmar');
+
+  const r1 = await req('PATCH', `/api/siniestros/${s.id}`, { piezas_autorizadas_cambio: 2 });
+  assert.equal(r1.data.aseguradora_ruta_refacciones, 'autosurtido');
+  assert.match(r1.data.aseguradora_regla_aplicada, /autosurtido OBLIGATORIO/);
+
+  const r2 = await req('PATCH', `/api/siniestros/${s.id}`, { piezas_autorizadas_cambio: 5 });
+  assert.equal(r2.data.aseguradora_ruta_refacciones, 'inpart');
+
+  const r3 = await req('PATCH', `/api/siniestros/${s.id}`, { aseguradora: 'ANA' });
+  assert.equal(r3.data.aseguradora_ruta_refacciones, 'pago_danos');
+});
+
+test('DOC-MAESTRO-3: los 3 roles nuevos (Orlando, Vanessa, Beto) existen y pueden iniciar sesión', async () => {
+  for(const email of ['orlando@serviciocristian.mx','vanessa@serviciocristian.mx','beto@serviciocristian.mx']){
+    const r = await req('POST', '/api/auth/login', { email, password: 'ServicioCristian2026!' });
+    assert.equal(r.status, 200, `${email} debe poder iniciar sesión`);
+  }
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

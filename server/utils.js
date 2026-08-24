@@ -212,7 +212,30 @@ function archivarSiniestrosVencidos(db){
   }
 }
 
+
+// ===================== Documento Maestro / Fase D: motor de reglas por aseguradora =====================
+// Árbol de decisión de la sección 12.2 del documento. Nunca migra silenciosamente: siempre regresa
+// también el texto de la regla aplicada, para trazabilidad (sección 17: "guardar la regla utilizada").
+function calcularRutaAseguradora(aseguradora, piezasAutorizadasCambio){
+  const piezas = (piezasAutorizadasCambio===null || piezasAutorizadasCambio===undefined || piezasAutorizadasCambio==='') ? null
+    : (Number.isFinite(Number(piezasAutorizadasCambio)) ? Number(piezasAutorizadasCambio) : null);
+
+  if(aseguradora === 'ANA'){
+    return { ruta: 'pago_danos', regla: 'ANA Seguros: valuación BDEO, pago de daños/autosurtido. Nunca migra a Inpart.' };
+  }
+  if(aseguradora === 'Zurich'){
+    return { ruta: 'inpart', regla: 'Zurich: sistema propio de valuación (no ACG). Refacciones a Inpart según práctica vigente — CONFIRMAR CASO POR CASO si hay información contradictoria (pendiente de confirmación, sección 19 del documento maestro).' };
+  }
+  if(aseguradora === 'GNP'){
+    if(piezas === null) return { ruta: 'pendiente_confirmar', regla: 'GNP: falta capturar el número de piezas autorizadas a cambio para determinar autosurtido (1-3) vs Inpart (4+).' };
+    if(piezas >= 1 && piezas <= 3) return { ruta: 'autosurtido', regla: `GNP con ${piezas} pieza(s) a cambio: autosurtido OBLIGATORIO. Nunca debe figurar como pendiente de Inpart.` };
+    return { ruta: 'inpart', regla: `GNP con ${piezas} piezas a cambio (más de 3): flujo normal Inpart, salvo excepción documentada.` };
+  }
+  // Inbursa, Allianz, La Latinoamericana, Mapfre, Afirme y cualquier otra: regla general ACG + Inpart.
+  return { ruta: 'inpart', regla: `${aseguradora || 'Aseguradora'}: ACG y migración a Inpart, salvo excepción documentada.` };
+}
+
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, esDiaHabil, sumarDiasHabiles,
-  archivarSiniestrosVencidos };
+  archivarSiniestrosVencidos, calcularRutaAseguradora };

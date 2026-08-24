@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos } = require('../utils');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora } = require('../utils');
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
@@ -52,14 +52,18 @@ router.post('/', requireAuth, (req, res)=>{
   const requiereRefacciones = ['si','no','por_definir'].includes(b.requiere_refacciones) ? b.requiere_refacciones : 'por_definir';
 
   const completo = calcularCompleto(b);
+  const piezasIniciales = b.piezas_autorizadas_cambio!==undefined && b.piezas_autorizadas_cambio!=='' ? Number(b.piezas_autorizadas_cambio) : null;
+  const rutaInicial = calcularRutaAseguradora(b.aseguradora, piezasIniciales);
   const info = db.prepare(`INSERT INTO siniestros (numero,aseguradora,vehiculo,anio_modelo,placas,vin,fecha_ingreso,ubicacion,responsable,estatus_general,notas,completo,creado_por,
-      cliente_nombre,cliente_telefono,cliente_correo,cliente_notas,orden_admision,canal_origen,etapa_actual,prioridad,requiere_refacciones)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?)`)
+      cliente_nombre,cliente_telefono,cliente_correo,cliente_notas,orden_admision,canal_origen,etapa_actual,prioridad,requiere_refacciones,
+      ingreso_tipo,ingreso_seguro,piezas_autorizadas_cambio,aseguradora_ruta_refacciones,aseguradora_regla_aplicada)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?)`)
     .run(String(b.numero).trim(), b.aseguradora, b.vehiculo||'', b.anio_modelo||'', b.placas||'', b.vin||'',
          b.fecha_ingreso || new Date().toISOString().slice(0,10), b.ubicacion||'Piso', b.responsable||req.session.user.nombre,
          b.estatus_general||'Abierto', b.notas||'', completo, req.session.user.id,
          b.cliente_nombre||'', b.cliente_telefono||'', b.cliente_correo||'', b.cliente_notas||'', b.orden_admision||'',
-         b.canal_origen||'', b.etapa_actual||'', b.prioridad||'', requiereRefacciones);
+         b.canal_origen||'', b.etapa_actual||'Preingreso', b.prioridad||'', requiereRefacciones,
+         b.ingreso_tipo||'', b.ingreso_seguro!==undefined?(b.ingreso_seguro?1:0):null, piezasIniciales, rutaInicial.ruta, rutaInicial.regla);
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user,
     valor_nuevo: `Siniestro ${b.numero} (${b.aseguradora})` });
 
@@ -80,17 +84,29 @@ router.patch('/:id', requireAuth, (req, res)=>{
   if(!anterior) return res.status(404).json({ error:'Siniestro no encontrado.' });
   const campos = ['aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
     'cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen','etapa_actual','prioridad',
-    'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada'];
+    'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada',
+    'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
   nuevo.completo = calcularCompleto(nuevo);
+
+  // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
+  // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
+  const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
+  nuevo.aseguradora_ruta_refacciones = ruta.ruta;
+  nuevo.aseguradora_regla_aplicada = ruta.regla;
+
   db.prepare(`UPDATE siniestros SET aseguradora=?,vehiculo=?,anio_modelo=?,placas=?,vin=?,fecha_ingreso=?,ubicacion=?,responsable=?,estatus_general=?,notas=?,completo=?,
       cliente_nombre=?,cliente_telefono=?,cliente_correo=?,cliente_notas=?,orden_admision=?,canal_origen=?,etapa_actual=?,prioridad=?,
       requiere_refacciones=?,deducible=?,forma_pago=?,fecha_entrega_prevista=?,fecha_entrega_real=?,postventa_programada=?,postventa_completada=?,
+      estado_valuacion=?,estado_produccion=?,estado_calidad=?,ingreso_tipo=?,ingreso_seguro=?,piezas_autorizadas_cambio=?,
+      aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
       nuevo.requiere_refacciones, nuevo.deducible, nuevo.forma_pago, nuevo.fecha_entrega_prevista, nuevo.fecha_entrega_real, nuevo.postventa_programada, nuevo.postventa_completada,
+      nuevo.estado_valuacion, nuevo.estado_produccion, nuevo.estado_calidad, nuevo.ingreso_tipo, nuevo.ingreso_seguro, nuevo.piezas_autorizadas_cambio,
+      nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));

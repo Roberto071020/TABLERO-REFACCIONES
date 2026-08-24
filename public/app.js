@@ -8,7 +8,7 @@ function todayISO(){ return new Date().toISOString().slice(0,10); }
 function uidLocal(){ return 'tmp'+Math.random().toString(36).slice(2); }
 
 let currentUser = null;
-const ASEGURADORAS = ['GNP','Mapfre','Inbursa','Afirme','Allianz','La Latinoamericana'];
+const ASEGURADORAS = ['GNP','ANA','Inbursa','Allianz','La Latinoamericana','Mapfre','Afirme','Zurich'];
 
 
 async function api(method, url, body, opts={}){
