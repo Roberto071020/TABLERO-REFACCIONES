@@ -1338,3 +1338,43 @@ test('DOC-MAESTRO-F-4: bandeja de calidad incluye producción terminada pendient
   bandeja = await req('GET', '/api/reportes/bandeja-calidad');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'ya no debe aparecer una vez liberado y entregado');
 });
+
+/* ===================== Pendientes resueltos por Roberto (24-ago-2026): SLA de autorización y límite de compra ===================== */
+
+test('PENDIENTE-1: la bandeja de valuación marca "sin respuesta" a los 3 días hábiles de enviada la autorización, igual para cualquier aseguradora', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SLA-AUT1', aseguradora: 'Mapfre' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+
+  // Envío reciente (hoy): no debe marcarse vencida.
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'en_autorizacion', autorizacion_fecha_envio: new Date().toISOString().slice(0,10) });
+  let bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
+  let item = bandeja.data.find(x => x.numero === 'SLA-AUT1');
+  assert.equal(item.autorizacion_vencida, false, 'recién enviada, no debe estar vencida');
+
+  // Envío de hace 10 días naturales (más de 3 hábiles): debe marcarse vencida.
+  const hace10dias = new Date(Date.now() - 10*86400000).toISOString().slice(0,10);
+  await req('PATCH', '/api/siniestros/' + s.id, { autorizacion_fecha_envio: hace10dias });
+  bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
+  item = bandeja.data.find(x => x.numero === 'SLA-AUT1');
+  assert.equal(item.autorizacion_vencida, true, 'con más de 3 días hábiles sin respuesta debe marcarse vencida');
+});
+
+test('PENDIENTE-2: un complemento de más de $1,000 MXN no puede autorizarlo Orlando/Beto; sí admin/jefe', async () => {
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'LIMITE-COMP1', aseguradora: 'GNP' })).data;
+  const comp = (await req('POST', '/api/complementos', { siniestro_id: s.id, causa: 'Daño oculto en piso, requiere lámina adicional', importe: 3500 })).data;
+
+  const bloqueado = await req('PATCH', '/api/complementos/' + comp.id, { decision: 'autorizado' });
+  assert.equal(bloqueado.status, 403, 'Orlando no debe poder autorizar un complemento de más de $1,000 sin admin/jefe');
+
+  // Un complemento barato sí lo puede autorizar Orlando.
+  const compBarato = (await req('POST', '/api/complementos', { siniestro_id: s.id, causa: 'Ajuste menor de sujetadores', importe: 200 })).data;
+  const permitido = await req('PATCH', '/api/complementos/' + compBarato.id, { decision: 'autorizado' });
+  assert.equal(permitido.status, 200);
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const autorizadoPorAdmin = await req('PATCH', '/api/complementos/' + comp.id, { decision: 'autorizado' });
+  assert.equal(autorizadoPorAdmin.status, 200, 'admin sí puede autorizar montos mayores a $1,000');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

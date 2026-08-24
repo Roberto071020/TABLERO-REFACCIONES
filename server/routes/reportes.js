@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos } = require('../utils');
+const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles } = require('../utils');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -204,7 +204,19 @@ router.get('/bandeja-valuacion', requireAuth, (req, res)=>{
   const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0 AND estado_expediente = 'listo_para_valuacion'
     AND (estado_autorizacion IS NULL OR estado_autorizacion NOT IN ('autorizada','rechazada'))
     ORDER BY creado_en DESC`).all();
-  res.json(siniestros);
+  // Pendiente de confirmación resuelto por Roberto (24-ago-2026): 3 días hábiles sin respuesta de la
+  // aseguradora, igual para las 8, dispara la alerta "sin respuesta" de la tabla 4 del documento maestro.
+  // Es una alerta informativa (badge), no bloquea nada ni cambia el estado por sí sola.
+  const hoy = new Date().toISOString().slice(0,10);
+  const out = siniestros.map(s=>{
+    let autorizacionVencida = false;
+    if(s.autorizacion_fecha_envio && (!s.estado_autorizacion || ['en_autorizacion','por_aclarar'].includes(s.estado_autorizacion))){
+      const vencimiento = sumarDiasHabiles(s.autorizacion_fecha_envio, 3);
+      autorizacionVencida = hoy > vencimiento;
+    }
+    return { ...s, autorizacion_vencida: autorizacionVencida };
+  });
+  res.json(out);
 });
 
 

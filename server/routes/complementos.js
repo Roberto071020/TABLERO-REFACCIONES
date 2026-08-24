@@ -55,6 +55,13 @@ router.patch('/:id', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
   if(nuevo.estado === 'incorporado_a_ot' && nuevo.decision !== 'autorizado' && nuevo.decision !== 'parcial'){
     return res.status(400).json({ error:'No se puede incorporar a la OT un complemento sin autorización (total o parcial).' });
   }
+  // Límite de compra confirmado por Roberto (24-ago-2026): complementos superiores a $1,000 MXN no pueden
+  // autorizarse desde el rol de Orlando/Beto; requieren admin o jefe (propietario/gerente, tabla 2).
+  const LIMITE_AUTORIZACION_SIN_PROPIETARIO = 1000;
+  const decisionCambiaAAutorizada = ['autorizado','parcial'].includes(nuevo.decision) && anterior.decision !== nuevo.decision;
+  if(decisionCambiaAAutorizada && Number(nuevo.importe) > LIMITE_AUTORIZACION_SIN_PROPIETARIO && !['admin','jefe'].includes(req.session.user.rol)){
+    return res.status(403).json({ error:`Complementos por más de $${LIMITE_AUTORIZACION_SIN_PROPIETARIO} MXN requieren autorización del propietario/gerente (admin o jefe).` });
+  }
 
   db.prepare(`UPDATE complementos SET causa=?,fecha=?,pieza_operacion=?,archivo_id=?,importe=?,folio=?,decision=?,impacto_dias=?,estado=?,ot_id=?,actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.causa, nuevo.fecha, nuevo.pieza_operacion, nuevo.archivo_id||null, nuevo.importe, nuevo.folio, nuevo.decision, nuevo.impacto_dias, nuevo.estado, nuevo.ot_id||null, req.params.id);

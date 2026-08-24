@@ -2128,7 +2128,7 @@ async function viewValuacion(){
       <td>${esc(s.aseguradora)}</td>
       <td>${esc(s.sistema_valuacion||'—')}</td>
       <td>${esc(LABEL_VAL[s.estado_valuacion]||'Sin iniciar')}</td>
-      <td><span class="badge ${BADGE_AUT[s.estado_autorizacion]||'gris'}">${LABEL_AUT[s.estado_autorizacion]||'Sin iniciar'}</span></td>
+      <td><span class="badge ${BADGE_AUT[s.estado_autorizacion]||'gris'}">${LABEL_AUT[s.estado_autorizacion]||'Sin iniciar'}</span> ${s.autorizacion_vencida?'<span class="badge rojo">Sin respuesta (3+ días hábiles)</span>':''}</td>
       <td>${esc(s.aseguradora_ruta_refacciones||'—')}</td>
     </tr>`).join('')}
   </tbody></table>
