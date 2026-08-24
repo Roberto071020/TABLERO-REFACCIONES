@@ -134,6 +134,7 @@ const TABS = [
   {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
   {k:'expediente', label:'Armado de expediente', roles:['vanessa','admin','jefe']},
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
+  {k:'produccion', label:'Producción', roles:['beto','admin','jefe']},
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
@@ -189,6 +190,7 @@ async function render(){
     else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
     else if(state.view==='expediente') app.innerHTML = await viewExpediente();
     else if(state.view==='valuacion') app.innerHTML = await viewValuacion();
+    else if(state.view==='produccion') app.innerHTML = await viewProduccion();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
@@ -523,7 +525,7 @@ async function viewSiniestro(id){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   const subtabs = [
     ...(esAtencionCliente ? [['cliente','Cliente']] : []),
-    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],
+    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],['produccion','Producción'],
     ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
   ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
@@ -693,6 +695,79 @@ async function viewSiniestro(id){
       <tr><td>Restricciones</td><td>${esc(s.autorizacion_restricciones||'—')}</td></tr>
     </tbody></table>
     ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAutorizacion(${id})">Actualizar autorización</button></div>`:''}`;
+  } else if(state.subtabSiniestro==='produccion'){
+    const puedeProduccion = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    const ots = await api('GET','/api/ordenes-trabajo?siniestro_id='+id);
+    let operaciones = [];
+    for(const ot of ots){ const ops = await api('GET','/api/ot-operaciones?ot_id='+ot.id); ops.forEach(op=>operaciones.push({op,ot})); }
+    const complementosLista = await api('GET','/api/complementos?siniestro_id='+id);
+    const retrabajosLista = await api('GET','/api/retrabajos?siniestro_id='+id);
+    const LABEL_PROD = { programado:'Programado', en_laminado:'En laminado', mecanica:'Mecánica', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', detenido:'Detenido', terminado:'Terminado' };
+    const LABEL_OT = { borrador:'Borrador', emitida:'Emitida', actualizada:'Actualizada', suspendida:'Suspendida', terminada:'Terminada' };
+    const LABEL_OP = { programado:'Programado', en_proceso:'En proceso', detenido:'Detenido', terminado:'Terminado' };
+    const LABEL_DECISION = { pendiente:'Pendiente', autorizado:'Autorizado', rechazado:'Rechazado', parcial:'Parcial' };
+    const LABEL_RETRABAJO = { abierto:'Abierto', en_correccion:'En corrección', reinspeccion:'Reinspección', cerrado:'Cerrado' };
+    body = `
+    <h3>Producción</h3>
+    <table class="kv"><tbody>
+      <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
+    </tbody></table>
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEtapaProduccion(${id})">Actualizar etapa</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Órdenes de trabajo</h4>
+    ${ots.length===0?'<div class="empty">Sin OT registradas.</div>':`
+    <table><thead><tr><th>Número</th><th>Versión</th><th>Estado</th><th>Alcance</th><th></th></tr></thead><tbody>
+    ${ots.map(ot=>`<tr>
+      <td>${esc(ot.numero)}</td><td>${ot.version}</td>
+      <td><span class="badge ${ot.estado==='terminada'?'verde':ot.estado==='suspendida'?'rojo':'ambar'}">${LABEL_OT[ot.estado]||ot.estado}</span></td>
+      <td>${esc(ot.alcance||'—')}</td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarOt(${ot.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaOt(${id})">+ Nueva OT</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Operaciones</h4>
+    ${operaciones.length===0?'<div class="empty">Sin operaciones registradas.</div>':`
+    <table><thead><tr><th>OT</th><th>Operación</th><th>Área</th><th>Técnico</th><th>Estado</th><th>Avance</th><th>Bloqueo</th><th></th></tr></thead><tbody>
+    ${operaciones.map(o=>`<tr>
+      <td>${esc(o.ot.numero)}</td>
+      <td>${esc(o.op.descripcion)}${o.op.pieza?`<div class="subtle">${esc(o.op.pieza)}</div>`:''}</td>
+      <td>${esc(o.op.area||'—')}</td>
+      <td>${esc(o.op.tecnico||'—')}</td>
+      <td><span class="badge ${o.op.estado==='terminado'?'verde':o.op.estado==='detenido'?'rojo':'ambar'}">${LABEL_OP[o.op.estado]||o.op.estado}</span></td>
+      <td>${o.op.avance}%</td>
+      <td>${esc(o.op.causa_bloqueo||'—')}</td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarOperacion(${o.op.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion && ots.length>0?`<div style="margin-top:8px;"><select id="opOtSel">${ots.map(ot=>`<option value="${ot.id}">OT ${esc(ot.numero)} v${ot.version}</option>`).join('')}</select> <button class="btn small" onclick="abrirFormNuevaOperacion()">+ Agregar operación</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Complementos por daño oculto</h4>
+    ${complementosLista.length===0?'<div class="empty">Sin complementos registrados.</div>':`
+    <table><thead><tr><th>Causa</th><th>Fecha</th><th>Decisión</th><th>Estado</th><th>Importe</th><th></th></tr></thead><tbody>
+    ${complementosLista.map(c=>`<tr>
+      <td>${esc(c.causa)}${c.pieza_operacion?`<div class="subtle">${esc(c.pieza_operacion)}</div>`:''}</td>
+      <td>${esc(c.fecha||'—')}</td>
+      <td><span class="badge ${c.decision==='autorizado'?'verde':c.decision==='rechazado'?'rojo':'ambar'}">${LABEL_DECISION[c.decision]||c.decision}</span></td>
+      <td>${esc(c.estado)}</td>
+      <td>${c.importe!=null?fmtMoney(c.importe):'—'}</td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarComplemento(${c.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoComplemento(${id})">+ Agregar complemento</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Retrabajos</h4>
+    ${retrabajosLista.length===0?'<div class="empty">Sin retrabajos registrados.</div>':`
+    <table><thead><tr><th>Origen</th><th>Severidad</th><th>Responsable</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${retrabajosLista.map(r=>`<tr>
+      <td>${esc(r.origen)}${r.correccion?`<div class="subtle">Corrección: ${esc(r.correccion)}</div>`:''}</td>
+      <td><span class="badge ${r.severidad==='critica'?'rojo':r.severidad==='media'?'ambar':'gris'}">${esc(r.severidad)}</span></td>
+      <td>${esc(r.responsable||'—')}</td>
+      <td><span class="badge ${r.estado==='cerrado'?'verde':'ambar'}">${LABEL_RETRABAJO[r.estado]||r.estado}</span></td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarRetrabajo(${r.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoRetrabajo(${id})">+ Agregar retrabajo</button></div>`:''}`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -1180,6 +1255,284 @@ async function guardarAutorizacion(siniestroId){
   }catch(e){}
 }
 
+function abrirFormEtapaProduccion(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar etapa de producción</h3>
+      <div class="field"><label>Etapa</label><select id="fprod_estado">
+        <option value="" ${!s.estado_produccion?'selected':''}>Sin iniciar</option>
+        <option value="programado" ${s.estado_produccion==='programado'?'selected':''}>Programado</option>
+        <option value="en_laminado" ${s.estado_produccion==='en_laminado'?'selected':''}>En laminado</option>
+        <option value="mecanica" ${s.estado_produccion==='mecanica'?'selected':''}>Mecánica</option>
+        <option value="preparacion" ${s.estado_produccion==='preparacion'?'selected':''}>Preparación</option>
+        <option value="pintura" ${s.estado_produccion==='pintura'?'selected':''}>Pintura</option>
+        <option value="armado" ${s.estado_produccion==='armado'?'selected':''}>Armado</option>
+        <option value="detenido" ${s.estado_produccion==='detenido'?'selected':''}>Detenido</option>
+        <option value="terminado" ${s.estado_produccion==='terminado'?'selected':''}>Terminado</option>
+      </select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEtapaProduccion(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEtapaProduccion(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_produccion: document.getElementById('fprod_estado').value });
+    toast('Etapa de producción actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormNuevaOt(siniestroId){
+  showModal(`
+    <h3>Nueva orden de trabajo</h3>
+    <div class="row-flex">
+      <div class="field"><label>Número de OT</label><input id="fot_numero"></div>
+      <div class="field"><label>Versión</label><input id="fot_version" type="number" min="1" value="1"></div>
+    </div>
+    <div class="field"><label>Alcance autorizado</label><textarea id="fot_alcance"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaOt(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaOt(siniestroId){
+  const numero = document.getElementById('fot_numero').value.trim();
+  if(!numero){ toast('Indica el número de OT.', 'error'); return; }
+  try{
+    await api('POST','/api/ordenes-trabajo', { siniestro_id: siniestroId, numero, version: Number(document.getElementById('fot_version').value)||1, alcance: document.getElementById('fot_alcance').value });
+    toast('OT creada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarOt(otId){
+  const todas = await api('GET','/api/ordenes-trabajo');
+  const ot = todas.find(x=>x.id===otId);
+  if(!ot){ toast('OT no encontrada.', 'error'); return; }
+  showModal(`
+    <h3>Editar OT ${esc(ot.numero)}</h3>
+    <div class="field"><label>Estado</label><select id="fote_estado">
+      <option value="borrador" ${ot.estado==='borrador'?'selected':''}>Borrador</option>
+      <option value="emitida" ${ot.estado==='emitida'?'selected':''}>Emitida</option>
+      <option value="actualizada" ${ot.estado==='actualizada'?'selected':''}>Actualizada</option>
+      <option value="suspendida" ${ot.estado==='suspendida'?'selected':''}>Suspendida</option>
+      <option value="terminada" ${ot.estado==='terminada'?'selected':''}>Terminada</option>
+    </select></div>
+    <div class="field"><label>Alcance autorizado</label><textarea id="fote_alcance">${esc(ot.alcance||'')}</textarea></div>
+    <div class="field"><label>Notas</label><textarea id="fote_notas">${esc(ot.notas||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionOt(${otId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionOt(otId){
+  try{
+    await api('PATCH','/api/ordenes-trabajo/'+otId, { estado: document.getElementById('fote_estado').value, alcance: document.getElementById('fote_alcance').value, notas: document.getElementById('fote_notas').value });
+    toast('OT actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormNuevaOperacion(){
+  const otId = document.getElementById('opOtSel').value;
+  showModal(`
+    <h3>Agregar operación</h3>
+    <div class="field"><label>Descripción</label><input id="fop_desc" placeholder="Ej. cambio de puerta delantera"></div>
+    <div class="row-flex">
+      <div class="field"><label>Pieza</label><input id="fop_pieza"></div>
+      <div class="field"><label>Área</label><input id="fop_area" placeholder="Laminado / pintura / mecánica / armado"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Técnico</label><input id="fop_tecnico"></div>
+      <div class="field"><label>Secuencia</label><input id="fop_secuencia" type="number" min="1"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Horas estimadas</label><input id="fop_horas" type="number" step="0.5"></div>
+      <div class="field"><label>Fecha inicio</label><input id="fop_fecha_inicio" type="date"></div>
+      <div class="field"><label>Fecha fin prevista</label><input id="fop_fecha_fin" type="date"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaOperacion(${otId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaOperacion(otId){
+  const desc = document.getElementById('fop_desc').value.trim();
+  if(!desc){ toast('Describe la operación.', 'error'); return; }
+  try{
+    await api('POST','/api/ot-operaciones', {
+      ot_id: otId, descripcion: desc, pieza: document.getElementById('fop_pieza').value, area: document.getElementById('fop_area').value,
+      tecnico: document.getElementById('fop_tecnico').value, secuencia: document.getElementById('fop_secuencia').value||null,
+      horas_estimadas: document.getElementById('fop_horas').value||null, fecha_inicio: document.getElementById('fop_fecha_inicio').value,
+      fecha_fin_prevista: document.getElementById('fop_fecha_fin').value
+    });
+    toast('Operación agregada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarOperacion(operacionId){
+  const todas = await api('GET','/api/ot-operaciones');
+  const op = todas.find(x=>x.id===operacionId);
+  if(!op){ toast('Operación no encontrada.', 'error'); return; }
+  showModal(`
+    <h3>Editar operación</h3>
+    <div class="field"><label>Descripción</label><input id="fope_desc" value="${esc(op.descripcion)}"></div>
+    <div class="row-flex">
+      <div class="field"><label>Estado</label><select id="fope_estado" onchange="document.getElementById('fope_bloqueo_wrap').style.display=this.value==='detenido'?'block':'none'">
+        <option value="programado" ${op.estado==='programado'?'selected':''}>Programado</option>
+        <option value="en_proceso" ${op.estado==='en_proceso'?'selected':''}>En proceso</option>
+        <option value="detenido" ${op.estado==='detenido'?'selected':''}>Detenido</option>
+        <option value="terminado" ${op.estado==='terminado'?'selected':''}>Terminado</option>
+      </select></div>
+      <div class="field"><label>Avance (%)</label><input id="fope_avance" type="number" min="0" max="100" value="${op.avance}"></div>
+    </div>
+    <div id="fope_bloqueo_wrap" class="field" style="display:${op.estado==='detenido'?'block':'none'}"><label>Causa de bloqueo</label><select id="fope_causa">
+      <option value="">Sin definir</option>
+      <option value="pieza_faltante" ${op.causa_bloqueo==='pieza_faltante'?'selected':''}>Pieza faltante</option>
+      <option value="complemento_pendiente" ${op.causa_bloqueo==='complemento_pendiente'?'selected':''}>Complemento pendiente</option>
+      <option value="capacidad" ${op.causa_bloqueo==='capacidad'?'selected':''}>Capacidad</option>
+      <option value="falla_equipo" ${op.causa_bloqueo==='falla_equipo'?'selected':''}>Falla de equipo</option>
+      <option value="ausencia" ${op.causa_bloqueo==='ausencia'?'selected':''}>Ausencia</option>
+      <option value="retrabajo" ${op.causa_bloqueo==='retrabajo'?'selected':''}>Retrabajo</option>
+    </select></div>
+    <div class="field"><label>Siguiente acción</label><input id="fope_siguiente" value="${esc(op.siguiente_accion||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionOperacion(${operacionId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionOperacion(operacionId){
+  try{
+    await api('PATCH','/api/ot-operaciones/'+operacionId, {
+      descripcion: document.getElementById('fope_desc').value, estado: document.getElementById('fope_estado').value,
+      avance: Number(document.getElementById('fope_avance').value)||0, causa_bloqueo: document.getElementById('fope_causa') ? document.getElementById('fope_causa').value||null : null,
+      siguiente_accion: document.getElementById('fope_siguiente').value
+    });
+    toast('Operación actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+async function abrirFormNuevoComplemento(siniestroId){
+  const ots = await api('GET','/api/ordenes-trabajo?siniestro_id='+siniestroId);
+  showModal(`
+    <h3>Agregar complemento (daño oculto)</h3>
+    <div class="field"><label>Causa / hallazgo</label><textarea id="fcomp_causa" placeholder="Descripción del daño oculto detectado"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha</label><input id="fcomp_fecha" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Pieza / operación afectada</label><input id="fcomp_pieza"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Importe estimado</label><input id="fcomp_importe" type="number" step="0.01"></div>
+      <div class="field"><label>Impacto en días</label><input id="fcomp_impacto" type="number" min="0"></div>
+    </div>
+    <div class="field"><label>OT relacionada (opcional)</label><select id="fcomp_ot"><option value="">Sin ligar todavía</option>${ots.map(ot=>`<option value="${ot.id}">OT ${esc(ot.numero)} v${ot.version}</option>`).join('')}</select></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoComplemento(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoComplemento(siniestroId){
+  const causa = document.getElementById('fcomp_causa').value.trim();
+  if(!causa){ toast('Describe la causa del complemento.', 'error'); return; }
+  try{
+    await api('POST','/api/complementos', {
+      siniestro_id: siniestroId, causa, fecha: document.getElementById('fcomp_fecha').value, pieza_operacion: document.getElementById('fcomp_pieza').value,
+      importe: document.getElementById('fcomp_importe').value||null, impacto_dias: document.getElementById('fcomp_impacto').value||null,
+      ot_id: document.getElementById('fcomp_ot').value||null
+    });
+    toast('Complemento registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarComplemento(complementoId){
+  const todos = await api('GET','/api/complementos');
+  const c = todos.find(x=>x.id===complementoId);
+  if(!c){ toast('Complemento no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar complemento</h3>
+    <div class="field"><label>Causa / hallazgo</label><textarea id="fcompe_causa">${esc(c.causa)}</textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Decisión</label><select id="fcompe_decision">
+        <option value="pendiente" ${c.decision==='pendiente'?'selected':''}>Pendiente</option>
+        <option value="autorizado" ${c.decision==='autorizado'?'selected':''}>Autorizado</option>
+        <option value="rechazado" ${c.decision==='rechazado'?'selected':''}>Rechazado</option>
+        <option value="parcial" ${c.decision==='parcial'?'selected':''}>Parcial</option>
+      </select></div>
+      <div class="field"><label>Estado</label><select id="fcompe_estado">
+        <option value="detectado" ${c.estado==='detectado'?'selected':''}>Detectado</option>
+        <option value="documentando" ${c.estado==='documentando'?'selected':''}>Documentando</option>
+        <option value="enviado" ${c.estado==='enviado'?'selected':''}>Enviado</option>
+        <option value="en_autorizacion" ${c.estado==='en_autorizacion'?'selected':''}>En autorización</option>
+        <option value="autorizado" ${c.estado==='autorizado'?'selected':''}>Autorizado</option>
+        <option value="rechazado" ${c.estado==='rechazado'?'selected':''}>Rechazado</option>
+        <option value="incorporado_a_ot" ${c.estado==='incorporado_a_ot'?'selected':''}>Incorporado a OT</option>
+      </select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Importe</label><input id="fcompe_importe" type="number" step="0.01" value="${c.importe!=null?c.importe:''}"></div>
+      <div class="field"><label>Folio</label><input id="fcompe_folio" value="${esc(c.folio||'')}"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionComplemento(${complementoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionComplemento(complementoId){
+  try{
+    await api('PATCH','/api/complementos/'+complementoId, {
+      causa: document.getElementById('fcompe_causa').value, decision: document.getElementById('fcompe_decision').value, estado: document.getElementById('fcompe_estado').value,
+      importe: document.getElementById('fcompe_importe').value||null, folio: document.getElementById('fcompe_folio').value
+    });
+    toast('Complemento actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.message){ /* el toast del error ya se mostró */ }
+  }
+}
+
+function abrirFormNuevoRetrabajo(siniestroId){
+  showModal(`
+    <h3>Agregar retrabajo</h3>
+    <div class="field"><label>Origen (no conformidad)</label><textarea id="fret_origen" placeholder="Qué falló y dónde se detectó"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Categoría</label><input id="fret_categoria" placeholder="Pintura / ajuste / lámina..."></div>
+      <div class="field"><label>Severidad</label><select id="fret_severidad"><option value="leve">Leve</option><option value="media" selected>Media</option><option value="critica">Crítica</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Responsable</label><input id="fret_responsable"></div>
+      <div class="field"><label>Horas</label><input id="fret_horas" type="number" step="0.5"></div>
+      <div class="field"><label>Costo</label><input id="fret_costo" type="number" step="0.01"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoRetrabajo(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoRetrabajo(siniestroId){
+  const origen = document.getElementById('fret_origen').value.trim();
+  if(!origen){ toast('Describe el origen del retrabajo.', 'error'); return; }
+  try{
+    await api('POST','/api/retrabajos', {
+      siniestro_id: siniestroId, origen, categoria: document.getElementById('fret_categoria').value, severidad: document.getElementById('fret_severidad').value,
+      responsable: document.getElementById('fret_responsable').value, horas: document.getElementById('fret_horas').value||null, costo: document.getElementById('fret_costo').value||null
+    });
+    toast('Retrabajo registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarRetrabajo(retrabajoId){
+  const todos = await api('GET','/api/retrabajos');
+  const r = todos.find(x=>x.id===retrabajoId);
+  if(!r){ toast('Retrabajo no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar retrabajo</h3>
+    <div class="field"><label>Estado</label><select id="frete_estado">
+      <option value="abierto" ${r.estado==='abierto'?'selected':''}>Abierto</option>
+      <option value="en_correccion" ${r.estado==='en_correccion'?'selected':''}>En corrección</option>
+      <option value="reinspeccion" ${r.estado==='reinspeccion'?'selected':''}>Reinspección</option>
+      <option value="cerrado" ${r.estado==='cerrado'?'selected':''}>Cerrado</option>
+    </select></div>
+    <div class="field"><label>Corrección aplicada</label><textarea id="frete_correccion">${esc(r.correccion||'')}</textarea></div>
+    <div class="field"><label>Fecha de reinspección</label><input id="frete_fecha" type="date" value="${esc(r.fecha_reinspeccion||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionRetrabajo(${retrabajoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionRetrabajo(retrabajoId){
+  try{
+    await api('PATCH','/api/retrabajos/'+retrabajoId, {
+      estado: document.getElementById('frete_estado').value, correccion: document.getElementById('frete_correccion').value, fecha_reinspeccion: document.getElementById('frete_fecha').value
+    });
+    toast('Retrabajo actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
 async function intentarCerrarSiniestro(siniestroId){
   const ok = await confirmDialog('¿Cerrar este siniestro? Solo se puede si todos sus pedidos están recibidos/cancelados y ya se registró la entrega.', { textoOk:'Sí, cerrar' });
   if(!ok) return;
@@ -1511,6 +1864,27 @@ async function viewClientes(){
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
+/* ===================== VISTA: PRODUCCIÓN (Beto) ===================== */
+async function viewProduccion(){
+  const expedientes = await api('GET','/api/reportes/bandeja-produccion');
+  const LABEL_PROD = { programado:'Programado', en_laminado:'En laminado', mecanica:'Mecánica', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', detenido:'Detenido', terminado:'Terminado' };
+  return `
+  <h2>Producción</h2>
+  <p class="subtle">Expedientes autorizados en proceso de reparación (módulo de Beto). Sección 5.10 y 9 del documento maestro: prioridades, bloqueos y retrabajos.</p>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Etapa de producción</th><th>Operaciones bloqueadas</th><th>Retrabajos abiertos</th><th>Complementos pendientes</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes en producción pendientes.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</td>
+      <td>${s.operaciones_bloqueadas>0?`<span class="badge rojo">${s.operaciones_bloqueadas}</span>`:'—'}</td>
+      <td>${s.retrabajos_abiertos>0?`<span class="badge ambar">${s.retrabajos_abiertos}</span>`:'—'}</td>
+      <td>${s.complementos_pendientes>0?`<span class="badge ambar">${s.complementos_pendientes}</span>`:'—'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) en producción. Entra a la ficha del expediente, pestaña "Producción", para la OT, operaciones, complementos y retrabajos.</p>`;
+}
+
 /* ===================== VISTA: VALUACIÓN / AUTORIZACIÓN ===================== */
 async function viewValuacion(){
   const expedientes = await api('GET','/api/reportes/bandeja-valuacion');

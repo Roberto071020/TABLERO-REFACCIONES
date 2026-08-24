@@ -207,4 +207,22 @@ router.get('/bandeja-valuacion', requireAuth, (req, res)=>{
   res.json(siniestros);
 });
 
+
+// Documento Maestro / Fase E — bandeja de producción de Beto: expedientes autorizados que todavía no
+// tienen estado_produccion='terminado', con el conteo de operaciones bloqueadas y retrabajos abiertos.
+router.get('/bandeja-produccion', requireAuth, (req, res)=>{
+  const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0
+    AND estado_autorizacion IN ('autorizada','parcial')
+    AND (estado_produccion IS NULL OR estado_produccion != 'terminado')
+    ORDER BY creado_en DESC`).all();
+  const out = siniestros.map(s=>{
+    const bloqueadas = db.prepare(`SELECT COUNT(*) n FROM ot_operaciones op
+      JOIN ordenes_trabajo ot ON ot.id = op.ot_id WHERE ot.siniestro_id = ? AND op.estado = 'detenido'`).get(s.id).n;
+    const retrabajosAbiertos = db.prepare(`SELECT COUNT(*) n FROM retrabajos WHERE siniestro_id = ? AND estado != 'cerrado'`).get(s.id).n;
+    const complementosPendientes = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE siniestro_id = ? AND decision = 'pendiente'`).get(s.id).n;
+    return { ...s, operaciones_bloqueadas: bloqueadas, retrabajos_abiertos: retrabajosAbiertos, complementos_pendientes: complementosPendientes };
+  });
+  res.json(out);
+});
+
 module.exports = router;

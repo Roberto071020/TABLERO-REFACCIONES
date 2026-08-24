@@ -540,4 +540,93 @@ for(const [col, def] of NUEVAS_COLUMNAS_FASE_D){
   }
 }
 
+
+
+/* ===================== MIGRACIONES ADITIVAS — Documento Maestro / Fase E (2026-08-24) =====================
+   Orden de trabajo y producción (Beto), secciones 5.8/5.10/5.11 y sección 9, tablas 12/14/15 del documento
+   maestro. estado_produccion ya existía en siniestros desde Fase A (columna sin usar); aquí se activa.
+   No se toca nada de Daniela (piezas/pedidos) ni de las fases B/C/D. */
+
+// La OT (tabla 12) y las etapas de producción (tabla 14) comparten exactamente los mismos campos por
+// operación (técnico/área, secuencia, horas, fechas, avance, bloqueo), así que se modelan en una sola
+// entidad (ot_operaciones) en vez de duplicar dos tablas paralelas para lo mismo.
+db.exec(`
+CREATE TABLE IF NOT EXISTS ordenes_trabajo (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  numero TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  estado TEXT NOT NULL DEFAULT 'borrador' CHECK(estado IN ('borrador','emitida','actualizada','suspendida','terminada')),
+  alcance TEXT,
+  notas TEXT,
+  creado_por INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ot_siniestro ON ordenes_trabajo(siniestro_id);
+
+CREATE TABLE IF NOT EXISTS ot_operaciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ot_id INTEGER NOT NULL REFERENCES ordenes_trabajo(id),
+  descripcion TEXT NOT NULL,
+  pieza TEXT,
+  area TEXT,
+  tecnico TEXT,
+  secuencia INTEGER,
+  horas_estimadas REAL,
+  estado TEXT NOT NULL DEFAULT 'programado' CHECK(estado IN ('programado','en_proceso','detenido','terminado')),
+  fecha_inicio TEXT,
+  fecha_fin_prevista TEXT,
+  fecha_fin_real TEXT,
+  avance INTEGER NOT NULL DEFAULT 0,
+  causa_bloqueo TEXT CHECK(causa_bloqueo IS NULL OR causa_bloqueo IN ('pieza_faltante','complemento_pendiente','capacidad','falla_equipo','ausencia','retrabajo')),
+  siguiente_accion TEXT,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ot_operaciones_ot ON ot_operaciones(ot_id);
+
+-- Complementos por daño oculto (tabla 15): hallazgo durante desarme/producción que puede requerir
+-- autorización adicional y modificar la OT/fechas/refacciones.
+CREATE TABLE IF NOT EXISTS complementos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  ot_id INTEGER REFERENCES ordenes_trabajo(id),
+  causa TEXT NOT NULL,
+  fecha TEXT,
+  pieza_operacion TEXT,
+  archivo_id INTEGER REFERENCES archivos(id),
+  importe REAL,
+  folio TEXT,
+  decision TEXT NOT NULL DEFAULT 'pendiente' CHECK(decision IN ('pendiente','autorizado','rechazado','parcial')),
+  impacto_dias INTEGER,
+  estado TEXT NOT NULL DEFAULT 'detectado' CHECK(estado IN ('detectado','documentando','enviado','en_autorizacion','autorizado','rechazado','incorporado_a_ot')),
+  autor_id INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_complementos_siniestro ON complementos(siniestro_id);
+
+-- Retrabajos (sección 9): nacen de una no conformidad. Un expediente no puede pasar a "listo para
+-- entrega" (Fase F) mientras tenga retrabajos críticos abiertos.
+CREATE TABLE IF NOT EXISTS retrabajos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  ot_operacion_id INTEGER REFERENCES ot_operaciones(id),
+  origen TEXT,
+  categoria TEXT,
+  severidad TEXT NOT NULL DEFAULT 'media' CHECK(severidad IN ('leve','media','critica')),
+  responsable TEXT,
+  horas REAL,
+  costo REAL,
+  correccion TEXT,
+  estado TEXT NOT NULL DEFAULT 'abierto' CHECK(estado IN ('abierto','en_correccion','reinspeccion','cerrado')),
+  fecha_reinspeccion TEXT,
+  autor_id INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_retrabajos_siniestro ON retrabajos(siniestro_id);
+`);
+
 module.exports = db;

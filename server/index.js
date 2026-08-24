@@ -57,6 +57,10 @@ app.use('/api/mensajes-ia', require('./routes/mensajesIa'));
 app.use('/api/carga-masiva', require('./routes/cargaMasiva'));
 app.use('/api/danos-evidencia', require('./routes/danosEvidencia'));
 app.use('/api/documentos-expediente', require('./routes/documentosExpediente'));
+app.use('/api/ordenes-trabajo', require('./routes/ordenesTrabajo'));
+app.use('/api/ot-operaciones', require('./routes/otOperaciones'));
+app.use('/api/complementos', require('./routes/complementos'));
+app.use('/api/retrabajos', require('./routes/retrabajos'));
 
 // ---- Frontend estático ----
 app.use(express.static(path.join(__dirname, '..', 'public')));

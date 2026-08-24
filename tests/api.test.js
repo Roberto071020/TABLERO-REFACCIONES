@@ -1169,3 +1169,99 @@ test('DOC-MAESTRO-D-4: bandeja de valuación solo incluye expedientes con checkl
   bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'ya no debe aparecer una vez autorizado');
 });
+
+/* ===================== Documento Maestro / Fase E: orden de trabajo y producción (Beto) ===================== */
+
+test('DOC-MAESTRO-E-1: crear una OT y agregar operaciones; solo beto/orlando/admin/jefe pueden hacerlo', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-OT1', aseguradora: 'GNP' })).data;
+  const sinPermiso = await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-001' });
+  assert.equal(sinPermiso.status, 403, 'operativo (Daniela) no debe poder crear OT');
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-001', alcance: 'Cambio de puerta y pintura' })).data;
+  assert.equal(ot.estado, 'borrador');
+
+  const op = (await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Cambio de puerta delantera', area: 'Laminado', tecnico: 'Juan', secuencia: 1 })).data;
+  assert.equal(op.estado, 'programado');
+  assert.equal(op.avance, 0);
+
+  const lista = await req('GET', '/api/ot-operaciones?ot_id=' + ot.id);
+  assert.equal(lista.data.length, 1);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-E-2: detener una operación exige causa de bloqueo normalizada; terminarla fija avance en 100', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-OT2', aseguradora: 'GNP' })).data;
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-002' })).data;
+  const op = (await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Pintura de cofre' })).data;
+
+  const sinCausa = await req('PATCH', '/api/ot-operaciones/' + op.id, { estado: 'detenido' });
+  assert.equal(sinCausa.status, 400);
+  const conCausa = await req('PATCH', '/api/ot-operaciones/' + op.id, { estado: 'detenido', causa_bloqueo: 'pieza_faltante' });
+  assert.equal(conCausa.status, 200);
+  assert.equal(conCausa.data.causa_bloqueo, 'pieza_faltante');
+
+  const terminada = await req('PATCH', '/api/ot-operaciones/' + op.id, { estado: 'terminado' });
+  assert.equal(terminada.status, 200);
+  assert.equal(terminada.data.avance, 100);
+  assert.ok(terminada.data.fecha_fin_real);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-E-3: un complemento no puede incorporarse a la OT sin autorización', async () => {
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-COMP1', aseguradora: 'GNP' })).data;
+  const comp = (await req('POST', '/api/complementos', { siniestro_id: s.id, causa: 'Daño oculto en larguero al desarmar cofre' })).data;
+  assert.equal(comp.decision, 'pendiente');
+  assert.equal(comp.estado, 'detectado');
+
+  const bloqueado = await req('PATCH', '/api/complementos/' + comp.id, { estado: 'incorporado_a_ot' });
+  assert.equal(bloqueado.status, 400, 'no debe permitirse incorporar a OT sin autorización');
+
+  const autorizado = await req('PATCH', '/api/complementos/' + comp.id, { decision: 'autorizado', estado: 'incorporado_a_ot' });
+  assert.equal(autorizado.status, 200);
+  assert.equal(autorizado.data.estado, 'incorporado_a_ot');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-E-4: cerrar un retrabajo exige registrar la corrección aplicada', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-RET1', aseguradora: 'GNP' })).data;
+  const ret = (await req('POST', '/api/retrabajos', { siniestro_id: s.id, origen: 'Desalineación de puerta detectada en calidad', severidad: 'critica' })).data;
+  assert.equal(ret.estado, 'abierto');
+
+  const sinCorreccion = await req('PATCH', '/api/retrabajos/' + ret.id, { estado: 'cerrado' });
+  assert.equal(sinCorreccion.status, 400);
+  const conCorreccion = await req('PATCH', '/api/retrabajos/' + ret.id, { estado: 'cerrado', correccion: 'Reajuste de bisagras y verificación de holguras' });
+  assert.equal(conCorreccion.status, 200);
+  assert.equal(conCorreccion.data.estado, 'cerrado');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-E-5: bandeja de producción solo incluye expedientes autorizados y refleja bloqueos/retrabajos abiertos', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-BANDEJA1', aseguradora: 'GNP' })).data;
+  let bandeja = await req('GET', '/api/reportes/bandeja-produccion');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASEE-BANDEJA1'), 'no debe aparecer sin autorización');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador' });
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-BANDEJA' })).data;
+  const op = (await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Cambio de faro' })).data;
+  await req('PATCH', '/api/ot-operaciones/' + op.id, { estado: 'detenido', causa_bloqueo: 'capacidad' });
+
+  bandeja = await req('GET', '/api/reportes/bandeja-produccion');
+  const item = bandeja.data.find(x => x.numero === 'FASEE-BANDEJA1');
+  assert.ok(item, 'debe aparecer una vez autorizado');
+  assert.equal(item.operaciones_bloqueadas, 1);
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'terminado' });
+  bandeja = await req('GET', '/api/reportes/bandeja-produccion');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASEE-BANDEJA1'), 'ya no debe aparecer una vez terminada la producción');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
