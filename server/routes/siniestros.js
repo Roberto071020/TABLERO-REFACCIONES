@@ -94,7 +94,10 @@ router.patch('/:id', requireAuth, (req, res)=>{
     'estado_expediente','sistema_valuacion','expediente_folio',
     // Documento Maestro / Fase D: valuación y autorización
     'valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_observaciones',
-    'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones'];
+    'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
+    // Documento Maestro / Fase F: control de calidad, entrega, finiquito y encuesta
+    'estado_calidad','entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega',
+    'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
   nuevo.completo = calcularCompleto(nuevo);
@@ -138,6 +141,23 @@ router.patch('/:id', requireAuth, (req, res)=>{
     }
   }
 
+  // Documento Maestro / Fase F, tabla 16: "criterio de salida: checklist completo, defectos cerrados y
+  // liberación registrada." No se puede liberar calidad con rubros rechazados pendientes.
+  if(nuevo.estado_calidad === 'liberado'){
+    const rechazados = db.prepare(`SELECT dimension FROM checklist_calidad WHERE siniestro_id = ? AND resultado = 'rechazado'`).all(req.params.id);
+    if(rechazados.length){
+      return res.status(400).json({ error:'No se puede liberar calidad: hay rubros del checklist rechazados sin corregir.',
+        detalle: rechazados.map(r=>r.dimension) });
+    }
+  }
+  // Finiquito firmado exige que la unidad ya se haya entregado.
+  if(nuevo.finiquito_estado === 'firmado' && !nuevo.fecha_entrega_real){
+    return res.status(400).json({ error:'No se puede firmar el finiquito antes de registrar la entrega de la unidad.' });
+  }
+  // Tabla 19: "cualquier incidencia convertida en tarea." Una inconformidad en el finiquito genera
+  // automáticamente una tarea de seguimiento para Alejandra (mismo patrón que el resto de automatizaciones).
+  const nuevaInconformidad = nuevo.finiquito_estado === 'inconformidad_abierta' && anterior.finiquito_estado !== 'inconformidad_abierta';
+
   // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
   // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
   const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
@@ -154,6 +174,8 @@ router.patch('/:id', requireAuth, (req, res)=>{
       estado_expediente=?,sistema_valuacion=?,expediente_folio=?,
       valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_observaciones=?,
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
+      entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
+      finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
@@ -165,8 +187,15 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio,
       nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_observaciones,
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
+      nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
+      nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  if(nuevaInconformidad){
+    db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+      VALUES (?,?,?,?,'pendiente','automatica','inconformidad_finiquito',?)`)
+      .run(req.params.id, 'seguimiento', 'Dar seguimiento a la inconformidad registrada en el finiquito.', new Date().toISOString().slice(0,10), req.session.user.id);
+  }
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
 });
 
@@ -176,6 +205,12 @@ router.patch('/:id', requireAuth, (req, res)=>{
 router.patch('/:id/entrega', requireAuth, requireRole('operativo','atencion_cliente','admin'), (req, res)=>{
   const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  // Sección 9 del documento maestro: "el expediente no pasa a listo para entrega hasta que todos los
+  // retrabajos críticos estén cerrados."
+  const retrabajosCriticos = db.prepare(`SELECT origen FROM retrabajos WHERE siniestro_id = ? AND severidad = 'critica' AND estado != 'cerrado'`).all(s.id);
+  if(retrabajosCriticos.length){
+    return res.status(400).json({ error:'No se puede registrar la entrega: hay retrabajos críticos sin cerrar.', detalle: retrabajosCriticos.map(r=>r.origen) });
+  }
   const fecha = req.body.fecha_entrega_real || new Date().toISOString().slice(0,10);
   // Registrar/editar la entrega es una decisión fresca: si antes se había bloqueado el archivo automático, se reactiva.
   db.prepare("UPDATE siniestros SET fecha_entrega_real=?, no_auto_archivar=0, actualizado_en=datetime('now') WHERE id=?").run(fecha, s.id);

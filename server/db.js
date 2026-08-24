@@ -629,4 +629,54 @@ CREATE TABLE IF NOT EXISTS retrabajos (
 CREATE INDEX IF NOT EXISTS idx_retrabajos_siniestro ON retrabajos(siniestro_id);
 `);
 
+
+
+/* ===================== MIGRACIONES ADITIVAS — Documento Maestro / Fase F (2026-08-24) =====================
+   Control de calidad, entrega, finiquito y encuesta, secciones 5.12-5.15 y tablas 16/18/19/23 del
+   documento maestro. estado_calidad ya existía en siniestros desde Fase A (sin usar); aquí se activa.
+   Reutiliza fecha_entrega_real y el endpoint /entrega ya construidos para Daniela (Fase 2 previa):
+   no se duplica esa lógica, solo se le agrega la validación de retrabajos críticos que pide el documento. */
+
+const NUEVAS_COLUMNAS_FASE_F = [
+  // 5.14 Preparación y entrega (tabla 18) — complementa fecha_entrega_real, que ya existía.
+  ['entrega_receptor', 'TEXT'],
+  ['entrega_identificacion', 'TEXT'],
+  ['entrega_kilometraje', 'TEXT'],
+  ['entrega_combustible', 'TEXT'],
+  ['entrega_llaves_entregadas', 'INTEGER'],
+  ['entrega_observacion', 'TEXT'],
+  ['estado_entrega', 'TEXT'],           // 'listo' | 'cita_confirmada' | 'entregado_con_observacion' | 'entregado'
+  // 5.15 Finiquito y encuesta (tabla 19)
+  ['finiquito_estado', 'TEXT'],         // 'pendiente' | 'firmado' | 'inconformidad_abierta'
+  ['finiquito_fecha', 'TEXT'],
+  ['finiquito_observacion', 'TEXT'],
+  ['encuesta_estado', 'TEXT'],          // 'pendiente' | 'enviada' | 'respondida'
+  ['encuesta_calificacion', 'INTEGER'],
+  ['encuesta_comentarios', 'TEXT']
+];
+for(const [col, def] of NUEVAS_COLUMNAS_FASE_F){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
+// Checklist de calidad (tabla 23): las 7 dimensiones son un catálogo fijo, definido explícitamente por
+// el propio documento maestro (no se inventa), así que se valida con CHECK en vez de texto libre.
+db.exec(`
+CREATE TABLE IF NOT EXISTS checklist_calidad (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  dimension TEXT NOT NULL CHECK(dimension IN ('Alcance','Seguridad y función','Lámina/ajuste','Pintura/acabado','Armado','Presentación','Documentación')),
+  resultado TEXT NOT NULL DEFAULT 'pendiente' CHECK(resultado IN ('pendiente','aprobado','rechazado')),
+  hallazgo TEXT,
+  severidad TEXT,
+  correccion TEXT,
+  inspector_id INTEGER REFERENCES usuarios(id),
+  fecha TEXT,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_calidad_siniestro ON checklist_calidad(siniestro_id);
+`);
+
 module.exports = db;

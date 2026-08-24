@@ -61,6 +61,7 @@ app.use('/api/ordenes-trabajo', require('./routes/ordenesTrabajo'));
 app.use('/api/ot-operaciones', require('./routes/otOperaciones'));
 app.use('/api/complementos', require('./routes/complementos'));
 app.use('/api/retrabajos', require('./routes/retrabajos'));
+app.use('/api/checklist-calidad', require('./routes/checklistCalidad'));
 
 // ---- Frontend estático ----
 app.use(express.static(path.join(__dirname, '..', 'public')));

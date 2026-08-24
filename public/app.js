@@ -135,6 +135,7 @@ const TABS = [
   {k:'expediente', label:'Armado de expediente', roles:['vanessa','admin','jefe']},
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
   {k:'produccion', label:'Producción', roles:['beto','admin','jefe']},
+  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','admin','jefe']},
   {k:'reglas', label:'Reglas'}
 ];
 function renderTabs(){
@@ -191,6 +192,7 @@ async function render(){
     else if(state.view==='expediente') app.innerHTML = await viewExpediente();
     else if(state.view==='valuacion') app.innerHTML = await viewValuacion();
     else if(state.view==='produccion') app.innerHTML = await viewProduccion();
+    else if(state.view==='calidad') app.innerHTML = await viewCalidad();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
@@ -525,7 +527,7 @@ async function viewSiniestro(id){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   const subtabs = [
     ...(esAtencionCliente ? [['cliente','Cliente']] : []),
-    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],['produccion','Producción'],
+    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],['produccion','Producción'],['calidad','Calidad / entrega'],
     ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
   ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
@@ -768,6 +770,56 @@ async function viewSiniestro(id){
     </tr>`).join('')}
     </tbody></table>`}
     ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoRetrabajo(${id})">+ Agregar retrabajo</button></div>`:''}`;
+  } else if(state.subtabSiniestro==='calidad'){
+    const puedeCalidad = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    const puedeEntregaDetalle = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
+    const puedeFiniquito = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
+    const checklist = await api('GET','/api/checklist-calidad?siniestro_id='+id);
+    const LABEL_CAL = { en_inspeccion:'En inspección', rechazado_a_retrabajo:'Rechazado a retrabajo', reinspeccion:'Reinspección', liberado:'Liberado' };
+    const LABEL_RES = { pendiente:'Pendiente', aprobado:'Aprobado', rechazado:'Rechazado' };
+    const LABEL_ENTREGA = { listo:'Listo', cita_confirmada:'Cita confirmada', entregado_con_observacion:'Entregado con observación', entregado:'Entregado' };
+    const LABEL_FINIQUITO = { pendiente:'Pendiente', firmado:'Firmado', inconformidad_abierta:'Inconformidad abierta' };
+    const LABEL_ENCUESTA = { pendiente:'Pendiente', enviada:'Enviada', respondida:'Respondida' };
+    body = `
+    <h3>Control de calidad</h3>
+    <table class="kv"><tbody>
+      <tr><td>Estado de calidad</td><td><span class="badge ${s.estado_calidad==='liberado'?'verde':'ambar'}">${esc(LABEL_CAL[s.estado_calidad]||'Sin iniciar')}</span></td></tr>
+    </tbody></table>
+    ${puedeCalidad?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEstadoCalidad(${id})">Actualizar estado de calidad</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Checklist (7 dimensiones)</h4>
+    ${checklist.length===0?'<div class="empty">Sin rubros capturados todavía.</div>':`
+    <table><thead><tr><th>Dimensión</th><th>Resultado</th><th>Hallazgo</th><th>Inspector</th><th></th></tr></thead><tbody>
+    ${checklist.map(c=>`<tr>
+      <td>${esc(c.dimension)}</td>
+      <td><span class="badge ${c.resultado==='aprobado'?'verde':c.resultado==='rechazado'?'rojo':'gris'}">${LABEL_RES[c.resultado]||c.resultado}</span></td>
+      <td>${esc(c.hallazgo||'—')}</td>
+      <td class="subtle">${esc(c.inspector_nombre||'—')}</td>
+      <td>${puedeCalidad?`<button class="btn small secondary" onclick="abrirFormEditarChecklistCalidad(${c.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeCalidad?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoChecklistCalidad(${id})">+ Agregar rubro</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Entrega</h3>
+    <table class="kv"><tbody>
+      <tr><td>Fecha de entrega</td><td>${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</td></tr>
+      <tr><td>Estado de entrega</td><td>${esc(LABEL_ENTREGA[s.estado_entrega]||'—')}</td></tr>
+      <tr><td>Receptor</td><td>${esc(s.entrega_receptor||'—')} ${s.entrega_identificacion?('· '+esc(s.entrega_identificacion)):''}</td></tr>
+      <tr><td>Kilometraje / combustible</td><td>${esc(s.entrega_kilometraje||'—')} ${s.entrega_combustible?('· '+esc(s.entrega_combustible)):''}</td></tr>
+      <tr><td>Llaves entregadas</td><td>${s.entrega_llaves_entregadas?'Sí':'No'}</td></tr>
+      <tr><td>Observación</td><td>${esc(s.entrega_observacion||'—')}</td></tr>
+    </tbody></table>
+    <p class="subtle" style="margin-top:6px;">La fecha de entrega se registra con el botón "Registrar entrega" del encabezado. Aquí se captura el detalle (tabla 18 del documento maestro).</p>
+    ${puedeEntregaDetalle?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormDetalleEntrega(${id})">Capturar detalle de entrega</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Finiquito y encuesta</h3>
+    <table class="kv"><tbody>
+      <tr><td>Finiquito</td><td><span class="badge ${s.finiquito_estado==='firmado'?'verde':s.finiquito_estado==='inconformidad_abierta'?'rojo':'ambar'}">${esc(LABEL_FINIQUITO[s.finiquito_estado]||'Pendiente')}</span> ${s.finiquito_fecha?('· '+esc(s.finiquito_fecha)):''}</td></tr>
+      <tr><td>Observación de finiquito</td><td>${esc(s.finiquito_observacion||'—')}</td></tr>
+      <tr><td>Encuesta</td><td>${esc(LABEL_ENCUESTA[s.encuesta_estado]||'Pendiente')} ${s.encuesta_calificacion!=null?('· calificación '+s.encuesta_calificacion):''}</td></tr>
+      <tr><td>Comentarios de encuesta</td><td>${esc(s.encuesta_comentarios||'—')}</td></tr>
+    </tbody></table>
+    ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormFiniquito(${id})">Actualizar finiquito / encuesta</button></div>`:''}`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -1533,6 +1585,160 @@ async function guardarEdicionRetrabajo(retrabajoId){
   }catch(e){}
 }
 
+function abrirFormEstadoCalidad(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar estado de calidad</h3>
+      <div class="field"><label>Estado</label><select id="fcal_estado">
+        <option value="" ${!s.estado_calidad?'selected':''}>Sin iniciar</option>
+        <option value="en_inspeccion" ${s.estado_calidad==='en_inspeccion'?'selected':''}>En inspección</option>
+        <option value="rechazado_a_retrabajo" ${s.estado_calidad==='rechazado_a_retrabajo'?'selected':''}>Rechazado a retrabajo</option>
+        <option value="reinspeccion" ${s.estado_calidad==='reinspeccion'?'selected':''}>Reinspección</option>
+        <option value="liberado" ${s.estado_calidad==='liberado'?'selected':''}>Liberado</option>
+      </select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEstadoCalidad(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEstadoCalidad(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_calidad: document.getElementById('fcal_estado').value });
+    toast('Estado de calidad actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede liberar todavía</h3><p class="subtle">Rubros rechazados sin corregir:</p><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
+
+function abrirFormNuevoChecklistCalidad(siniestroId){
+  const DIMENSIONES = ['Alcance','Seguridad y función','Lámina/ajuste','Pintura/acabado','Armado','Presentación','Documentación'];
+  showModal(`
+    <h3>Agregar rubro de calidad</h3>
+    <div class="field"><label>Dimensión</label><select id="fchk_dimension">${DIMENSIONES.map(d=>`<option>${d}</option>`).join('')}</select></div>
+    <div class="field"><label>Resultado</label><select id="fchk_resultado"><option value="pendiente">Pendiente</option><option value="aprobado">Aprobado</option><option value="rechazado">Rechazado</option></select></div>
+    <div class="field"><label>Hallazgo</label><textarea id="fchk_hallazgo"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoChecklistCalidad(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoChecklistCalidad(siniestroId){
+  try{
+    await api('POST','/api/checklist-calidad', {
+      siniestro_id: siniestroId, dimension: document.getElementById('fchk_dimension').value,
+      resultado: document.getElementById('fchk_resultado').value, hallazgo: document.getElementById('fchk_hallazgo').value
+    });
+    toast('Rubro agregado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarChecklistCalidad(checklistId){
+  const todos = await api('GET','/api/checklist-calidad');
+  const c = todos.find(x=>x.id===checklistId);
+  if(!c){ toast('Rubro no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar rubro: ${esc(c.dimension)}</h3>
+    <div class="field"><label>Resultado</label><select id="fchke_resultado">
+      <option value="pendiente" ${c.resultado==='pendiente'?'selected':''}>Pendiente</option>
+      <option value="aprobado" ${c.resultado==='aprobado'?'selected':''}>Aprobado</option>
+      <option value="rechazado" ${c.resultado==='rechazado'?'selected':''}>Rechazado</option>
+    </select></div>
+    <div class="field"><label>Hallazgo</label><textarea id="fchke_hallazgo">${esc(c.hallazgo||'')}</textarea></div>
+    <div class="field"><label>Corrección aplicada</label><textarea id="fchke_correccion">${esc(c.correccion||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionChecklistCalidad(${checklistId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionChecklistCalidad(checklistId){
+  try{
+    await api('PATCH','/api/checklist-calidad/'+checklistId, {
+      resultado: document.getElementById('fchke_resultado').value, hallazgo: document.getElementById('fchke_hallazgo').value, correccion: document.getElementById('fchke_correccion').value
+    });
+    toast('Rubro actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormDetalleEntrega(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Detalle de entrega</h3>
+      <div class="row-flex">
+        <div class="field"><label>Receptor</label><input id="fent2_receptor" value="${esc(s.entrega_receptor||'')}"></div>
+        <div class="field"><label>Identificación</label><input id="fent2_identificacion" value="${esc(s.entrega_identificacion||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Kilometraje</label><input id="fent2_km" value="${esc(s.entrega_kilometraje||'')}"></div>
+        <div class="field"><label>Combustible</label><input id="fent2_combustible" value="${esc(s.entrega_combustible||'')}"></div>
+      </div>
+      <div class="field"><label>¿Llaves entregadas?</label><select id="fent2_llaves">
+        <option value="1" ${s.entrega_llaves_entregadas?'selected':''}>Sí</option>
+        <option value="0" ${!s.entrega_llaves_entregadas?'selected':''}>No</option>
+      </select></div>
+      <div class="field"><label>Estado de entrega</label><select id="fent2_estado">
+        <option value="" ${!s.estado_entrega?'selected':''}>Sin definir</option>
+        <option value="listo" ${s.estado_entrega==='listo'?'selected':''}>Listo</option>
+        <option value="cita_confirmada" ${s.estado_entrega==='cita_confirmada'?'selected':''}>Cita confirmada</option>
+        <option value="entregado_con_observacion" ${s.estado_entrega==='entregado_con_observacion'?'selected':''}>Entregado con observación</option>
+        <option value="entregado" ${s.estado_entrega==='entregado'?'selected':''}>Entregado</option>
+      </select></div>
+      <div class="field"><label>Observación</label><textarea id="fent2_observacion">${esc(s.entrega_observacion||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarDetalleEntrega(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarDetalleEntrega(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      entrega_receptor: document.getElementById('fent2_receptor').value, entrega_identificacion: document.getElementById('fent2_identificacion').value,
+      entrega_kilometraje: document.getElementById('fent2_km').value, entrega_combustible: document.getElementById('fent2_combustible').value,
+      entrega_llaves_entregadas: Number(document.getElementById('fent2_llaves').value), estado_entrega: document.getElementById('fent2_estado').value,
+      entrega_observacion: document.getElementById('fent2_observacion').value
+    });
+    toast('Detalle de entrega actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormFiniquito(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Finiquito y encuesta</h3>
+      <div class="row-flex">
+        <div class="field"><label>Estado de finiquito</label><select id="ffin_estado">
+          <option value="" ${!s.finiquito_estado?'selected':''}>Pendiente</option>
+          <option value="firmado" ${s.finiquito_estado==='firmado'?'selected':''}>Firmado</option>
+          <option value="inconformidad_abierta" ${s.finiquito_estado==='inconformidad_abierta'?'selected':''}>Inconformidad abierta</option>
+        </select></div>
+        <div class="field"><label>Fecha</label><input id="ffin_fecha" type="date" value="${esc(s.finiquito_fecha||'')}"></div>
+      </div>
+      <div class="field"><label>Observación</label><textarea id="ffin_observacion">${esc(s.finiquito_observacion||'')}</textarea></div>
+      <div class="row-flex">
+        <div class="field"><label>Estado de encuesta</label><select id="ffin_encuesta">
+          <option value="" ${!s.encuesta_estado?'selected':''}>Pendiente</option>
+          <option value="enviada" ${s.encuesta_estado==='enviada'?'selected':''}>Enviada</option>
+          <option value="respondida" ${s.encuesta_estado==='respondida'?'selected':''}>Respondida</option>
+        </select></div>
+        <div class="field"><label>Calificación (1-5)</label><input id="ffin_calificacion" type="number" min="1" max="5" value="${s.encuesta_calificacion!=null?s.encuesta_calificacion:''}"></div>
+      </div>
+      <div class="field"><label>Comentarios de encuesta</label><textarea id="ffin_comentarios">${esc(s.encuesta_comentarios||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarFiniquito(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarFiniquito(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      finiquito_estado: document.getElementById('ffin_estado').value, finiquito_fecha: document.getElementById('ffin_fecha').value,
+      finiquito_observacion: document.getElementById('ffin_observacion').value, encuesta_estado: document.getElementById('ffin_encuesta').value,
+      encuesta_calificacion: document.getElementById('ffin_calificacion').value||null, encuesta_comentarios: document.getElementById('ffin_comentarios').value
+    });
+    toast('Finiquito/encuesta actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.message){ /* el toast del error ya se mostró */ }
+  }
+}
+
 async function intentarCerrarSiniestro(siniestroId){
   const ok = await confirmDialog('¿Cerrar este siniestro? Solo se puede si todos sus pedidos están recibidos/cancelados y ya se registró la entrega.', { textoOk:'Sí, cerrar' });
   if(!ok) return;
@@ -1864,6 +2070,27 @@ async function viewClientes(){
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
+/* ===================== VISTA: CALIDAD / ENTREGA ===================== */
+async function viewCalidad(){
+  const expedientes = await api('GET','/api/reportes/bandeja-calidad');
+  const LABEL_CAL = { en_inspeccion:'En inspección', rechazado_a_retrabajo:'Rechazado a retrabajo', reinspeccion:'Reinspección', liberado:'Liberado' };
+  return `
+  <h2>Calidad / entrega</h2>
+  <p class="subtle">Expedientes con producción terminada, pendientes de liberar calidad o de entregar (secciones 5.12-5.15 del documento maestro).</p>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Calidad</th><th>Rechazos abiertos</th><th>Retrabajos críticos</th><th>Entrega</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de calidad/entrega.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.aseguradora)}</td>
+      <td><span class="badge ${s.estado_calidad==='liberado'?'verde':'ambar'}">${esc(LABEL_CAL[s.estado_calidad]||'Sin iniciar')}</span></td>
+      <td>${s.checklist_rechazados>0?`<span class="badge rojo">${s.checklist_rechazados}</span>`:'—'}</td>
+      <td>${s.retrabajos_criticos>0?`<span class="badge rojo">${s.retrabajos_criticos}</span>`:'—'}</td>
+      <td>${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Pendiente</span>'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Entra a la ficha del expediente, pestaña "Calidad / entrega".</p>`;
+}
+
 /* ===================== VISTA: PRODUCCIÓN (Beto) ===================== */
 async function viewProduccion(){
   const expedientes = await api('GET','/api/reportes/bandeja-produccion');

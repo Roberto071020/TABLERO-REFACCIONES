@@ -1265,3 +1265,76 @@ test('DOC-MAESTRO-E-5: bandeja de producción solo incluye expedientes autorizad
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Documento Maestro / Fase F: control de calidad, entrega, finiquito y encuesta ===================== */
+
+test('DOC-MAESTRO-F-1: no se puede liberar calidad con rubros del checklist rechazados', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEF-CAL1', aseguradora: 'GNP' })).data;
+  const sinHallazgo = await req('POST', '/api/checklist-calidad', { siniestro_id: s.id, dimension: 'Pintura/acabado', resultado: 'rechazado' });
+  assert.equal(sinHallazgo.status, 400, 'un rechazo debe exigir el hallazgo que lo motiva');
+  const item = (await req('POST', '/api/checklist-calidad', { siniestro_id: s.id, dimension: 'Pintura/acabado', resultado: 'rechazado', hallazgo: 'Escurrimiento en cofre' })).data;
+
+  const bloqueado = await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
+  assert.equal(bloqueado.status, 400);
+  assert.ok(bloqueado.data.detalle.includes('Pintura/acabado'));
+
+  const corregido = await req('PATCH', '/api/checklist-calidad/' + item.id, { resultado: 'aprobado', correccion: 'Repintado y pulido' });
+  assert.equal(corregido.status, 200);
+  const liberado = await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
+  assert.equal(liberado.status, 200);
+  assert.equal(liberado.data.estado_calidad, 'liberado');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DOC-MAESTRO-F-2: no se puede registrar la entrega con retrabajos críticos abiertos', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEF-ENT1', aseguradora: 'GNP' })).data;
+  const ret = (await req('POST', '/api/retrabajos', { siniestro_id: s.id, origen: 'Falla de ajuste en cajuela', severidad: 'critica' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const bloqueado = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  assert.equal(bloqueado.status, 400);
+  assert.ok(bloqueado.data.detalle.includes('Falla de ajuste en cajuela'));
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/retrabajos/' + ret.id, { estado: 'cerrado', correccion: 'Ajuste de bisagras de cajuela' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const permitido = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  assert.equal(permitido.status, 200, 'ya sin retrabajos críticos abiertos debe permitirse la entrega');
+});
+
+test('DOC-MAESTRO-F-3: el finiquito no puede firmarse antes de la entrega; una inconformidad crea una tarea automática', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEF-FIN1', aseguradora: 'GNP' })).data;
+  const sinEntrega = await req('PATCH', '/api/siniestros/' + s.id, { finiquito_estado: 'firmado' });
+  assert.equal(sinEntrega.status, 400);
+
+  await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  const firmado = await req('PATCH', '/api/siniestros/' + s.id, { finiquito_estado: 'firmado', finiquito_fecha: '2026-08-24' });
+  assert.equal(firmado.status, 200);
+
+  const s2 = (await req('POST', '/api/siniestros', { numero: 'FASEF-FIN2', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s2.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  const inconforme = await req('PATCH', '/api/siniestros/' + s2.id, { finiquito_estado: 'inconformidad_abierta', finiquito_observacion: 'Cliente reporta ruido en puerta' });
+  assert.equal(inconforme.status, 200);
+  const tareas = await req('GET', '/api/tareas?siniestro_id=' + s2.id);
+  assert.ok(tareas.data.some(t => t.disparador === 'inconformidad_finiquito'), 'debe crearse automáticamente una tarea de seguimiento');
+});
+
+test('DOC-MAESTRO-F-4: bandeja de calidad incluye producción terminada pendiente de calidad/entrega', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FASEF-BANDEJA1', aseguradora: 'GNP' })).data;
+  let bandeja = await req('GET', '/api/reportes/bandeja-calidad');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'no debe aparecer sin producción terminada');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'terminado' });
+  bandeja = await req('GET', '/api/reportes/bandeja-calidad');
+  assert.ok(bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'debe aparecer con producción terminada y sin calidad liberada');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
+  await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  bandeja = await req('GET', '/api/reportes/bandeja-calidad');
+  assert.ok(!bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'ya no debe aparecer una vez liberado y entregado');
+});

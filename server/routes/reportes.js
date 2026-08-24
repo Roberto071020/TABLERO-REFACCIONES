@@ -225,4 +225,19 @@ router.get('/bandeja-produccion', requireAuth, (req, res)=>{
   res.json(out);
 });
 
+
+// Documento Maestro / Fase F — bandeja de calidad/entrega: expedientes con producción terminada que
+// todavía no tienen calidad liberada, o liberados que aún no se han entregado.
+router.get('/bandeja-calidad', requireAuth, (req, res)=>{
+  const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0 AND estado_produccion = 'terminado'
+    AND (estado_calidad IS NULL OR estado_calidad != 'liberado' OR fecha_entrega_real IS NULL OR fecha_entrega_real = '')
+    ORDER BY creado_en DESC`).all();
+  const out = siniestros.map(s=>{
+    const rechazados = db.prepare(`SELECT COUNT(*) n FROM checklist_calidad WHERE siniestro_id=? AND resultado='rechazado'`).get(s.id).n;
+    const retrabajosCriticos = db.prepare(`SELECT COUNT(*) n FROM retrabajos WHERE siniestro_id=? AND severidad='critica' AND estado != 'cerrado'`).get(s.id).n;
+    return { ...s, checklist_rechazados: rechazados, retrabajos_criticos: retrabajosCriticos };
+  });
+  res.json(out);
+});
+
 module.exports = router;
