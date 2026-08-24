@@ -7,7 +7,8 @@ const db = require('./db');
 const SqliteSessionStore = require('./sqliteSessionStore');
 require('./seed'); // idempotente: crea usuarios/proveedores/caso de prueba solo si no existen
 require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: solo rellena campos vacíos en expedientes ya existentes
-const { login, logout, me, crearUsuario, requireAuth, requireRole } = require('./auth');
+require('./resetEmergenciaDaniela').resetEmergenciaDaniela(); // idempotente: corre una sola vez
+const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword } = require('./auth');
 const bcrypt = require('bcryptjs');
 
 const app = express();
@@ -25,6 +26,7 @@ app.post('/api/auth/login', login);
 app.post('/api/auth/logout', logout);
 app.get('/api/auth/me', me);
 app.post('/api/auth/usuarios', requireAuth, requireRole('admin'), crearUsuario);
+app.post('/api/auth/usuarios/:id/reset-password', requireAuth, requireRole('admin'), resetPassword);
 app.get('/api/auth/usuarios', requireAuth, requireRole('admin','jefe'), (req,res)=>{
   res.json(db.prepare('SELECT id,nombre,email,rol,activo,creado_en FROM usuarios ORDER BY nombre').all());
 });

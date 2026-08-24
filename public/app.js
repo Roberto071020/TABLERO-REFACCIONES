@@ -16,14 +16,17 @@ async function api(method, url, body, opts={}){
     method, headers: body ? {'Content-Type':'application/json'} : undefined,
     body: body ? JSON.stringify(body) : undefined
   });
-  if(res.status === 401){
+  let data = null;
+  const ct = res.headers.get('content-type')||'';
+  if(ct.includes('application/json')) data = await res.json().catch(()=>null);
+  // Bug reportado por Daniela: un 401 del propio login (contraseña incorrecta) se mostraba como
+  // "Sesión expirada", ocultando el motivo real. Ese mensaje genérico solo aplica cuando SÍ había
+  // una sesión iniciada y dejó de ser válida — nunca al intentar iniciar sesión por primera vez.
+  if(res.status === 401 && !opts.esLogin){
     currentUser = null;
     renderLogin();
     throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
   }
-  let data = null;
-  const ct = res.headers.get('content-type')||'';
-  if(ct.includes('application/json')) data = await res.json().catch(()=>null);
   if(!res.ok){
     const msg = (data && data.error) || ('Error ' + res.status);
     if(!opts.silent) toast(msg, 'error');
@@ -82,7 +85,7 @@ async function hacerLogin(){
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPass').value;
   try{
-    const r = await api('POST','/api/auth/login', { email, password }, { silent:true });
+    const r = await api('POST','/api/auth/login', { email, password }, { silent:true, esLogin:true });
     currentUser = r.user;
     document.getElementById('loginRoot').innerHTML = '';
     document.getElementById('topHeader').classList.remove('hidden');

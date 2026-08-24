@@ -33,8 +33,10 @@ async function req(method, url, body) {
 
 test.before(async () => {
   await new Promise(resolve => { server = app.listen(PORT, resolve); });
-  const r = await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
-  assert.equal(r.status, 200, 'login inicial debe funcionar con la contraseña temporal sembrada');
+  // El reset de emergencia (resetEmergenciaDaniela) cambia la contraseña de Daniela al arrancar el server,
+  // así que el login inicial de las pruebas usa la contraseña ya reseteada, no la temporal original.
+  const r = await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  assert.equal(r.status, 200, 'login inicial debe funcionar con la contraseña vigente');
 });
 test.after(async () => { await new Promise(resolve => server.close(resolve)); });
 
@@ -357,7 +359,7 @@ test('FASE1-1: Alejandra existe, puede iniciar sesión, y sus datos básicos de 
   assert.equal(sinCorreo.status, 400, 'debe rechazar sin correo de cliente cuando lo crea Alejandra');
 
   // volver a dejar la sesión como Daniela para no afectar pruebas futuras que dependan de su rol
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('FASE1-2: Alejandra puede registrar un expediente completo desde recepción, sin duplicar siniestros', async () => {
@@ -374,7 +376,7 @@ test('FASE1-2: Alejandra puede registrar un expediente completo desde recepción
   const dup = await req('POST', '/api/siniestros', { numero: 'FASE1-EXPEDIENTE-1', aseguradora: 'GNP', cliente_nombre: 'Otro', cliente_telefono: '1', cliente_correo: 'o@o.com' });
   assert.equal(dup.status, 409, 'no debe duplicar el expediente aunque lo intente crear de nuevo');
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('FASE1-3: la vista de Daniela oculta los expedientes marcados "no requiere refacciones", pero conserva "por definir" y "sí"', async () => {
@@ -387,7 +389,7 @@ test('FASE1-3: la vista de Daniela oculta los expedientes marcados "no requiere 
   const listaAlejandra = (await req('GET', '/api/siniestros')).data.map(x => x.numero);
   assert.ok(listaAlejandra.includes('FASE1-REQ-SI') && listaAlejandra.includes('FASE1-REQ-NO') && listaAlejandra.includes('FASE1-REQ-PD'));
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const listaDaniela = (await req('GET', '/api/siniestros')).data.map(x => x.numero);
   assert.ok(listaDaniela.includes('FASE1-REQ-SI'), 'Daniela debe ver los que sí requieren refacciones');
   assert.ok(listaDaniela.includes('FASE1-REQ-PD'), 'Daniela debe ver los que están por definir (podría ser ella quien lo determine)');
@@ -455,7 +457,7 @@ test('FASE2-3: Alejandra puede crear una tarea suelta (no solo automáticas) y m
   assert.equal(completar.data.estado, 'completada');
   assert.ok(completar.data.completado_en, 'debe registrar cuándo se completó');
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('FASE2-4: la bandeja de clientes calcula días sin actualización y cuenta tareas pendientes/vencidas', async () => {
@@ -473,7 +475,7 @@ test('FASE2-4: la bandeja de clientes calcula días sin actualización y cuenta 
   assert.equal(fila.tareas_pendientes, 2);
   assert.equal(fila.tareas_vencidas, 1);
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== FASE 3 — Módulo Alejandra: catálogo de hitos por expediente ===================== */
@@ -522,7 +524,7 @@ test('FASE3-3: marcar un hito como "no aplica" exige motivo, y marcarlo "enviado
   const bitacora = (await req('GET', '/api/eventos-cliente?siniestro_id=' + s.id)).data;
   assert.ok(bitacora.some(e => e.id === conMensaje.data.evento_cliente_id && e.mensaje.includes('explicamos el proceso completo')));
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== FASE 4 — Módulo Alejandra: copiloto de IA (sin API conectada) ===================== */
@@ -561,7 +563,7 @@ test('FASE4-2: se puede guardar un borrador pegado desde la IA, marcarlo revisad
   const bitacora = (await req('GET', '/api/eventos-cliente?siniestro_id=' + s.id)).data;
   assert.ok(bitacora.some(e => e.id === enviado.data.evento_cliente_id && e.mensaje.includes('ya está en valuación')));
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== FASE 5 — Módulo Alejandra: automatizaciones cruzadas ===================== */
@@ -569,7 +571,7 @@ test('FASE5-1: cuando TODOS los pedidos de un expediente quedan en estado termin
   await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASE5-REFCOMP', aseguradora: 'GNP', cliente_nombre: 'X', cliente_telefono: '1', cliente_correo: 'x@x.com' })).data;
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const p1 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-1', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
   const p2 = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-2', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
 
@@ -591,7 +593,7 @@ test('FASE5-1: cuando TODOS los pedidos de un expediente quedan en estado termin
 
 test('FASE5-2: cambiar la fecha prometida de un pedido crea una tarea automática de aviso al cliente', async () => {
   const s = (await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' })) && (await req('POST', '/api/siniestros', { numero: 'FASE5-FECHA', aseguradora: 'GNP', cliente_nombre: 'Y', cliente_telefono: '2', cliente_correo: 'y@y.com' })).data;
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const p = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-FECHA', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
 
   await req('PATCH', '/api/pedidos/' + p.id, { cotizacion: 'sin cambio de fecha' });
@@ -623,11 +625,11 @@ test('FASE5-3: confirmar el hito de Entrega como enviado programa la postventa a
   assert.ok(tareaPostventa, 'debe crearse la tarea automática de postventa');
   assert.equal(tareaPostventa.fecha_limite, actualizado.postventa_programada);
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('REQ-DANIELA-1: solo Daniela (operativo) o admin pueden aprobar/registrar un correo; consulta no puede', async () => {
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'REQ1-SIN', aseguradora: 'Mapfre' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'REQ1-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
 
@@ -643,7 +645,7 @@ test('REQ-DANIELA-1: solo Daniela (operativo) o admin pueden aprobar/registrar u
   const bloqueado = await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'prov@x.com', asunto: 'a', cuerpo: 'b' });
   assert.equal(bloqueado.status, 403, 'un usuario de consulta no debe poder aprobar correos');
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('REQ-DANIELA-2: no se puede cerrar un siniestro con pedidos pendientes o sin fecha de entrega; sí cuando ambos se cumplen', async () => {
@@ -749,7 +751,7 @@ test('REQ-DANIELA-8: solo Daniela/admin pueden aprobar o descartar un correo de 
   const bloqueadoDescartar = await req('PATCH', `/api/comunicaciones/${com2.id}/descartar`, {});
   assert.equal(bloqueadoDescartar.status, 403);
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const descartado = await req('PATCH', `/api/comunicaciones/${com2.id}/descartar`, { motivo: 'Duplicado' });
   assert.equal(descartado.status, 200);
 });
@@ -844,7 +846,7 @@ test('REQ-DANIELA-14: carga masiva exclusiva de Daniela/admin; consulta no puede
   await req('POST', '/api/auth/login', { email: 'consulta.req1@serviciocristian.mx', password: 'Password123!' });
   const bloqueado = await req('POST', '/api/carga-masiva/validar', { csv: 'numero_siniestro,aseguradora,numero_pedido,fecha_prevista\nA,B,C,2026-01-01' });
   assert.equal(bloqueado.status, 403);
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('REQ-DANIELA-15: exportar expedientes en CSV incluye siniestros aunque no tengan ningún pedido capturado', async () => {
@@ -897,4 +899,35 @@ test('REQ-DANIELA-17: las sesiones sobreviven aunque se cree un almacén complet
   assert.equal(leida.user.nombre, 'Prueba Reinicio');
 
   await new Promise((resolve, reject)=> store1.destroy('sid-de-prueba-reinicio', (err)=> err?reject(err):resolve()));
+});
+
+test('REQ-DANIELA-18: el login con contraseña incorrecta muestra "Credenciales incorrectas", no "Sesión expirada" (endpoint)', async () => {
+  const r = await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'password-incorrecta-cualquiera' });
+  assert.equal(r.status, 401);
+  assert.equal(r.data.error, 'Credenciales incorrectas.');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('REQ-DANIELA-19: admin puede resetear la contraseña de otro usuario y el usuario puede entrar con la nueva', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const usuarios = (await req('GET', '/api/auth/usuarios')).data;
+  const alejandra = usuarios.find(u => u.email === 'alejandra@serviciocristian.mx');
+  const r = await req('POST', `/api/auth/usuarios/${alejandra.id}/reset-password`, {});
+  assert.equal(r.status, 200);
+  assert.ok(r.data.password_temporal);
+
+  const loginNuevo = await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: r.data.password_temporal });
+  assert.equal(loginNuevo.status, 200);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('REQ-DANIELA-20: el reset de emergencia de Daniela es idempotente (no se repite en cada arranque)', async () => {
+  const db = require('../server/db');
+  const { resetEmergenciaDaniela } = require('../server/resetEmergenciaDaniela');
+  const antes = db.prepare("SELECT COUNT(*) n FROM auditoria WHERE accion='reset_emergencia_daniela_2026-08-24'").get().n;
+  resetEmergenciaDaniela();
+  resetEmergenciaDaniela();
+  const despues = db.prepare("SELECT COUNT(*) n FROM auditoria WHERE accion='reset_emergencia_daniela_2026-08-24'").get().n;
+  assert.equal(antes, despues, 'no debe crear un segundo marcador ni resetear la contraseña de nuevo');
 });

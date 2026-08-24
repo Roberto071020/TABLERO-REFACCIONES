@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const { registrarAuditoria } = require('./utils');
+const crypto = require('crypto');
 
 function requireAuth(req, res, next){
   if(!req.session || !req.session.user) return res.status(401).json({ error:'No autenticado. Inicia sesión.' });
@@ -53,4 +54,16 @@ function crearUsuario(req, res){
   }
 }
 
-module.exports = { requireAuth, requireRole, login, logout, me, crearUsuario };
+// Solo un admin puede resetear la contraseña de otro usuario (ej. Daniela cambió la suya y ya no la recuerda).
+// Genera una temporal legible y la regresa una sola vez; el usuario debe cambiarla en su siguiente login.
+function resetPassword(req, res){
+  const u = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(req.params.id);
+  if(!u) return res.status(404).json({ error:'Usuario no encontrado.' });
+  const temporal = 'SC-' + crypto.randomBytes(4).toString('hex').toUpperCase() + '!';
+  const hash = bcrypt.hashSync(temporal, 10);
+  db.prepare('UPDATE usuarios SET password_hash = ? WHERE id = ?').run(hash, u.id);
+  registrarAuditoria(db, { entidad_tipo:'usuario', entidad_id:u.id, accion:'password_reseteada_por_admin', usuario:req.session.user });
+  res.json({ ok:true, email:u.email, password_temporal: temporal });
+}
+
+module.exports = { requireAuth, requireRole, login, logout, me, crearUsuario, resetPassword };
