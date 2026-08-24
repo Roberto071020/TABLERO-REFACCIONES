@@ -931,3 +931,31 @@ test('REQ-DANIELA-20: el reset de emergencia de Daniela es idempotente (no se re
   const despues = db.prepare("SELECT COUNT(*) n FROM auditoria WHERE accion='reset_emergencia_daniela_2026-08-24'").get().n;
   assert.equal(antes, despues, 'no debe crear un segundo marcador ni resetear la contraseña de nuevo');
 });
+
+test('REQ-ROBERTO-1: el resumen diario incluye indicadores de atención a clientes (tareas, hitos, IA, expedientes sin actualizar)', async () => {
+  await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ROB1-SIN', aseguradora: 'GNP', cliente_nombre: 'Cliente Prueba', cliente_telefono: '555', cliente_correo: 'c@c.com' })).data;
+  const db = require('../server/db');
+  db.prepare("UPDATE siniestros SET creado_en = datetime('now', '-10 days') WHERE id = ?").run(s.id);
+
+  // Tarea pendiente vencida.
+  await req('POST', '/api/tareas', { siniestro_id: s.id, descripcion: 'Llamar al cliente', fecha_limite: '2020-01-01' });
+
+  // Hito listo (generado) sin enviar.
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const primero = hitos[0];
+  await req('PATCH', '/api/hitos/' + primero.id, { estado: 'generado' });
+
+  // Mensaje de IA generado sin aprobar.
+  await req('POST', '/api/mensajes-ia', { siniestro_id: s.id, hito_id: primero.hito_id, contexto_usado: 'ctx', borrador: 'Hola, este es un mensaje de prueba.' });
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const r = (await req('GET', '/api/reportes/resumen')).data;
+  assert.ok(r.tareasPendientes >= 1);
+  assert.ok(r.tareasVencidas >= 1);
+  assert.ok(r.hitosListosSinEnviar >= 1);
+  assert.ok(r.mensajesIaPendientes >= 1);
+  assert.ok(r.expedientesSinActualizar >= 1, 'el expediente recién creado sin eventos_cliente debe contar como sin actualizar tras 3+ días (o si su fecha de alta ya es vieja)');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

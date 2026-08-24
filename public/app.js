@@ -193,6 +193,7 @@ async function render(){
 /* ===================== VISTA: INICIO ===================== */
 async function viewInicio(){
   const r = await api('GET','/api/reportes/resumen');
+  const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
   return `
   <h2>Resumen diario</h2>
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
@@ -205,6 +206,18 @@ async function viewInicio(){
     <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
     <div class="card verde"><div class="num">${r.cierresHoy}</div><div class="label">Cierres de hoy</div></div>
   </div>
+  ${verClientes ? `
+  <div class="section">
+    <h3>Atención a clientes</h3>
+    <p class="subtle">Seguimiento del lado del cliente (módulo de Alejandra), aparte de las refacciones.</p>
+    <div class="grid-cards">
+      <div class="card ${r.expedientesSinActualizar>0?'rojo':'verde'}"><div class="num">${r.expedientesSinActualizar}</div><div class="label">Expedientes sin actualizar (+3 días)</div></div>
+      <div class="card ambar"><div class="num">${r.tareasPendientes}</div><div class="label">Tareas pendientes</div></div>
+      <div class="card ${r.tareasVencidas>0?'rojo':'verde'}"><div class="num">${r.tareasVencidas}</div><div class="label">Tareas vencidas</div></div>
+      <div class="card azul"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Hitos listos, sin avisar al cliente</div></div>
+      <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.mensajesIaPendientes}</div><div class="label">Mensajes de IA por revisar</div></div>
+    </div>
+  </div>` : ''}
   <div class="section">
     <h3>Indicadores por aseguradora</h3>
     ${r.porAseguradora.length===0?'<div class="empty">Sin datos.</div>':`

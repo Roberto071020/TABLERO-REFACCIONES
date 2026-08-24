@@ -101,7 +101,25 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const pendientesCompletar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE completo = 0`).get().n;
   const expedientesEnSeguimiento = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado = 0 AND estatus_general != 'Cerrado'`).get().n;
   const porAseguradora = db.prepare(`SELECT s.aseguradora, COUNT(DISTINCT p.id) abiertos FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo NOT IN ('Cerrado') GROUP BY s.aseguradora`).all();
-  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora });
+
+  // Requerimiento de Roberto: el resumen diario solo hablaba de refacciones — agregar el lado de
+  // atención y seguimiento a clientes (módulo de Alejandra), para que también se vea de un vistazo.
+  const tareasPendientes = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE estado IN ('pendiente','en_proceso')`).get().n;
+  const tareasVencidas = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE estado IN ('pendiente','en_proceso') AND fecha_limite != '' AND fecha_limite < ?`).get(hoy).n;
+  const mensajesIaPendientes = db.prepare(`SELECT COUNT(*) n FROM mensajes_ia WHERE estado = 'generado'`).get().n;
+  const hitosListosSinEnviar = db.prepare(`SELECT COUNT(*) n FROM siniestro_hitos WHERE estado = 'generado'`).get().n;
+  // Expedientes con más de 3 días sin ninguna comunicación registrada con el cliente (mismo umbral
+  // que ya usa la bandeja de Clientes de Alejandra para "días sin actualización").
+  const expedientesSinActualizar = db.prepare(`
+    SELECT COUNT(*) n FROM siniestros s
+    WHERE s.archivado = 0 AND s.estatus_general != 'Cerrado' AND s.requiere_refacciones != 'no'
+      AND julianday('now') - julianday(COALESCE(
+        (SELECT MAX(creado_en) FROM eventos_cliente WHERE siniestro_id = s.id), s.creado_en
+      )) > 3
+  `).get().n;
+
+  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
+    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar });
 });
 
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.
