@@ -1,5 +1,6 @@
 node_modules/
 data/*.db
+data/backups/
 data/*.db-journal
 uploads/*
 !uploads/.gitkeep

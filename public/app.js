@@ -162,7 +162,8 @@ const TABS = [
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
   {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
   {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
-  {k:'reglas', label:'Reglas', roles:['operativo','admin','jefe']}
+  {k:'reglas', label:'Reglas', roles:['operativo','admin','jefe']},
+  {k:'respaldos', label:'Respaldos', roles:['admin']}
 ];
 function renderTabs(){
   const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
@@ -223,6 +224,7 @@ async function render(){
     else if(state.view==='produccion') app.innerHTML = await viewProduccion();
     else if(state.view==='calidad') app.innerHTML = await viewCalidad();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
+    else if(state.view==='respaldos') app.innerHTML = await viewRespaldos();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
     if(e.message !== 'Sesión expirada. Vuelve a iniciar sesión.') app.innerHTML = `<div class="empty">No se pudo cargar la vista: ${esc(e.message)}</div>`;
@@ -2723,6 +2725,40 @@ function viewReglas(){
     <h3>Sobre las pruebas de este sistema</h3>
     <p class="subtle">Las pruebas de aceptación (CA-01 a CA-10 y el caso real de Daniela) ahora son un archivo de pruebas automatizadas real en el proyecto (<code>tests/api.test.js</code>), que falla de verdad si una regla se rompe — no un panel que siempre marca "aprobado" (corrección F-09).</p>
   </div>`;
+}
+
+/* ===================== VISTA: RESPALDOS (solo admin) ===================== */
+async function viewRespaldos(){
+  const lista = await api('GET', '/api/respaldos');
+  function fmtBytes(n){
+    if(n > 1024*1024) return (n/1024/1024).toFixed(2) + ' MB';
+    if(n > 1024) return (n/1024).toFixed(0) + ' KB';
+    return n + ' B';
+  }
+  return `
+  <h2>Respaldos de la base de datos</h2>
+  <p class="subtle">Ítem 11 del triage de Daniela. Se crea un respaldo automático completo cada 24 horas
+  (se conservan los últimos 14). Además del respaldo automático de Render (instantánea diaria del disco,
+  conservada al menos 7 días, restaurable desde su panel), aquí puedes crear y descargar un respaldo
+  manual de la base de datos en cualquier momento — por ejemplo, antes de una carga masiva grande.</p>
+  <div class="section">
+    <button class="btn" onclick="crearRespaldoAhora()">Crear respaldo ahora</button>
+  </div>
+  <div class="section">
+    ${lista.length===0?'<div class="empty">Sin respaldos todavía. Crea el primero con el botón de arriba.</div>':`
+    <table><thead><tr><th>Archivo</th><th>Tamaño</th><th>Creado</th><th></th></tr></thead><tbody>
+    ${lista.map(r=>`<tr>
+      <td>${esc(r.nombre)}</td>
+      <td>${fmtBytes(r.tamano_bytes)}</td>
+      <td>${esc(r.creado_en)}</td>
+      <td><a class="link" href="/api/respaldos/${encodeURIComponent(r.nombre)}/descargar" target="_blank">Descargar</a></td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+async function crearRespaldoAhora(){
+  await api('POST', '/api/respaldos');
+  render();
 }
 
 /* ===================== INIT ===================== */

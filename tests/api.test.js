@@ -1814,3 +1814,71 @@ test('TRIAGE-ROLES-2: el rol dueño de cada módulo (y admin/jefe) sí puede esc
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Triage documento de Daniela (25-ago-2026), item 11 =====================
+   Política y prueba de respaldo/restauración. El respaldo automático (programarRespaldosAutomaticos)
+   está deshabilitado durante las pruebas (TEST_DB_PATH) para no ensuciar la carpeta de datos de
+   prueba, así que aquí se prueba la ruta manual /api/respaldos de punta a punta: solo admin puede
+   usarla, el respaldo generado es un archivo .db real y — la parte que de verdad importa — al
+   abrirlo con una conexión SQLite independiente contiene los datos reales, no solo un archivo vacío
+   con el nombre correcto. Esto es la "restauración de prueba" que pide ACC-007, ejecutada contra la
+   base de datos de pruebas, nunca contra producción. */
+
+test('TRIAGE-RESPALDO-1: solo admin puede listar, crear o descargar respaldos', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'RESPALDO-PERM-1', aseguradora: 'GNP' })).data;
+
+  const listaSinPermiso = await req('GET', '/api/respaldos');
+  assert.equal(listaSinPermiso.status, 403, 'Daniela (operativo) no debe poder listar respaldos');
+  const crearSinPermiso = await req('POST', '/api/respaldos');
+  assert.equal(crearSinPermiso.status, 403, 'Daniela (operativo) no debe poder crear un respaldo');
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const creado = await req('POST', '/api/respaldos');
+  assert.equal(creado.status, 201, 'admin sí debe poder crear un respaldo');
+  assert.ok(creado.data.nombre.startsWith('tablero-') && creado.data.nombre.endsWith('.db'));
+
+  const lista = await req('GET', '/api/respaldos');
+  assert.equal(lista.status, 200);
+  assert.ok(lista.data.some(r => r.nombre === creado.data.nombre), 'el respaldo recién creado debe aparecer en la lista');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('TRIAGE-RESPALDO-2: el respaldo generado es un archivo SQLite consistente que, al restaurarlo en una conexión aparte, conserva los datos reales', async () => {
+  const { DatabaseSync } = require('node:sqlite');
+
+  const marcador = 'RESPALDO-DATO-' + Date.now();
+  const s = (await req('POST', '/api/siniestros', { numero: marcador, aseguradora: 'GNP', vehiculo: 'Aveo de prueba de respaldo', placas: 'RSP-001' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const creado = await req('POST', '/api/respaldos');
+  assert.equal(creado.status, 201);
+
+  const descarga = await fetch(BASE + '/api/respaldos/' + encodeURIComponent(creado.data.nombre) + '/descargar', { headers: { Cookie: cookie } });
+  assert.equal(descarga.status, 200, 'el respaldo debe poder descargarse');
+  const buf = Buffer.from(await descarga.arrayBuffer());
+  assert.ok(buf.length > 0, 'el archivo de respaldo no debe estar vacío');
+
+  const rutaTemporal = path.join(__dirname, '..', 'data', 'respaldo-prueba-restauracion.db');
+  fs.writeFileSync(rutaTemporal, buf);
+
+  // "Restauración de prueba" real: se abre el respaldo con una conexión SQLite completamente
+  // independiente (no la del servidor) y se confirma que el dato capturado antes de respaldar sigue ahí.
+  const dbRestaurada = new DatabaseSync(rutaTemporal);
+  const fila = dbRestaurada.prepare('SELECT numero, vehiculo, placas FROM siniestros WHERE numero = ?').get(marcador);
+  dbRestaurada.close();
+  fs.unlinkSync(rutaTemporal);
+
+  assert.ok(fila, 'el siniestro capturado antes del respaldo debe existir en el archivo restaurado');
+  assert.equal(fila.vehiculo, 'Aveo de prueba de respaldo');
+  assert.equal(fila.placas, 'RSP-001');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('TRIAGE-RESPALDO-3: descargar un nombre de respaldo que no existe da 404, no expone rutas arbitrarias del disco', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const r = await req('GET', '/api/respaldos/' + encodeURIComponent('../../../etc/passwd') + '/descargar');
+  assert.equal(r.status, 404);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
