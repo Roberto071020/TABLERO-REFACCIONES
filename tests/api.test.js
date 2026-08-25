@@ -1493,3 +1493,36 @@ test('PROPUESTA-10: un archivo tipo "Orden de trabajo" subido para el siniestro 
   assert.equal(archivos.status, 200);
   assert.deepEqual(archivos.data, [], 'sin documentos adjuntos todavía debe regresar una lista vacía, no error');
 });
+
+/* ===================== Triage documento de Daniela (25-ago-2026), item 1 =====================
+   Exponer proveedor + los 10 estados de pieza en las pantallas, y completar el alta/edición de
+   proveedor (teléfono, teléfono alterno, regla especial). El backend de piezas ya soportaba todo
+   esto; lo que faltaba era exponerlo. Estas pruebas cubren lo nuevo: telefono_alterno en proveedores
+   y la edición completa de un proveedor existente. */
+
+test('TRIAGE-1: se puede dar de alta un proveedor con teléfono, teléfono alterno y regla especial, y editarlo después', async () => {
+  const pv = (await req('POST', '/api/proveedores', {
+    razon_social: 'Refacciones Triage SA', contacto: 'Juan', correo: 'juan@triage.mx',
+    telefono: '55-0000-0001', telefono_alterno: '55-0000-0002', regla_especial: 'Confirmar por teléfono siempre.'
+  })).data;
+  assert.equal(pv.telefono_alterno, '55-0000-0002');
+
+  const editado = await req('PATCH', '/api/proveedores/' + pv.id, { telefono_alterno: '55-0000-0003', regla_especial: 'Nueva regla.' });
+  assert.equal(editado.status, 200);
+  assert.equal(editado.data.telefono_alterno, '55-0000-0003');
+  assert.equal(editado.data.regla_especial, 'Nueva regla.');
+});
+
+test('TRIAGE-2: se puede asignar proveedor y mover una pieza por cualquiera de sus 10 estados, no solo a Recibida físicamente', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'TRIAGE-PZ1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'TRIAGE-PZ1-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const pv = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor Triage 2' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro delantero', proveedor_id: pv.id })).data;
+  assert.equal(z.estatus, 'Asignada', 'al crear con proveedor debe quedar Asignada, no Sin proveedor');
+
+  for(const estatus of ['Confirmada','Facturada','En tránsito','Entregada por proveedor']){
+    const r = await req('PATCH', '/api/piezas/' + z.id, { estatus });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.estatus, estatus);
+  }
+});

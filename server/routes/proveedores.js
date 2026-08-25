@@ -31,8 +31,8 @@ router.post('/', requireAuth, (req, res)=>{
   if(!b.razon_social || !String(b.razon_social).trim()) return res.status(400).json({ error:'La razón social es obligatoria.' });
   const existente = db.prepare('SELECT * FROM proveedores WHERE razon_social = ?').get(b.razon_social.trim());
   if(existente) return res.status(409).json({ error:'Ya existe un proveedor con ese nombre.' });
-  const info = db.prepare(`INSERT INTO proveedores (razon_social,contacto,correo,telefono,aseguradoras,regla_especial) VALUES (?,?,?,?,?,?)`)
-    .run(b.razon_social.trim(), b.contacto||'', b.correo||'', b.telefono||'', JSON.stringify(b.aseguradoras||[]), b.regla_especial||'');
+  const info = db.prepare(`INSERT INTO proveedores (razon_social,contacto,correo,telefono,telefono_alterno,aseguradoras,regla_especial) VALUES (?,?,?,?,?,?,?)`)
+    .run(b.razon_social.trim(), b.contacto||'', b.correo||'', b.telefono||'', b.telefono_alterno||'', JSON.stringify(b.aseguradoras||[]), b.regla_especial||'');
   registrarAuditoria(db, { entidad_tipo:'proveedor', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user, valor_nuevo:b.razon_social });
   res.status(201).json(db.prepare('SELECT * FROM proveedores WHERE id = ?').get(info.lastInsertRowid));
 });
@@ -41,10 +41,10 @@ router.patch('/:id', requireAuth, (req, res)=>{
   const anterior = db.prepare('SELECT * FROM proveedores WHERE id = ?').get(req.params.id);
   if(!anterior) return res.status(404).json({ error:'Proveedor no encontrado.' });
   const nuevo = { ...anterior };
-  ['contacto','correo','telefono','regla_especial','activo'].forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
+  ['contacto','correo','telefono','telefono_alterno','regla_especial','activo'].forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
   if(req.body.aseguradoras !== undefined) nuevo.aseguradoras = JSON.stringify(req.body.aseguradoras);
-  db.prepare(`UPDATE proveedores SET contacto=?,correo=?,telefono=?,regla_especial=?,activo=?,aseguradoras=? WHERE id=?`)
-    .run(nuevo.contacto, nuevo.correo, nuevo.telefono, nuevo.regla_especial, nuevo.activo, nuevo.aseguradoras, req.params.id);
+  db.prepare(`UPDATE proveedores SET contacto=?,correo=?,telefono=?,telefono_alterno=?,regla_especial=?,activo=?,aseguradoras=? WHERE id=?`)
+    .run(nuevo.contacto, nuevo.correo, nuevo.telefono, nuevo.telefono_alterno, nuevo.regla_especial, nuevo.activo, nuevo.aseguradoras, req.params.id);
   auditarCambios(db, { entidad_tipo:'proveedor', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM proveedores WHERE id = ?').get(req.params.id));
 });

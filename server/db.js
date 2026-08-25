@@ -704,4 +704,11 @@ for(const [col, def] of NUEVAS_COLUMNAS_FUSION_OV){
   }
 }
 
+/* ===================== Triage documento de Daniela (25-ago-2026), item 1 =====================
+   REQ-005: falta el campo "telefono alterno" en la ficha de proveedor (el backend ya soportaba
+   telefono y regla_especial, pero no telefono_alterno). Aditivo, mismo patron de siempre. */
+if(!tieneColumna('proveedores', 'telefono_alterno')){
+  db.exec(`ALTER TABLE proveedores ADD COLUMN telefono_alterno TEXT;`);
+}
+
 module.exports = db;

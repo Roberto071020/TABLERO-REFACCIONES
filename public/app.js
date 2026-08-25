@@ -548,8 +548,13 @@ async function viewProveedorDetalle(id){
   const incidencias = pv.piezas.filter(z=>z.estatus==='Incorrecta/dañada'||z.estatus==='Devuelta');
   return `
   <button class="btn ghost small no-print" onclick="goTo('proveedores')">← Volver a proveedores</button>
-  <h2 style="margin-top:10px;">${esc(pv.razon_social)}</h2>
-  <p class="subtle">${esc(pv.contacto||'')} · ${esc(pv.correo||'')} · ${esc(pv.telefono||'')}</p>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+    <div>
+      <h2 style="margin-top:10px;margin-bottom:2px;">${esc(pv.razon_social)} ${pv.activo?'':'<span class="badge gris">Inactivo</span>'}</h2>
+      <p class="subtle">${esc(pv.contacto||'')} · ${esc(pv.correo||'')} · Tel. ${esc(pv.telefono||'—')}${pv.telefono_alterno?' · Alterno '+esc(pv.telefono_alterno):''}</p>
+    </div>
+    <button class="btn small secondary no-print" onclick="abrirFormEditarProveedor(${pv.id})">Editar</button>
+  </div>
   <div class="grid-cards">
     <div class="card azul"><div class="num">${activos.length}</div><div class="label">Piezas activas</div></div>
     <div class="card rojo"><div class="num">${vencidas.length}</div><div class="label">Piezas vencidas</div></div>
@@ -901,10 +906,12 @@ async function viewSiniestro(id){
   } else if(state.subtabSiniestro==='piezas'){
     let allz = [];
     for(const p of peds){ const zs = await api('GET','/api/piezas?pedido_id='+p.id); zs.forEach(z=>allz.push({z,p})); }
+    const proveedoresNombre = {};
+    (await api('GET','/api/proveedores')).forEach(pv=>{ proveedoresNombre[pv.id] = pv.razon_social; });
     body = `<table><thead><tr><th>Pedido</th><th>Pieza</th><th>Proveedor</th><th>Precio</th><th>F. prometida</th><th>Estatus</th><th>Recepción</th><th></th></tr></thead><tbody>
     ${allz.map(o=>`<tr>
       <td>${esc(o.p.numero)}</td><td>${esc(o.z.descripcion)}${o.z.observaciones?`<div class="subtle">${esc(o.z.observaciones)}</div>`:''}</td>
-      <td>${o.z.proveedor_id?esc('#'+o.z.proveedor_id):'—'}</td><td>${fmtMoney(o.z.precio)}</td>
+      <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Sin proveedor</span>'}</td><td>${fmtMoney(o.z.precio)}</td>
       <td>${esc(o.z.fecha_prometida||'')}</td>
       <td>${esc(o.z.estatus)}</td>
       <td>${o.z.fecha_recepcion?esc(o.z.fecha_recepcion):'—'}</td>
@@ -1894,8 +1901,10 @@ async function marcarRecibida(piezaId){
 }
 
 /* ===================== FORMULARIOS: PIEZAS / INCIDENCIAS / RESPUESTAS / ARCHIVOS ===================== */
-function abrirFormNuevaPieza(){
+const ESTATUS_PIEZA_OPCIONES = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
+async function abrirFormNuevaPieza(){
   const pedidoId = document.getElementById('piezaPedidoSel').value;
+  const proveedores = await api('GET','/api/proveedores');
   showModal(`
     <h3>Agregar pieza</h3>
     <div class="field"><label>Descripción</label><input id="fz_desc" placeholder="Espejo lateral derecho"></div>
@@ -1904,32 +1913,41 @@ function abrirFormNuevaPieza(){
       <div class="field"><label>Tipo</label><select id="fz_tipo"><option>Original</option><option>Genérica</option><option>Usada</option></select></div>
     </div>
     <div class="row-flex">
+      <div class="field"><label>Proveedor</label><select id="fz_prov"><option value="">Sin proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}">${esc(pv.razon_social)}</option>`).join('')}</select></div>
       <div class="field"><label>Cantidad</label><input id="fz_cant" type="number" value="1" min="1"></div>
       <div class="field"><label>Precio</label><input id="fz_precio" type="number" step="0.01" value="0"></div>
-      <div class="field"><label>Fecha prometida</label><input id="fz_fecha" type="date" value="${todayISO()}"></div>
     </div>
+    <div class="field"><label>Fecha prometida</label><input id="fz_fecha" type="date" value="${todayISO()}"></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaPieza(${pedidoId})">Guardar</button></div>
   `);
 }
 async function guardarNuevaPieza(pedidoId){
   const descripcion = document.getElementById('fz_desc').value.trim();
   if(!descripcion){ toast('La descripción es obligatoria.', 'error'); return; }
-  await api('POST','/api/piezas', {
-    pedido_id: pedidoId, descripcion, numero_parte: document.getElementById('fz_parte').value,
-    tipo: document.getElementById('fz_tipo').value, cantidad: +document.getElementById('fz_cant').value,
-    precio: +document.getElementById('fz_precio').value, fecha_prometida: document.getElementById('fz_fecha').value
-  });
-  toast('Pieza agregada.', 'success');
-  closeModal(); render();
+  try{
+    await api('POST','/api/piezas', {
+      pedido_id: pedidoId, descripcion, numero_parte: document.getElementById('fz_parte').value,
+      tipo: document.getElementById('fz_tipo').value, proveedor_id: document.getElementById('fz_prov').value || null,
+      cantidad: +document.getElementById('fz_cant').value,
+      precio: +document.getElementById('fz_precio').value, fecha_prometida: document.getElementById('fz_fecha').value
+    });
+    toast('Pieza agregada.', 'success');
+    closeModal(); render();
+  }catch(e){}
 }
 async function abrirFormEditarPieza(id){
   const z = await api('GET','/api/piezas/'+id);
+  const proveedores = await api('GET','/api/proveedores');
   showModal(`
     <h3>Editar pieza</h3>
     <div class="field"><label>Descripción</label><input id="fez_desc" value="${esc(z.descripcion)}"></div>
     <div class="row-flex">
       <div class="field"><label>Número de parte</label><input id="fez_parte" value="${esc(z.numero_parte||'')}"></div>
       <div class="field"><label>Tipo</label><select id="fez_tipo">${['Original','Genérica','Usada'].map(t=>`<option ${z.tipo===t?'selected':''}>${t}</option>`).join('')}</select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Proveedor</label><select id="fez_prov"><option value="">Sin proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}" ${z.proveedor_id===pv.id?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}</select></div>
+      <div class="field"><label>Estatus</label><select id="fez_estatus">${ESTATUS_PIEZA_OPCIONES.map(o=>`<option ${z.estatus===o?'selected':''}>${o}</option>`).join('')}</select></div>
     </div>
     <div class="row-flex">
       <div class="field"><label>Cantidad</label><input id="fez_cant" type="number" min="1" value="${z.cantidad}"></div>
@@ -1941,14 +1959,18 @@ async function abrirFormEditarPieza(id){
   `);
 }
 async function guardarEdicionPieza(id){
-  await api('PATCH','/api/piezas/'+id, {
-    descripcion: document.getElementById('fez_desc').value, numero_parte: document.getElementById('fez_parte').value,
-    tipo: document.getElementById('fez_tipo').value, cantidad: +document.getElementById('fez_cant').value,
-    precio: +document.getElementById('fez_precio').value, fecha_prometida: document.getElementById('fez_fecha').value,
-    observaciones: document.getElementById('fez_obs').value
-  });
-  toast('Pieza actualizada.', 'success');
-  closeModal(); render();
+  try{
+    await api('PATCH','/api/piezas/'+id, {
+      descripcion: document.getElementById('fez_desc').value, numero_parte: document.getElementById('fez_parte').value,
+      tipo: document.getElementById('fez_tipo').value, proveedor_id: document.getElementById('fez_prov').value || null,
+      estatus: document.getElementById('fez_estatus').value,
+      cantidad: +document.getElementById('fez_cant').value,
+      precio: +document.getElementById('fez_precio').value, fecha_prometida: document.getElementById('fez_fecha').value,
+      observaciones: document.getElementById('fez_obs').value
+    });
+    toast('Pieza actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
 }
 
 function abrirFormIncidencia(piezaId){
@@ -2513,13 +2535,54 @@ function formNuevoProveedor(){
       <div class="field"><label>Contacto</label><input id="f_cont"></div>
       <div class="field"><label>Correo</label><input id="f_correo" type="email"></div>
     </div>
+    <div class="row-flex">
+      <div class="field"><label>Teléfono</label><input id="f_tel"></div>
+      <div class="field"><label>Teléfono alterno</label><input id="f_tel_alt"></div>
+    </div>
+    <div class="field"><label>Reglas especiales</label><textarea id="f_regla" placeholder="Ej. confirmar siempre por teléfono además de correo."></textarea></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarProveedor()">Guardar</button></div>
   `);
 }
 async function guardarProveedor(){
-  const pv = await api('POST','/api/proveedores', { razon_social: document.getElementById('f_rs').value.trim(), contacto: document.getElementById('f_cont').value, correo: document.getElementById('f_correo').value });
-  toast('Proveedor registrado.', 'success');
-  closeModal(); goProveedor(pv.id);
+  const razon_social = document.getElementById('f_rs').value.trim();
+  if(!razon_social){ toast('La razón social es obligatoria.', 'error'); return; }
+  try{
+    const pv = await api('POST','/api/proveedores', {
+      razon_social, contacto: document.getElementById('f_cont').value, correo: document.getElementById('f_correo').value,
+      telefono: document.getElementById('f_tel').value, telefono_alterno: document.getElementById('f_tel_alt').value,
+      regla_especial: document.getElementById('f_regla').value
+    });
+    toast('Proveedor registrado.', 'success');
+    closeModal(); goProveedor(pv.id);
+  }catch(e){}
+}
+async function abrirFormEditarProveedor(id){
+  const datos = await api('GET','/api/proveedores/'+id);
+  showModal(`
+    <h3>Editar proveedor</h3>
+    <div class="row-flex">
+      <div class="field"><label>Contacto</label><input id="fpv_cont" value="${esc(datos.contacto||'')}"></div>
+      <div class="field"><label>Correo</label><input id="fpv_correo" type="email" value="${esc(datos.correo||'')}"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Teléfono</label><input id="fpv_tel" value="${esc(datos.telefono||'')}"></div>
+      <div class="field"><label>Teléfono alterno</label><input id="fpv_tel_alt" value="${esc(datos.telefono_alterno||'')}"></div>
+    </div>
+    <div class="field"><label>Reglas especiales</label><textarea id="fpv_regla">${esc(datos.regla_especial||'')}</textarea></div>
+    <div class="field"><label><input id="fpv_activo" type="checkbox" ${datos.activo?'checked':''}> Proveedor activo</label></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionProveedor(${id})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionProveedor(id){
+  try{
+    await api('PATCH','/api/proveedores/'+id, {
+      contacto: document.getElementById('fpv_cont').value, correo: document.getElementById('fpv_correo').value,
+      telefono: document.getElementById('fpv_tel').value, telefono_alterno: document.getElementById('fpv_tel_alt').value,
+      regla_especial: document.getElementById('fpv_regla').value, activo: document.getElementById('fpv_activo').checked ? 1 : 0
+    });
+    toast('Proveedor actualizado.', 'success');
+    closeModal(); goProveedor(id);
+  }catch(e){}
 }
 
 /* ===================== VISTA: REGLAS ===================== */
