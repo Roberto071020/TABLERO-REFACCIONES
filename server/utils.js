@@ -138,9 +138,15 @@ function construirCuerpoAutomatico(disparador, { siniestroNumero, pedidoNumero, 
 function prepararCorreoPedidoNuevo(db, { pedido, siniestro }){
   const yaExiste = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND disparador='pedido_nuevo'`).get(pedido.id);
   if(yaExiste) return;
+  // Triage documento de Daniela (DEF-009): antes esto se disparaba para CUALQUIER pedido activo, sin
+  // piezas ni proveedor, generando un aluvión de correos con destinatario vacío. Ahora solo se prepara
+  // el correo "pedido nuevo" una vez que el pedido tiene al menos una pieza CON proveedor asignado —
+  // antes de eso no hay a quién escribirle ni qué pedirle.
+  const piezaConProveedor = db.prepare(`SELECT z.*, pv.correo as proveedor_correo, pv.id as proveedor_id FROM piezas z JOIN proveedores pv ON pv.id = z.proveedor_id WHERE z.pedido_id = ? LIMIT 1`).get(pedido.id);
+  if(!piezaConProveedor) return;
   db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
-    .run(pedido.id, siniestro.id, null, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, '',
+    .run(pedido.id, siniestro.id, piezaConProveedor.proveedor_id, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, piezaConProveedor.proveedor_correo || '',
       copiaSugeridaPorAseguradora(siniestro.aseguradora),
       construirCuerpoAutomatico('pedido_nuevo', { siniestroNumero: siniestro.numero, pedidoNumero: pedido.numero }),
       'pedido_nuevo', 'pendiente_aprobacion', 'pedido_nuevo', null);

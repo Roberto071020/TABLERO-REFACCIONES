@@ -776,4 +776,32 @@ if(!tieneColumna('proveedores', 'creado_por_lote_id')){
   db.exec(`ALTER TABLE proveedores ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
 }
 
+/* ===================== Triage documento de Daniela (25-ago-2026), item 7 =====================
+   REQ-018: faltaba sustitución y eliminación recuperable de archivos. Aditivo, mismo patrón. */
+if(!tieneColumna('archivos', 'eliminado')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN eliminado INTEGER NOT NULL DEFAULT 0;`);
+}
+if(!tieneColumna('archivos', 'eliminado_en')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN eliminado_en TEXT;`);
+}
+if(!tieneColumna('archivos', 'eliminado_por')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN eliminado_por INTEGER REFERENCES usuarios(id);`);
+}
+if(!tieneColumna('archivos', 'version')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN version INTEGER NOT NULL DEFAULT 1;`);
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS archivos_versiones_anteriores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archivo_id INTEGER NOT NULL REFERENCES archivos(id),
+  version INTEGER NOT NULL,
+  nombre_original TEXT,
+  nombre_almacenado TEXT NOT NULL,
+  mime TEXT,
+  tamano INTEGER,
+  reemplazado_por INTEGER REFERENCES usuarios(id),
+  reemplazado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+
 module.exports = db;

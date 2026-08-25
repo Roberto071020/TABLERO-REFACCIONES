@@ -986,14 +986,24 @@ async function viewSiniestro(id){
     </tbody></table>`;
   } else if(state.subtabSiniestro==='archivos'){
     const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
-    body = `<table><thead><tr><th>Tipo</th><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
-    ${archivos.length===0?'<tr><td colspan="4" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>${esc(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Descargar</a></td></tr>`).join('')}
+    const papelera = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id+'&incluir_eliminados=1');
+    const enPapelera = papelera.filter(a=>a.eliminado);
+    body = `<table><thead><tr><th>Tipo</th><th>Nombre</th><th>Versión</th><th>Fecha</th><th></th></tr></thead><tbody>
+    ${archivos.length===0?'<tr><td colspan="5" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>v${a.version}</td><td>${esc(a.creado_en)}</td><td>
+      <a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Descargar</a>
+      <button class="btn small secondary" onclick="abrirFormSustituirArchivo(${a.id})">Sustituir</button>
+      <button class="btn small danger" onclick="eliminarArchivo(${a.id})">Eliminar</button>
+    </td></tr>`).join('')}
     </tbody></table>
     <form id="formArchivo" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;" onsubmit="return subirArchivo(event, ${id})">
       <input type="file" id="archivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required>
       <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option></select>
       <button class="btn small" type="submit">Subir archivo real</button>
-    </form>`;
+    </form>
+    ${enPapelera.length>0?`<h4 style="margin-top:16px;">Papelera (${enPapelera.length})</h4>
+    <table><thead><tr><th>Nombre</th><th>Eliminado</th><th></th></tr></thead><tbody>
+    ${enPapelera.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${esc(a.eliminado_en)}</td><td><button class="btn small secondary" onclick="restaurarArchivo(${a.id})">Restaurar</button></td></tr>`).join('')}
+    </tbody></table>`:''}`;
   } else if(state.subtabSiniestro==='timeline'){
     const eventos = await api('GET','/api/auditoria?entidad_tipo=siniestro&entidad_id='+id);
     let pedEventos = [];
@@ -2094,6 +2104,41 @@ async function subirArchivo(ev, siniestroId){
   render();
   return false;
 }
+function abrirFormSustituirArchivo(archivoId){
+  showModal(`
+    <h3>Sustituir archivo</h3>
+    <p class="subtle">La versión anterior no se borra, queda disponible para el administrador.</p>
+    <div class="field"><input type="file" id="sustArchivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarSustitucionArchivo(${archivoId})">Guardar</button></div>
+  `);
+}
+async function guardarSustitucionArchivo(archivoId){
+  const input = document.getElementById('sustArchivoInput');
+  if(!input.files[0]){ toast('Selecciona un archivo.', 'error'); return; }
+  const fd = new FormData();
+  fd.append('archivo', input.files[0]);
+  const res = await fetch('/api/archivos/'+archivoId+'/sustituir', { method:'PATCH', body: fd });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(data.error||'No se pudo sustituir el archivo.', 'error'); return; }
+  toast('Archivo sustituido.', 'success');
+  closeModal(); render();
+}
+async function eliminarArchivo(archivoId){
+  const ok = await confirmDialog('¿Eliminar este archivo? Queda en la papelera, no se borra permanentemente.', { textoOk:'Sí, eliminar' });
+  if(!ok) return;
+  try{
+    await api('DELETE','/api/archivos/'+archivoId);
+    toast('Archivo movido a la papelera.', 'success');
+    render();
+  }catch(e){}
+}
+async function restaurarArchivo(archivoId){
+  try{
+    await api('POST','/api/archivos/'+archivoId+'/restaurar');
+    toast('Archivo restaurado.', 'success');
+    render();
+  }catch(e){}
+}
 
 /* ===================== GENERADOR DE CORREOS ===================== */
 async function abrirGenerador(pedidoId){
@@ -2102,6 +2147,7 @@ async function abrirGenerador(pedidoId){
     showModal(`<h3>Generador de correo</h3><p><span class="badge verde">No requiere correo</span></p><p>${esc(r.mensaje)}</p><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
     return;
   }
+  const avisoSinProveedor = (r.piezasSinProveedor && r.piezasSinProveedor.length) ? `<div class="banner ambar">${r.piezasSinProveedor.length} pieza(s) sin proveedor asignado no se incluyeron en ningún correo: ${esc(r.piezasSinProveedor.join(', '))}. Asígnales proveedor primero si también necesitan seguimiento.</div>` : '';
   const content = r.borradores.map((d,idx)=>`
     <div class="email-block" id="email-${idx}">
       <div style="display:flex;justify-content:space-between;align-items:center;"><b>${esc(d.proveedor_nombre)}</b><span class="badge ${d.tipo_plantilla==='incidencia'?'morado':'azul'}">${esc(d.tipo_plantilla)}</span></div>
@@ -2117,7 +2163,7 @@ async function abrirGenerador(pedidoId){
       <div class="field"><label>Cuerpo</label><textarea id="cuerpo-${idx}" style="min-height:160px;">${esc(d.cuerpo)}</textarea></div>
       <button class="btn small" ${d.proveedor_id?'':'disabled'} onclick="aprobarCorreo(${pedidoId}, ${idx}, ${d.proveedor_id||'null'})">Aprobar y registrar (borrador/sandbox)</button>
     </div>`).join('');
-  showModal(`<h3>Generador de correo de seguimiento</h3><p class="subtle">Piezas recibidas o canceladas nunca aparecen aquí (regla R-04). No se envían correos reales todavía.</p>${content}<div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
+  showModal(`<h3>Generador de correo de seguimiento</h3><p class="subtle">Piezas recibidas o canceladas nunca aparecen aquí (regla R-04). No se envían correos reales todavía.</p>${avisoSinProveedor}${content}<div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
 }
 async function aprobarCorreo(pedidoId, idx, proveedorId){
   const bloque = document.getElementById('email-'+idx);

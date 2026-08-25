@@ -6,6 +6,13 @@ const router = express.Router();
 
 const CC_GNP = 'cristian.hernandezortiz@gnp.com.mx, luis.ramirezalvarez@gnp.com.mx, roveytia@hotmail.com';
 const CERRADAS = ['Recibida físicamente','Cancelada'];
+const EMAIL_VALIDO = /^[^\s@,;]+@[^\s@]+\.[^\s@]+$/;
+// Triage documento de Daniela (REQ-012): valida que cada destinatario tenga formato de correo real
+// antes de aprobar; admite varios separados por coma/punto y coma (destinatario + copias sueltas).
+function destinatariosValidos(destinatarios){
+  const lista = String(destinatarios||'').split(/[,;]/).map(d=>d.trim()).filter(Boolean);
+  return lista.length > 0 && lista.every(d => EMAIL_VALIDO.test(d));
+}
 
 // F-13: plantillas de correo distintas según el tipo de incidencia (antes era un único mensaje genérico de estatus).
 function construirCuerpo(tipoPlantilla, { siniestroNumero, pedidoNumero, piezasPendientes, piezasIncidencia }){
@@ -34,13 +41,16 @@ router.get('/generar-borrador/:pedidoId', requireAuth, (req, res)=>{
   }
 
   const porProveedor = {};
+  const piezasSinProveedor = [];
   pendientes.forEach(z=>{
-    const key = z.proveedor_id || 'sin';
-    (porProveedor[key] = porProveedor[key] || []).push(z);
+    // Triage documento de Daniela (REQ-011): una pieza sin proveedor asignado no genera intento de
+    // correo — no hay a quién escribirle. Se reporta aparte para que primero se le asigne proveedor.
+    if(!z.proveedor_id){ piezasSinProveedor.push(z); return; }
+    (porProveedor[z.proveedor_id] = porProveedor[z.proveedor_id] || []).push(z);
   });
 
   const borradores = Object.entries(porProveedor).map(([provKey, lista])=>{
-    const proveedor = provKey === 'sin' ? null : db.prepare('SELECT * FROM proveedores WHERE id = ?').get(provKey);
+    const proveedor = db.prepare('SELECT * FROM proveedores WHERE id = ?').get(provKey);
     const incidenciasAbiertas = db.prepare(`SELECT i.* FROM incidencias i WHERE i.pieza_id IN (${lista.map(()=>'?').join(',') || 'NULL'}) AND i.estado IN ('abierta','en_proceso')`).all(...lista.map(z=>z.id));
     const tipoPlantilla = incidenciasAbiertas.length ? 'incidencia' : 'estatus';
     const cuerpo = construirCuerpo(tipoPlantilla, {
@@ -49,9 +59,9 @@ router.get('/generar-borrador/:pedidoId', requireAuth, (req, res)=>{
       piezasIncidencia: lista.filter(z=>incidenciasAbiertas.some(i=>i.pieza_id===z.id)).map(z=>z.descripcion)
     });
     return {
-      proveedor_id: proveedor ? proveedor.id : null,
-      proveedor_nombre: proveedor ? proveedor.razon_social : '(sin proveedor asignado)',
-      destinatario: proveedor ? proveedor.correo : '',
+      proveedor_id: proveedor.id,
+      proveedor_nombre: proveedor.razon_social,
+      destinatario: proveedor.correo || '',
       copia: siniestro.aseguradora === 'GNP' ? CC_GNP : '', // R-08
       asunto: `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`,
       tipo_plantilla: tipoPlantilla,
@@ -60,7 +70,7 @@ router.get('/generar-borrador/:pedidoId', requireAuth, (req, res)=>{
     };
   });
 
-  res.json({ requiereCorreo:true, borradores });
+  res.json({ requiereCorreo: borradores.length > 0, borradores, piezasSinProveedor: piezasSinProveedor.map(z=>z.descripcion), mensaje: borradores.length===0 ? 'Todas las piezas pendientes están sin proveedor asignado; asígnalo antes de generar un correo.' : null });
 });
 
 // Aprobar y registrar (F-15: guarda proveedor_id explícito, evitando el cruce entre proveedores del reporte).
@@ -71,6 +81,7 @@ router.post('/', requireAuth, requireRole('operativo','admin'), (req, res)=>{
   const pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(b.pedido_id);
   if(!pedido) return res.status(400).json({ error:'Pedido no encontrado.' });
   if(!b.destinatarios) return res.status(400).json({ error:'El destinatario es obligatorio.' });
+  if(!destinatariosValidos(b.destinatarios)) return res.status(400).json({ error:'El destinatario no tiene un formato de correo válido.' });
   const info = db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,enviado_por)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(b.pedido_id, pedido.siniestro_id, b.proveedor_id||null, b.canal||'Correo', b.asunto||'', b.destinatarios, b.copia||'', b.cuerpo||'', b.tipo_plantilla||'estatus', req.session.user.id);
@@ -131,6 +142,7 @@ router.patch('/:id/aprobar', requireAuth, requireRole('operativo','admin'), (req
   if(!com) return res.status(404).json({ error:'Comunicación no encontrada.' });
   if(!req.body.destinatarios && !com.destinatarios) return res.status(400).json({ error:'Falta indicar el destinatario antes de aprobar.' });
   const destinatarios = req.body.destinatarios !== undefined ? req.body.destinatarios : com.destinatarios;
+  if(!destinatariosValidos(destinatarios)) return res.status(400).json({ error:'El destinatario no tiene un formato de correo válido.' });
   const copia = req.body.copia !== undefined ? req.body.copia : com.copia;
   const asunto = req.body.asunto !== undefined ? req.body.asunto : com.asunto;
   const cuerpo = req.body.cuerpo !== undefined ? req.body.cuerpo : com.cuerpo;

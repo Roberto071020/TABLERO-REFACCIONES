@@ -93,6 +93,9 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const pedidosNuevos = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Nuevo'`).get().n;
   const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus NOT IN ('Recibida físicamente','Cancelada') AND fecha_prometida != '' AND fecha_prometida < ?`).get(hoy).n;
   const sinProveedor = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Sin proveedor'`).get().n;
+  // Triage documento de Daniela (DEF-016): "sinProveedor" solo contaba piezas ya capturadas sin proveedor,
+  // pero un pedido sin NINGUNA pieza capturada todavía es un vacío más grande y no aparecía en ningún lado.
+  const pedidosSinPiezas = db.prepare(`SELECT COUNT(*) n FROM pedidos p WHERE p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND NOT EXISTS (SELECT 1 FROM piezas z WHERE z.pedido_id = p.id)`).get().n;
   const recibidosParciales = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Recibido parcial'`).get().n;
   // Requerimiento de Daniela: ahora refleja la bandeja real de correos preparados en espera de su aprobación.
   const correosPendientes = db.prepare(`SELECT COUNT(*) n FROM comunicaciones WHERE estado='pendiente_aprobacion'`).get().n;
@@ -156,7 +159,7 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const porAvisarAutorizacion = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='autorizacion_resuelta' AND estado IN ('pendiente','en_proceso')`).get().n;
   const refaccionesPorAvisar = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='refacciones_completas' AND estado IN ('pendiente','en_proceso')`).get().n;
 
-  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
+  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,

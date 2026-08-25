@@ -51,8 +51,9 @@ test('CA-01: dos pedidos del mismo siniestro aparecen juntos en su ficha', async
 test('CA-03 / F-01 / F-02: una pieza con incidencia NUNCA aparece en el borrador de correo', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'CA03-TEST', aseguradora: 'Mapfre' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'CA03-PED', siniestro_id: s.id , fecha_prevista: '2026-09-01' })).data;
-  const z1 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Espejo lateral derecho' })).data;
-  const z2 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro delantero' })).data;
+  const pv = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor CA03' })).data;
+  const z1 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Espejo lateral derecho', proveedor_id: pv.id })).data;
+  const z2 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro delantero', proveedor_id: pv.id })).data;
   // marcar z1 como recibida (sin incidencia)
   await req('POST', `/api/piezas/${z1.id}/recibir`);
   const borrador = (await req('GET', `/api/comunicaciones/generar-borrador/${p.id}`)).data;
@@ -201,8 +202,10 @@ test('Caso real de Daniela (siniestro 4264105314000171 / pedido 337196 / espejo 
   r = await req('POST', '/api/pedidos', { numero: '337196-REPRO', siniestro_id: siniestro.id, estatus_inpart: 'Entregado' , fecha_prevista: '2026-09-01' });
   const pedido = r.data;
 
-  // 2. Agregar la pieza Espejo lateral derecho.
-  r = await req('POST', '/api/piezas', { pedido_id: pedido.id, descripcion: 'Espejo lateral derecho' });
+  // 2. Agregar la pieza Espejo lateral derecho, con proveedor asignado (triage DEF-007/008: sin
+  // proveedor no se genera intento de correo, así que para probar ese flujo hace falta asignarlo).
+  const provRepro = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor Repro 171', correo: 'contacto@proveedorrepro.mx' })).data;
+  r = await req('POST', '/api/piezas', { pedido_id: pedido.id, descripcion: 'Espejo lateral derecho', proveedor_id: provRepro.id });
   const pieza = r.data;
   assert.equal(pieza.descripcion, 'Espejo lateral derecho');
 
@@ -701,9 +704,13 @@ test('REQ-DANIELA-5: cancelar un pedido exige motivo y lo conserva', async () =>
   assert.equal(conMotivo.data.motivo_cancelacion, 'Reasignación de proveedor');
 });
 
-test('REQ-DANIELA-6: crear un pedido prepara automáticamente un correo de "pedido nuevo", pendiente de aprobación', async () => {
+test('REQ-DANIELA-6: dar de alta la primera pieza con proveedor prepara automáticamente un correo de "pedido nuevo", pendiente de aprobación', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'REQ6-SIN', aseguradora: 'Mapfre' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'REQ6-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  // Triage DEF-009: el correo de "pedido nuevo" ya no se dispara para un pedido vacío — hace falta que
+  // tenga al menos una pieza con proveedor asignado (si no, no hay a quién escribirle).
+  const provReq6 = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor REQ6', correo: 'contacto@proveedorreq6.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Defensa delantera', proveedor_id: provReq6.id });
 
   const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
   const propio = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
@@ -728,7 +735,9 @@ test('REQ-DANIELA-7: un pedido con fecha promesa vencida genera correo automáti
 
 test('REQ-DANIELA-8: solo Daniela/admin pueden aprobar o descartar un correo de la bandeja; aprobar exige destinatario', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'REQ8-SIN', aseguradora: 'GNP' })).data;
+  const provReq8 = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor REQ8' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'REQ8-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre', proveedor_id: provReq8.id });
   const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
   const com = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
 
@@ -742,6 +751,7 @@ test('REQ-DANIELA-8: solo Daniela/admin pueden aprobar o descartar un correo de 
 
   // Descartar: crear otro caso y verificar el permiso.
   const p2 = (await req('POST', '/api/pedidos', { numero: 'REQ8-PED-2', siniestro_id: s.id, fecha_prevista: '2026-12-02' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p2.id, descripcion: 'Puerta', proveedor_id: provReq8.id });
   const pendientes2 = (await req('GET', '/api/comunicaciones/pendientes')).data;
   const com2 = pendientes2.find(c => c.pedido_id === p2.id && c.disparador === 'pedido_nuevo');
 
@@ -759,7 +769,9 @@ test('REQ-DANIELA-8: solo Daniela/admin pueden aprobar o descartar un correo de 
 test('REQ-DANIELA-9: el resumen diario refleja los correos realmente pendientes de aprobación', async () => {
   const antes = (await req('GET', '/api/reportes/resumen')).data.correosPendientes;
   const s = (await req('POST', '/api/siniestros', { numero: 'REQ9-SIN', aseguradora: 'Inbursa' })).data;
-  await req('POST', '/api/pedidos', { numero: 'REQ9-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' });
+  const provReq9 = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor REQ9' })).data;
+  const p9 = (await req('POST', '/api/pedidos', { numero: 'REQ9-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p9.id, descripcion: 'Salpicadera', proveedor_id: provReq9.id });
   const despues = (await req('GET', '/api/reportes/resumen')).data.correosPendientes;
   assert.ok(despues > antes, 'debe aumentar el conteo de correos pendientes de aprobación');
 });
@@ -1604,4 +1616,65 @@ test('TRIAGE-CARGA-4: el mapeo de estatus de Inpart es editable (GET/POST/PATCH)
   const editado = await req('PATCH', '/api/mapeo-estatus-inpart/' + nuevo.data.id, { estatus_pieza: 'Facturada' });
   assert.equal(editado.status, 200);
   assert.equal(editado.data.estatus_pieza, 'Facturada');
+});
+
+test('TRIAGE-CORREO-1: no se puede aprobar un correo con destinatario que no tiene formato de correo válido', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'CORREO-VAL-1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'CORREO-VAL-1-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const invalido = await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'esto no es un correo' });
+  assert.equal(invalido.status, 400);
+  const valido = await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'valido@proveedor.mx' });
+  assert.equal(valido.status, 201);
+});
+
+test('TRIAGE-INDICADOR-1: pedidosSinPiezas cuenta pedidos activos sin ninguna pieza capturada (complementa a sinProveedor)', async () => {
+  const antes = (await req('GET', '/api/reportes/resumen')).data.pedidosSinPiezas;
+  const s = (await req('POST', '/api/siniestros', { numero: 'IND-SINPZ-1', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/pedidos', { numero: 'IND-SINPZ-1-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' });
+  const despues = (await req('GET', '/api/reportes/resumen')).data.pedidosSinPiezas;
+  assert.equal(despues, antes + 1);
+});
+
+test('TRIAGE-ARCHIVO-1: sustituir un archivo conserva la versión anterior (no se borra) y sube la versión', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ARCH-SUST-1', aseguradora: 'GNP' })).data;
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', String(s.id)); fd.append('tipo', 'Evidencia');
+  fd.append('archivo', new Blob([Buffer.from('version 1')], { type: 'application/pdf' }), 'v1.pdf');
+  const res = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  const archivo = await res.json();
+  assert.equal(archivo.version, 1);
+
+  const fd2 = new FormData();
+  fd2.append('archivo', new Blob([Buffer.from('version 2')], { type: 'application/pdf' }), 'v2.pdf');
+  const res2 = await fetch(BASE + `/api/archivos/${archivo.id}/sustituir`, { method: 'PATCH', headers: { Cookie: cookie }, body: fd2 });
+  assert.equal(res2.status, 200);
+  const actualizado = await res2.json();
+  assert.equal(actualizado.version, 2);
+  assert.equal(actualizado.nombre_original, 'v2.pdf');
+
+  const descarga = await fetch(BASE + `/api/archivos/${archivo.id}/descargar`, { headers: { Cookie: cookie } });
+  const contenido = await descarga.text();
+  assert.equal(contenido, 'version 2', 'la descarga debe traer la versión más reciente');
+});
+
+test('TRIAGE-ARCHIVO-2: eliminar un archivo lo manda a la papelera (no lo borra) y se puede restaurar', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ARCH-DEL-1', aseguradora: 'GNP' })).data;
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', String(s.id)); fd.append('tipo', 'Evidencia');
+  fd.append('archivo', new Blob([Buffer.from('x')], { type: 'application/pdf' }), 'borrar.pdf');
+  const res = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  const archivo = await res.json();
+
+  const eliminar = await req('DELETE', '/api/archivos/' + archivo.id);
+  assert.equal(eliminar.status, 200);
+
+  const listaNormal = await req('GET', '/api/archivos?entidad_tipo=siniestro&entidad_id=' + s.id);
+  assert.ok(!listaNormal.data.some(a => a.id === archivo.id), 'no debe aparecer en la vista normal');
+  const listaConPapelera = await req('GET', '/api/archivos?entidad_tipo=siniestro&entidad_id=' + s.id + '&incluir_eliminados=1');
+  assert.ok(listaConPapelera.data.some(a => a.id === archivo.id && a.eliminado === 1), 'sigue existiendo, solo marcado como eliminado');
+
+  const restaurado = await req('POST', '/api/archivos/' + archivo.id + '/restaurar');
+  assert.equal(restaurado.status, 200);
+  const listaDespues = await req('GET', '/api/archivos?entidad_tipo=siniestro&entidad_id=' + s.id);
+  assert.ok(listaDespues.data.some(a => a.id === archivo.id), 'debe reaparecer en la vista normal tras restaurar');
 });
