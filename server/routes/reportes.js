@@ -169,7 +169,8 @@ router.get('/buscar', requireAuth, (req, res)=>{
   const q = String(req.query.q||'').trim();
   if(!q) return res.json({ siniestros:[], pedidos:[], proveedores:[] });
   const like = `%${q}%`;
-  const siniestros = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas FROM siniestros WHERE numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ? LIMIT 20`).all(like,like,like);
+  // Propuesta Orlando/Vanessa/Beto: Beto necesita poder localizar el siniestro (y su OT adjunta) buscando por VIN, no solo numero/placas.
+  const siniestros = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, vin FROM siniestros WHERE numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ? OR vin LIKE ? LIMIT 20`).all(like,like,like,like);
   const pedidos = db.prepare(`SELECT p.id, p.numero, s.numero as siniestro_numero, s.id as siniestro_id FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.numero LIKE ? LIMIT 20`).all(like);
   const proveedores = db.prepare(`SELECT id, razon_social, correo FROM proveedores WHERE razon_social LIKE ? LIMIT 20`).all(like);
   res.json({ siniestros, pedidos, proveedores, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });

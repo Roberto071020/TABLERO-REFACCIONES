@@ -1480,3 +1480,16 @@ test('PROPUESTA-8: panorama-beto deja en prioridad 4 (proceso normal) lo que no 
   assert.ok(item);
   assert.equal(item.prioridad, 4);
 });
+
+test('PROPUESTA-9: la búsqueda global también encuentra el siniestro por VIN, para que Beto lo localice y vea la OT adjunta', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'VIN-BUSCA-1', aseguradora: 'GNP', vin: '3N1AB7AP0KY123456' })).data;
+  const r = await req('GET', '/api/reportes/buscar?q=3N1AB7AP0KY123456');
+  assert.ok(r.data.siniestros.some(x => x.id === s.id), 'debe encontrar el siniestro buscando por su VIN');
+});
+
+test('PROPUESTA-10: un archivo tipo "Orden de trabajo" subido para el siniestro queda disponible al consultar sus archivos (lo que ve Beto en Producción)', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'OT-DOC-1', aseguradora: 'GNP' })).data;
+  const archivos = await req('GET', '/api/archivos?entidad_tipo=siniestro&entidad_id=' + s.id);
+  assert.equal(archivos.status, 200);
+  assert.deepEqual(archivos.data, [], 'sin documentos adjuntos todavía debe regresar una lista vacía, no error');
+});

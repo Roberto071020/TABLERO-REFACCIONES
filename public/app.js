@@ -161,7 +161,7 @@ async function doGlobalSearch(){
     <h3>Resultados para "${esc(q)}"</h3>
     <p class="subtle">Tipo detectado si fuera número: ${esc(r.tipoDetectado)} (regla R-02)</p>
     <div class="results-group"><h4>Siniestros (${r.siniestros.length})</h4>
-      ${r.siniestros.length===0?'<div class="empty">Sin coincidencias.</div>':r.siniestros.map(s=>`<div class="result-item" onclick="closeModal();goSiniestro(${s.id})"><b>${esc(s.numero)}</b> · ${esc(s.aseguradora)} · ${esc(s.vehiculo||'')} · ${esc(s.placas||'')}</div>`).join('')}
+      ${r.siniestros.length===0?'<div class="empty">Sin coincidencias.</div>':r.siniestros.map(s=>`<div class="result-item" onclick="closeModal();goSiniestro(${s.id})"><b>${esc(s.numero)}</b> · ${esc(s.aseguradora)} · ${esc(s.vehiculo||'')} · ${esc(s.placas||'')}${s.vin?' · VIN '+esc(s.vin):''}</div>`).join('')}
     </div>
     <div class="results-group"><h4>Pedidos (${r.pedidos.length})</h4>
       ${r.pedidos.length===0?'<div class="empty">Sin coincidencias.</div>':r.pedidos.map(p=>`<div class="result-item" onclick="closeModal();goSiniestro(${p.siniestro_id})"><b>${esc(p.numero)}</b> · siniestro ${esc(p.siniestro_numero)}</div>`).join('')}
@@ -760,6 +760,10 @@ async function viewSiniestro(id){
     ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAutorizacion(${id})">Actualizar autorización</button></div>`:''}`;
   } else if(state.subtabSiniestro==='produccion'){
     const puedeProduccion = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    // Propuesta Orlando/Vanessa/Beto: Daniela/Alejandra adjuntan la OT (papel escaneado o digital) desde
+    // la pestaña Archivos con tipo "Orden de trabajo"; aqui se muestra de una vez para que Beto no tenga
+    // que ir a buscarla a otra pestaña.
+    const documentosOt = (await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id)).filter(a=>a.tipo==='Orden de trabajo');
     const ots = await api('GET','/api/ordenes-trabajo?siniestro_id='+id);
     let operaciones = [];
     for(const ot of ots){ const ops = await api('GET','/api/ot-operaciones?ot_id='+ot.id); ops.forEach(op=>operaciones.push({op,ot})); }
@@ -772,7 +776,12 @@ async function viewSiniestro(id){
     const LABEL_RETRABAJO = { abierto:'Abierto', en_correccion:'En corrección', reinspeccion:'Reinspección', cerrado:'Cerrado' };
     body = `
     <h3>Producción</h3>
-    <table class="kv"><tbody>
+    <h4>Documentos de OT adjuntos</h4>
+    ${documentosOt.length===0?'<div class="empty">Sin documentos de OT adjuntos. Daniela o Alejandra pueden subir la foto o el PDF desde la pestaña "Archivos" con tipo "Orden de trabajo".</div>':`
+    <table><thead><tr><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
+    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${esc(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Ver / descargar</a></td></tr>`).join('')}
+    </tbody></table>`}
+    <table class="kv" style="margin-top:12px;"><tbody>
       <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
     </tbody></table>
     ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEtapaProduccion(${id})">Actualizar etapa</button></div>`:''}
