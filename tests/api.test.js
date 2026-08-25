@@ -1678,3 +1678,38 @@ test('TRIAGE-ARCHIVO-2: eliminar un archivo lo manda a la papelera (no lo borra)
   const listaDespues = await req('GET', '/api/archivos?entidad_tipo=siniestro&entidad_id=' + s.id);
   assert.ok(listaDespues.data.some(a => a.id === archivo.id), 'debe reaparecer en la vista normal tras restaurar');
 });
+
+test('TRIAGE-SEMAFORO-1: GET /api/siniestros/:id incluye el semáforo de completitud por sección', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SEMAFORO-1', aseguradora: 'GNP' })).data;
+  const inicial = await req('GET', '/api/siniestros/' + s.id);
+  assert.equal(inicial.data.semaforo.admision, 'pendiente');
+  assert.equal(inicial.data.semaforo.produccion, 'pendiente');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'terminado' });
+  const despues = await req('GET', '/api/siniestros/' + s.id);
+  assert.equal(despues.data.semaforo.admision, 'completo');
+  assert.equal(despues.data.semaforo.produccion, 'completo');
+  assert.equal(despues.data.semaforo.calidad, 'pendiente');
+});
+
+/* ===================== Triage documento de Daniela (25-ago-2026), item 9 =====================
+   Búsqueda ampliada: encontrar piezas por descripción o número de parte, y proveedores por
+   nombre de contacto además de razón social. */
+
+test('TRIAGE-BUSQUEDA-1: la búsqueda global encuentra piezas por número de parte o descripción, y proveedores por contacto', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'BUSQUEDA-PZ-1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'BUSQUEDA-PZ-1-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const pv = (await req('POST', '/api/proveedores', { razon_social: 'Refacciones del Bajío SA', contacto: 'Marisol Contacto Única' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro delantero izquierdo', numero_parte: 'NP-99887', proveedor_id: pv.id })).data;
+
+  const porNumeroParte = await req('GET', '/api/reportes/buscar?q=NP-99887');
+  assert.ok(porNumeroParte.data.piezas.some(x => x.id === z.id), 'debe encontrar la pieza por número de parte');
+  assert.equal(porNumeroParte.data.piezas.find(x => x.id === z.id).siniestro_numero, 'BUSQUEDA-PZ-1');
+
+  const porDescripcion = await req('GET', '/api/reportes/buscar?q=Faro delantero');
+  assert.ok(porDescripcion.data.piezas.some(x => x.id === z.id), 'debe encontrar la pieza por descripción');
+
+  const porContacto = await req('GET', '/api/reportes/buscar?q=Marisol Contacto');
+  assert.ok(porContacto.data.proveedores.some(x => x.id === pv.id), 'debe encontrar el proveedor por su contacto');
+});

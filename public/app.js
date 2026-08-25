@@ -122,6 +122,32 @@ async function guardarPassword(){
 /* ===================== ESTADO / NAV ===================== */
 let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{} };
 
+// Triage documento de Daniela (DEF-023/REQ-022): traducir los códigos internos de auditoría a texto
+// legible en la línea de tiempo, en vez de mostrar el nombre técnico crudo (alta_carga_masiva, etc.).
+const LABEL_ACCION = {
+  alta: 'Alta', edicion: 'Edición', eliminacion: 'Eliminación', restauracion: 'Restaurado desde papelera',
+  sustitucion: 'Archivo sustituido', cierre: 'Cierre', cierre_automatico: 'Cierre automático',
+  alta_carga_masiva: 'Alta por carga masiva (Inpart)', actualizacion_carga_masiva: 'Actualizado por carga masiva (Inpart)',
+  archivado_automatico: 'Archivado automático (90 días sin movimiento)', desarchivado_manual: 'Reactivado manualmente',
+  completado_desde_libreta: 'Datos completados desde la libreta', automatico: 'Cambio automático del sistema',
+  cambio_por_incidencia: 'Cambio por incidencia registrada', entrega_proveedor: 'Marcada como entregada por el proveedor',
+  recepcion_fisica: 'Recepción física confirmada', entrega_registrada: 'Entrega al cliente registrada',
+  incidencia_registrada: 'Incidencia registrada', respuesta_registrada: 'Respuesta del proveedor registrada',
+  correo_aprobado: 'Correo aprobado (borrador/sandbox)', correo_descartado: 'Correo descartado',
+  exclusion_temporal: 'Proveedor excluido de un envío puntual', reversion: 'Carga masiva revertida',
+  login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador'
+};
+const LABEL_CAMPO = {
+  estatus_operativo: 'Estatus operativo', estatus_inpart: 'Estatus Inpart', fecha_prevista: 'Fecha promesa',
+  vehiculo: 'Vehículo', placas: 'Placas', vin: 'VIN', proveedor_id: 'Proveedor', precio: 'Precio', estatus: 'Estatus'
+};
+// Triage documento de Daniela (DEF-024/REQ-020): semáforo visual de completitud por sección.
+function renderSemaforo(sem){
+  if(!sem) return '';
+  const COLOR = { completo:'verde', en_proceso:'ambar', pendiente:'gris' };
+  const LABEL = { admision:'Admisión', expediente:'Expediente', valuacion:'Valuación', produccion:'Producción', calidad:'Calidad' };
+  return Object.entries(sem).map(([k,v])=>`<span class="badge ${COLOR[v]||'gris'}" title="${LABEL[k]}: ${v.replace('_',' ')}">${LABEL[k]}</span>`).join(' ');
+}
 const TABS = [
   {k:'inicio', label:'Inicio'},
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
@@ -136,7 +162,7 @@ const TABS = [
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
   {k:'produccion', label:'Producción', roles:['beto','admin','jefe']},
   {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','admin','jefe']},
-  {k:'reglas', label:'Reglas'}
+  {k:'reglas', label:'Reglas', roles:['admin','jefe']}
 ];
 function renderTabs(){
   const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
@@ -167,7 +193,10 @@ async function doGlobalSearch(){
       ${r.pedidos.length===0?'<div class="empty">Sin coincidencias.</div>':r.pedidos.map(p=>`<div class="result-item" onclick="closeModal();goSiniestro(${p.siniestro_id})"><b>${esc(p.numero)}</b> · siniestro ${esc(p.siniestro_numero)}</div>`).join('')}
     </div>
     <div class="results-group"><h4>Proveedores (${r.proveedores.length})</h4>
-      ${r.proveedores.length===0?'<div class="empty">Sin coincidencias.</div>':r.proveedores.map(pv=>`<div class="result-item" onclick="closeModal();goProveedor(${pv.id})"><b>${esc(pv.razon_social)}</b> · ${esc(pv.correo||'')}</div>`).join('')}
+      ${r.proveedores.length===0?'<div class="empty">Sin coincidencias.</div>':r.proveedores.map(pv=>`<div class="result-item" onclick="closeModal();goProveedor(${pv.id})"><b>${esc(pv.razon_social)}</b> · ${esc(pv.correo||'')}${pv.contacto?' · '+esc(pv.contacto):''}</div>`).join('')}
+    </div>
+    <div class="results-group"><h4>Piezas (${r.piezas.length})</h4>
+      ${r.piezas.length===0?'<div class="empty">Sin coincidencias.</div>':r.piezas.map(z=>`<div class="result-item" onclick="closeModal();goSiniestro(${z.siniestro_id})"><b>${esc(z.descripcion)}</b>${z.numero_parte?' · N.P. '+esc(z.numero_parte):''} · siniestro ${esc(z.siniestro_numero)} · pedido ${esc(z.pedido_numero)} · ${esc(z.estatus)}</div>`).join('')}
     </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
   `, true);
@@ -1009,7 +1038,7 @@ async function viewSiniestro(id){
     let pedEventos = [];
     for(const p of peds){ const e = await api('GET','/api/auditoria?entidad_tipo=pedido&entidad_id='+p.id); pedEventos.push(...e); }
     const todos = [...eventos, ...pedEventos].sort((a,b)=> b.id - a.id);
-    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${esc(e.fecha)}</b> — ${esc(e.accion)}${e.campo?` (${esc(e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
+    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${esc(e.fecha)}</b> — ${esc(LABEL_ACCION[e.accion]||e.accion)}${e.campo?` (${esc(LABEL_CAMPO[e.campo]||e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
   }
 
   const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
@@ -1025,6 +1054,7 @@ async function viewSiniestro(id){
         <p class="subtle">${esc(s.vehiculo||'')} ${esc(s.anio_modelo||'')} · Placas ${esc(s.placas||'')} · Ingreso: ${esc(s.fecha_ingreso||'')} · Responsable: ${esc(s.responsable||'')}</p>
         ${s.cliente_nombre?`<p class="subtle">Cliente: ${esc(s.cliente_nombre)}${s.cliente_telefono?' · '+esc(s.cliente_telefono):''}${s.etapa_actual?' · Etapa: '+esc(s.etapa_actual):''}</p>`:''}
         <p class="subtle">Entrega de unidad: ${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</p>
+        <p class="subtle" style="margin-top:4px;">${renderSemaforo(s.semaforo)}</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
         ${puedeEntregar && s.estatus_general!=='Cerrado'?`<button class="btn small secondary" onclick="abrirFormEntrega(${s.id})">${s.fecha_entrega_real?'Editar entrega':'Registrar entrega'}</button>`:''}

@@ -170,13 +170,19 @@ router.get('/resumen', requireAuth, (req, res)=>{
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.
 router.get('/buscar', requireAuth, (req, res)=>{
   const q = String(req.query.q||'').trim();
-  if(!q) return res.json({ siniestros:[], pedidos:[], proveedores:[] });
+  if(!q) return res.json({ siniestros:[], pedidos:[], proveedores:[], piezas:[] });
   const like = `%${q}%`;
   // Propuesta Orlando/Vanessa/Beto: Beto necesita poder localizar el siniestro (y su OT adjunta) buscando por VIN, no solo numero/placas.
   const siniestros = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, vin FROM siniestros WHERE numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ? OR vin LIKE ? LIMIT 20`).all(like,like,like,like);
   const pedidos = db.prepare(`SELECT p.id, p.numero, s.numero as siniestro_numero, s.id as siniestro_id FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.numero LIKE ? LIMIT 20`).all(like);
-  const proveedores = db.prepare(`SELECT id, razon_social, correo FROM proveedores WHERE razon_social LIKE ? LIMIT 20`).all(like);
-  res.json({ siniestros, pedidos, proveedores, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });
+  // Triage documento de Daniela (REQ-023): la búsqueda global ahora también cubre proveedor por
+  // contacto (no solo razón social) y pieza por descripción o número de parte.
+  const proveedores = db.prepare(`SELECT id, razon_social, correo, contacto FROM proveedores WHERE razon_social LIKE ? OR contacto LIKE ? LIMIT 20`).all(like,like);
+  const piezas = db.prepare(`
+    SELECT z.id, z.descripcion, z.numero_parte, z.estatus, p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero
+    FROM piezas z JOIN pedidos p ON p.id = z.pedido_id JOIN siniestros s ON s.id = p.siniestro_id
+    WHERE z.descripcion LIKE ? OR z.numero_parte LIKE ? LIMIT 20`).all(like,like);
+  res.json({ siniestros, pedidos, proveedores, piezas, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });
 });
 
 

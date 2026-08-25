@@ -253,7 +253,23 @@ function sistemaValuacionSugerido(aseguradora){
   return '';
 }
 
+// Triage documento de Daniela (DEF-024/REQ-020): semáforo de completitud por sección, para que se
+// vea de un vistazo qué falta en cada expediente sin tener que entrar a cada pestaña una por una.
+function calcularSemaforo(s){
+  const admision = s.estado_revision_tecnica === 'revision_terminada' ? 'completo'
+    : (s.estado_admision || s.estado_revision_tecnica) ? 'en_proceso' : 'pendiente';
+  const expediente = s.estado_expediente === 'listo_para_valuacion' ? 'completo'
+    : s.estado_expediente ? 'en_proceso' : 'pendiente';
+  const valuacion = ['autorizada','parcial'].includes(s.estado_autorizacion) ? 'completo'
+    : (s.valuacion_folio || s.estado_autorizacion) ? 'en_proceso' : 'pendiente';
+  const produccion = s.estado_produccion === 'terminado' ? 'completo'
+    : s.estado_produccion ? 'en_proceso' : 'pendiente';
+  const calidad = s.estado_calidad === 'liberado' ? 'completo'
+    : s.estado_calidad ? 'en_proceso' : 'pendiente';
+  return { admision, expediente, valuacion, produccion, calidad };
+}
+
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, esDiaHabil, sumarDiasHabiles,
-  archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido };
+  archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo };

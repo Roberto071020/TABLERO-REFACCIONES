@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido } = require('../utils');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo } = require('../utils');
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
@@ -33,7 +33,7 @@ router.get('/', requireAuth, (req, res)=>{
 router.get('/:id', requireAuth, (req, res)=>{
   const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
-  res.json(s);
+  res.json({ ...s, semaforo: calcularSemaforo(s) });
 });
 
 router.post('/', requireAuth, (req, res)=>{
