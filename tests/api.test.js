@@ -798,48 +798,114 @@ test('REQ-DANIELA-11: un siniestro entregado hace más de 3 meses se archiva sol
   assert.ok(listaDespues.some(x => x.numero === 'REQ11-SIN'), 'debe reaparecer en la vista diaria tras desarchivar');
 });
 
-test('REQ-DANIELA-12: carga masiva - validar detecta filas correctas, duplicados dentro del archivo y errores de columnas', async () => {
+test('REQ-DANIELA-12: carga masiva - validar agrupa filas por pedido y detecta errores de columnas', async () => {
   const csv = [
-    'numero_siniestro,aseguradora,vehiculo,placas,fecha_ingreso,responsable,numero_pedido,fecha_creacion_pedido,fecha_prevista,estatus_inpart,estatus_operativo,proveedor,telefono_proveedor,contacto_proveedor',
-    'CM-SIN-1,GNP,Nissan Versa,ABC123,2026-08-01,Daniela,CM-PED-1,2026-08-01,2026-09-01,Aguardando confirmación,Nuevo,Proveedor Uno,555-1111,Juan',
-    'CM-SIN-1,GNP,Nissan Versa,ABC123,2026-08-01,Daniela,CM-PED-2,2026-08-02,2026-09-05,Aguardando confirmación,Nuevo,Proveedor Uno,555-1111,Juan',
-    'CM-SIN-2,Mapfre,,,,,CM-PED-3,,,,,,,',
-    'CM-SIN-3,Afirme,,,,,CM-PED-1,,2026-09-10,,,,,',
+    'numero_siniestro,aseguradora,vehiculo,placas,fecha_ingreso,responsable,numero_pedido,fecha_creacion_pedido,fecha_prevista,estatus_inpart,estatus_operativo,numero_parte,descripcion_pieza,precio,proveedor,telefono_proveedor,contacto_proveedor',
+    'CM-SIN-1,GNP,Nissan Versa,ABC123,2026-08-01,Daniela,CM-PED-1,2026-08-01,2026-09-01,Aguardando confirmación,Nuevo,NP-1,Espejo derecho,850.50,Proveedor Uno,555-1111,Juan',
+    'CM-SIN-1,GNP,Nissan Versa,ABC123,2026-08-01,Daniela,CM-PED-1,2026-08-01,2026-09-01,Aguardando confirmación,Nuevo,NP-2,Faro delantero,1200,Proveedor Uno,555-1111,Juan',
+    'CM-SIN-2,Mapfre,,,,,CM-PED-3,,,,,,,,,,',
   ].join('\n');
 
   const r = await req('POST', '/api/carga-masiva/validar', { csv });
   assert.equal(r.status, 200);
-  assert.equal(r.data.total, 4);
-  assert.equal(r.data.validas.length, 2, 'las primeras 2 filas están completas y sin duplicado');
-  assert.equal(r.data.errores.length, 2);
-  const errorFaltantes = r.data.errores.find(e => e.dato.numero_pedido === 'CM-PED-3');
-  assert.ok(errorFaltantes.motivos.some(m => /fecha promesa/i.test(m)));
-  const errorDup = r.data.errores.find(e => e.dato.numero_pedido === 'CM-PED-1' && e.dato.numero_siniestro === 'CM-SIN-3');
-  assert.ok(errorDup.motivos.some(m => /duplicado dentro del mismo archivo/i.test(m)));
+  assert.equal(r.data.total, 2, 'dos pedidos distintos: CM-PED-1 (2 piezas) y CM-PED-3');
+  const pedido1 = r.data.pedidos.find(p => p.dato.numero_pedido === 'CM-PED-1');
+  assert.equal(pedido1.piezas.length, 2, 'las 2 filas del mismo pedido se agrupan como 2 piezas de un solo pedido');
+  assert.equal(pedido1.errores.length, 0);
+  const pedido3 = r.data.pedidos.find(p => p.dato.numero_pedido === 'CM-PED-3');
+  assert.ok(pedido3.errores.some(m => /fecha promesa/i.test(m)));
 });
 
-test('REQ-DANIELA-13: carga masiva - confirmar registra solo lo válido, agrupa pedidos bajo el mismo siniestro y evita duplicados reales', async () => {
+test('REQ-DANIELA-13: carga masiva - confirmar crea piezas con proveedor y precio real, agrupa pedidos bajo el mismo siniestro y actualiza en vez de duplicar al reimportar', async () => {
   const csv = [
-    'numero_siniestro,aseguradora,vehiculo,placas,numero_pedido,fecha_prevista,proveedor',
-    'CM2-SIN-1,GNP,Chevrolet Aveo,XYZ999,CM2-PED-1,2026-09-01,Proveedor Dos',
-    'CM2-SIN-1,GNP,Chevrolet Aveo,XYZ999,CM2-PED-2,2026-09-03,Proveedor Dos',
+    'numero_siniestro,aseguradora,vehiculo,placas,numero_pedido,fecha_prevista,numero_parte,descripcion_pieza,precio,proveedor,correo_proveedor',
+    'CM2-SIN-1,GNP,Chevrolet Aveo,XYZ999,CM2-PED-1,2026-09-01,NPX-1,Cofre,3500,Proveedor Dos,ventas@proveedordos.mx',
+    'CM2-SIN-1,GNP,Chevrolet Aveo,XYZ999,CM2-PED-2,2026-09-03,,,,,',
   ].join('\n');
   const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
-  assert.equal(validado.validas.length, 2);
+  assert.equal(validado.pedidos.filter(p=>p.errores.length===0).length, 2);
 
-  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { filas: validado.validas.map(v => v.dato) });
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
   assert.equal(confirmar.status, 200);
   assert.equal(confirmar.data.siniestrosCreados, 1, 'un solo siniestro para los 2 pedidos');
   assert.equal(confirmar.data.pedidosCreados, 2);
+  assert.equal(confirmar.data.piezasCreadas, 1);
+  assert.equal(confirmar.data.proveedoresCreados, 1);
 
   const siniestro = (await req('GET', '/api/siniestros?q=CM2-SIN-1')).data[0];
   const pedidos = (await req('GET', '/api/pedidos?siniestro_id=' + siniestro.id)).data;
-  assert.equal(pedidos.length, 2, 'ambos pedidos quedaron bajo el mismo expediente (no solo el encabezado)');
+  assert.equal(pedidos.length, 2, 'ambos pedidos quedaron bajo el mismo expediente');
+  const pedidoConPieza = pedidos.find(p => p.numero === 'CM2-PED-1');
+  assert.equal(Number(pedidoConPieza.total), 3500, 'el total del pedido se calcula de sus piezas reales, ya no queda en $0.00');
+  const piezas = (await req('GET', '/api/piezas?pedido_id=' + pedidoConPieza.id)).data;
+  assert.equal(piezas.length, 1);
+  assert.ok(piezas[0].proveedor_id, 'la pieza quedó vinculada a un proveedor real, no Sin proveedor');
 
-  // Reintentar la misma carga no debe duplicar (los pedidos ya existen).
-  const segundaVez = await req('POST', '/api/carga-masiva/confirmar', { filas: validado.validas.map(v => v.dato) });
+  // Reimportar el mismo archivo debe ACTUALIZAR (no duplicar) el pedido y la pieza existentes.
+  const segundaVez = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
   assert.equal(segundaVez.data.pedidosCreados, 0);
-  assert.equal(segundaVez.data.omitidos.length, 2);
+  assert.equal(segundaVez.data.pedidosActualizados, 2);
+  assert.equal(segundaVez.data.piezasCreadas, 0);
+  assert.equal(segundaVez.data.piezasActualizadas, 1, 'la misma pieza se actualiza, no se duplica');
+  const piezasDespues = (await req('GET', '/api/piezas?pedido_id=' + pedidoConPieza.id)).data;
+  assert.equal(piezasDespues.length, 1, 'sigue habiendo solo 1 pieza tras reimportar');
+});
+
+test('TRIAGE-CARGA-1: el estatus de Inpart se traduce vía el mapeo editable y NUNCA marca una pieza como Recibida físicamente automáticamente', async () => {
+  const csv = [
+    'numero_siniestro,aseguradora,numero_pedido,fecha_prevista,numero_parte,descripcion_pieza,precio,estatus_inpart_pieza,proveedor',
+    'CM3-SIN-1,GNP,CM3-PED-1,2026-09-01,NP-X,Salpicadera,900,Facturado,Proveedor Tres',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
+  const siniestro = (await req('GET', '/api/siniestros?q=CM3-SIN-1')).data[0];
+  const pedido = (await req('GET', '/api/pedidos?siniestro_id=' + siniestro.id)).data[0];
+  const pieza = (await req('GET', '/api/piezas?pedido_id=' + pedido.id)).data[0];
+  assert.equal(pieza.estatus, 'Facturada', 'Facturado (Inpart) debe mapear a Facturada, nunca a Recibida físicamente');
+
+  // Aunque se reimporte con un estatus de Inpart "Entregado", tampoco debe saltar a Recibida físicamente:
+  // esa transición es exclusiva de la confirmación física manual.
+  const csv2 = csv.replace('Facturado', 'Entregado');
+  const validado2 = (await req('POST', '/api/carga-masiva/validar', { csv: csv2 })).data;
+  await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado2.pedidos });
+  const piezaDespues = await req('GET', '/api/piezas/' + pieza.id);
+  assert.notEqual(piezaDespues.data.estatus, 'Recibida físicamente');
+});
+
+test('TRIAGE-CARGA-2: si el siniestro ya tiene placas capturadas y la carga trae un valor distinto, se reporta como conflicto en vez de sobrescribir en silencio', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'CM4-SIN-1', aseguradora: 'GNP', placas: 'AAA111' })).data;
+  const csv = [
+    'numero_siniestro,aseguradora,placas,numero_pedido,fecha_prevista',
+    'CM4-SIN-1,GNP,BBB222,CM4-PED-1,2026-09-01',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
+  assert.equal(confirmar.data.conflictos, 1);
+  const conflicto = confirmar.data.conflictos_detalle || confirmar.data.conflictos;
+  const siniestroDespues = await req('GET', '/api/siniestros/' + s.id);
+  assert.equal(siniestroDespues.data.placas, 'AAA111', 'las placas ya capturadas no se sobrescriben automáticamente');
+});
+
+test('TRIAGE-CARGA-3: un lote de carga masiva se puede revertir (soft-revert), sin borrar nada, y no puede revertirse dos veces', async () => {
+  const csv = [
+    'numero_siniestro,aseguradora,numero_pedido,fecha_prevista,numero_parte,descripcion_pieza,precio,proveedor',
+    'CM5-SIN-1,GNP,CM5-PED-1,2026-09-01,NP-R,Puerta trasera,1500,Proveedor Cinco',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
+  const loteId = confirmar.data.loteId;
+  assert.ok(loteId);
+
+  const revertir = await req('POST', '/api/carga-masiva/' + loteId + '/revertir', {});
+  assert.equal(revertir.status, 200);
+  assert.equal(revertir.data.pedidosCancelados, 1);
+  assert.equal(revertir.data.piezasCanceladas, 1);
+  assert.equal(revertir.data.siniestrosArchivados, 1, 'el siniestro solo tenía este pedido, así que se archiva (no se borra)');
+
+  const siniestro = (await req('GET', '/api/siniestros?q=CM5-SIN-1')).data;
+  // archivado no aparece en la vista diaria por defecto, pero el registro sigue existiendo (no se borró).
+  const otraVez = await req('POST', '/api/carga-masiva/' + loteId + '/revertir', {});
+  assert.equal(otraVez.status, 400, 'no se puede revertir dos veces el mismo lote');
 });
 
 test('REQ-DANIELA-14: carga masiva exclusiva de Daniela/admin; consulta no puede', async () => {
@@ -1525,4 +1591,17 @@ test('TRIAGE-2: se puede asignar proveedor y mover una pieza por cualquiera de s
     assert.equal(r.status, 200);
     assert.equal(r.data.estatus, estatus);
   }
+});
+
+test('TRIAGE-CARGA-4: el mapeo de estatus de Inpart es editable (GET/POST/PATCH), no un valor fijo en el código', async () => {
+  const lista = await req('GET', '/api/mapeo-estatus-inpart');
+  assert.equal(lista.status, 200);
+  assert.ok(lista.data.some(m => m.valor_inpart === 'Facturado' && m.estatus_pieza === 'Facturada'), 'debe traer el mapeo sembrado por defecto');
+
+  const nuevo = await req('POST', '/api/mapeo-estatus-inpart', { valor_inpart: 'Listo para recolección', estatus_pieza: 'Confirmada', estatus_pedido: 'Esperando proveedor' });
+  assert.equal(nuevo.status, 201);
+
+  const editado = await req('PATCH', '/api/mapeo-estatus-inpart/' + nuevo.data.id, { estatus_pieza: 'Facturada' });
+  assert.equal(editado.status, 200);
+  assert.equal(editado.data.estatus_pieza, 'Facturada');
 });

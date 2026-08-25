@@ -711,4 +711,69 @@ if(!tieneColumna('proveedores', 'telefono_alterno')){
   db.exec(`ALTER TABLE proveedores ADD COLUMN telefono_alterno TEXT;`);
 }
 
+/* ===================== Triage documento de Daniela (25-ago-2026), items 3/4/6 =====================
+   Rediseño de la carga masiva: importación a nivel pieza, mapeo de estatus Inpart editable (no
+   hard-codeado), y trazabilidad por lote para poder revertir una carga sin borrar nada (soft-revert,
+   igual que el resto del sistema: nunca se elimina físicamente). */
+
+// Mapeo de estatus de Inpart -> estatus internos. Vive en tabla editable (no en código) porque Inpart
+// puede usar textos distintos con el tiempo; admin/operativo lo pueden ajustar desde /api/mapeo-estatus-inpart.
+db.exec(`
+CREATE TABLE IF NOT EXISTS mapeo_estatus_inpart (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  valor_inpart TEXT NOT NULL UNIQUE,
+  estatus_pieza TEXT,
+  estatus_pedido TEXT,
+  activo INTEGER NOT NULL DEFAULT 1,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+const seedMapeo = db.prepare('SELECT COUNT(*) n FROM mapeo_estatus_inpart').get().n;
+if(seedMapeo === 0){
+  // Regla dura (hallazgo CLAUDE-06 del documento de Daniela): "Facturado no significa recibido
+  // físicamente". Ningún valor de Inpart mapea a 'Recibida físicamente' — esa transición es EXCLUSIVA
+  // de la confirmación manual del taller (endpoint /recibir), nunca de una importación.
+  const filas = [
+    ['Aguardando confirmación', 'Sin proveedor', 'Nuevo'],
+    ['Pendiente', 'Sin proveedor', 'Nuevo'],
+    ['Cotizado', 'Asignada', 'Por revisar'],
+    ['Confirmado', 'Confirmada', 'Esperando proveedor'],
+    ['Facturado', 'Facturada', 'Esperando proveedor'],
+    ['En tránsito', 'En tránsito', 'Esperando proveedor'],
+    ['Entregado', 'Entregada por proveedor', 'Recibido parcial'],
+    ['Recibido en almacén', 'Entregada por proveedor', 'Recibido parcial'],
+    ['Devuelto', 'Devuelta', 'Con incidencia'],
+    ['Incorrecto', 'Incorrecta/dañada', 'Con incidencia'],
+    ['Dañado', 'Incorrecta/dañada', 'Con incidencia'],
+    ['Cancelado', 'Cancelada', 'Cancelado'],
+  ];
+  const ins = db.prepare('INSERT INTO mapeo_estatus_inpart (valor_inpart,estatus_pieza,estatus_pedido) VALUES (?,?,?)');
+  filas.forEach(f=>ins.run(...f));
+}
+
+// Trazabilidad por lote de carga masiva, para poder revertir sin borrar nada.
+db.exec(`
+CREATE TABLE IF NOT EXISTS cargas_masivas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER REFERENCES usuarios(id),
+  resumen TEXT,
+  estado TEXT NOT NULL DEFAULT 'confirmada' CHECK(estado IN ('confirmada','revertida')),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  revertido_en TEXT,
+  revertido_por INTEGER REFERENCES usuarios(id)
+);
+`);
+if(!tieneColumna('siniestros', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+if(!tieneColumna('pedidos', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE pedidos ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+if(!tieneColumna('piezas', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE piezas ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+if(!tieneColumna('proveedores', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE proveedores ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+
 module.exports = db;

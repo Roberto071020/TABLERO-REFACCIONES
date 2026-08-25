@@ -369,21 +369,35 @@ async function descartarCorreoPendiente(id){
   closeModal(); render();
 }
 
-/* ===================== VISTA: CARGA MASIVA (requerimiento de Daniela) ===================== */
+/* ===================== VISTA: CARGA MASIVA (rediseño item 3/4/6 del triage) ===================== */
 let cargaMasivaValidada = null;
-function viewCargaMasiva(){
+async function viewCargaMasiva(){
   cargaMasivaValidada = null;
+  const lotes = await api('GET','/api/carga-masiva/lotes');
   return `
   <h2>Carga masiva</h2>
-  <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar expedientes y pedidos, por ejemplo los activos de GNP. Primero se valida, después confirmas antes de registrar.</p>
-  <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, proveedor, telefono_proveedor, contacto_proveedor</p>
+  <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar o actualizar expedientes, pedidos, piezas y proveedores. Cada fila puede traer una pieza; varias filas con el mismo numero_pedido se agrupan en un solo pedido. Primero se valida, después confirmas antes de registrar.</p>
+  <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, vin, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, numero_parte, descripcion_pieza, tipo_pieza, cantidad, precio, estatus_inpart_pieza, fecha_prometida_pieza, proveedor, contacto_proveedor, telefono_proveedor, correo_proveedor</p>
   <div class="field"><textarea id="fcm_csv" style="min-height:180px;font-family:monospace;" placeholder="numero_siniestro,aseguradora,...,fecha_prevista,..."></textarea></div>
   <div class="modal-actions" style="justify-content:flex-start;">
     <button class="btn" onclick="validarCargaMasiva()">Validar</button>
     <input type="file" id="fcm_archivo" accept=".csv,.txt" style="display:none" onchange="cargarArchivoCsv(event)">
     <button class="btn secondary" onclick="document.getElementById('fcm_archivo').click()">Cargar desde archivo…</button>
   </div>
-  <div id="cargaMasivaResultado" style="margin-top:16px;"></div>`;
+  <div id="cargaMasivaResultado" style="margin-top:16px;"></div>
+  <div class="section" style="margin-top:20px;">
+    <h3>Lotes recientes</h3>
+    ${lotes.length===0?'<div class="empty">Sin cargas registradas todavía.</div>':`
+    <table><thead><tr><th>Fecha</th><th>Usuario</th><th>Estado</th><th>Resumen</th><th></th></tr></thead><tbody>
+    ${lotes.map(l=>{ let r={}; try{ r=JSON.parse(l.resumen||'{}'); }catch(e){}
+      return `<tr>
+      <td>${esc(l.creado_en)}</td><td>${esc(l.usuario_nombre||'—')}</td>
+      <td><span class="badge ${l.estado==='revertida'?'rojo':'verde'}">${l.estado==='revertida'?'Revertida':'Confirmada'}</span></td>
+      <td class="subtle">${r.pedidosCreados||0} pedidos nuevos, ${r.pedidosActualizados||0} actualizados, ${r.piezasCreadas||0} piezas nuevas</td>
+      <td>${l.estado!=='revertida'?`<button class="btn small danger" onclick="revertirLoteCargaMasiva(${l.id})">Revertir</button>`:''}</td>
+    </tr>`; }).join('')}
+    </tbody></table>`}
+  </div>`;
 }
 function cargarArchivoCsv(ev){
   const file = ev.target.files[0];
@@ -398,31 +412,56 @@ async function validarCargaMasiva(){
   try{
     const r = await api('POST','/api/carga-masiva/validar', { csv });
     cargaMasivaValidada = r;
+    const validos = r.pedidos.filter(p=>p.errores.length===0);
+    const conError = r.pedidos.filter(p=>p.errores.length>0);
+    const conAdvertencia = r.pedidos.filter(p=>p.errores.length===0 && p.advertencias.length>0);
     const cont = document.getElementById('cargaMasivaResultado');
     cont.innerHTML = `
     <div class="grid-cards">
-      <div class="card verde"><div class="num">${r.validas.length}</div><div class="label">Filas listas para registrar</div></div>
-      <div class="card rojo"><div class="num">${r.errores.length}</div><div class="label">Filas con error</div></div>
+      <div class="card verde"><div class="num">${validos.length}</div><div class="label">Pedidos listos</div></div>
+      <div class="card rojo"><div class="num">${conError.length}</div><div class="label">Pedidos con error</div></div>
+      <div class="card ambar"><div class="num">${conAdvertencia.length}</div><div class="label">Con advertencia (revisar)</div></div>
+      <div class="card azul"><div class="num">${r.resumen.piezasTotal}</div><div class="label">Piezas detectadas</div></div>
     </div>
-    ${r.errores.length>0?`<h3>Errores</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Motivo</th></tr></thead><tbody>
-      ${r.errores.map(e=>`<tr><td>${e.fila}</td><td>${esc(e.dato.numero_siniestro)}</td><td>${esc(e.dato.numero_pedido)}</td><td>${esc(e.motivos.join(' '))}</td></tr>`).join('')}
+    ${conError.length>0?`<h3>Pedidos con error (no se registrarán)</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Motivo</th></tr></thead><tbody>
+      ${conError.map(p=>`<tr><td>${p.fila}</td><td>${esc(p.dato.numero_siniestro)}</td><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.errores.join(' '))}</td></tr>`).join('')}
       </tbody></table>`:''}
-    ${r.validas.length>0?`<h3 style="margin-top:14px;">Listas para registrar</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Fecha promesa</th></tr></thead><tbody>
-      ${r.validas.map(v=>`<tr><td>${v.fila}</td><td>${esc(v.dato.numero_siniestro)}</td><td>${esc(v.dato.numero_pedido)}</td><td>${esc(v.dato.aseguradora)}</td><td>${esc(v.dato.fecha_prevista)}</td></tr>`).join('')}
+    ${conAdvertencia.length>0?`<h3 style="margin-top:14px;">Advertencias (sí se registrarán, pero revisa)</h3><table><thead><tr><th>Pedido</th><th>Advertencia</th></tr></thead><tbody>
+      ${conAdvertencia.map(p=>`<tr><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.advertencias.join(' '))}</td></tr>`).join('')}
+      </tbody></table>`:''}
+    ${validos.length>0?`<h3 style="margin-top:14px;">Listos para registrar</h3><table><thead><tr><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Fecha promesa</th><th>Piezas</th><th>Acción</th></tr></thead><tbody>
+      ${validos.map(p=>`<tr><td>${esc(p.dato.numero_siniestro)}</td><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.dato.aseguradora)}</td><td>${esc(p.dato.fecha_prevista)}</td><td>${p.piezas.length}</td><td>${p.accion==='crear'?'<span class="badge verde">Nuevo</span>':'<span class="badge azul">Actualizar</span>'}</td></tr>`).join('')}
       </tbody></table>
-      <div class="modal-actions" style="justify-content:flex-start;margin-top:10px;"><button class="btn" onclick="confirmarCargaMasiva()">Confirmar y registrar ${r.validas.length} fila(s)</button></div>`:''}`;
+      <div class="modal-actions" style="justify-content:flex-start;margin-top:10px;"><button class="btn" onclick="confirmarCargaMasiva()">Confirmar y registrar ${validos.length} pedido(s)</button></div>`:''}`;
   }catch(e){}
 }
 async function confirmarCargaMasiva(){
-  if(!cargaMasivaValidada || cargaMasivaValidada.validas.length===0) return;
-  const ok = await confirmDialog(`¿Registrar ${cargaMasivaValidada.validas.length} fila(s) válidas? Las filas con error no se tocan.`, { textoOk:'Sí, registrar' });
+  if(!cargaMasivaValidada) return;
+  const validos = cargaMasivaValidada.pedidos.filter(p=>p.errores.length===0);
+  if(validos.length===0) return;
+  const ok = await confirmDialog(`¿Registrar ${validos.length} pedido(s) válidos? Los que tienen error no se tocan.`, { textoOk:'Sí, registrar' });
   if(!ok) return;
   try{
-    const r = await api('POST','/api/carga-masiva/confirmar', { filas: cargaMasivaValidada.validas.map(v=>v.dato) });
-    toast(`Carga completa: ${r.siniestrosCreados} siniestro(s) nuevo(s), ${r.pedidosCreados} pedido(s) registrados.`, 'success');
+    const r = await api('POST','/api/carga-masiva/confirmar', { pedidos: validos });
+    toast(`Carga completa: ${r.siniestrosCreados} siniestro(s) nuevo(s), ${r.pedidosCreados} pedido(s) nuevos, ${r.pedidosActualizados} actualizados, ${r.piezasCreadas} pieza(s) nueva(s).`, 'success');
     cargaMasivaValidada = null;
     document.getElementById('fcm_csv').value = '';
-    document.getElementById('cargaMasivaResultado').innerHTML = r.omitidos.length ? `<p class="subtle">${r.omitidos.length} fila(s) se omitieron por ya existir.</p>` : '';
+    let extra = '';
+    if(r.conflictos_detalle && r.conflictos_detalle.length){
+      extra += `<div class="banner ambar">${r.conflictos_detalle.length} conflicto(s): datos ya capturados distintos a los del archivo, no se sobrescribieron. <br>${r.conflictos_detalle.map(c=>`Siniestro ${esc(c.numero)}, campo ${esc(c.campo)}: ya tenía "${esc(c.valorActual)}", el archivo traía "${esc(c.valorNuevo)}".`).join('<br>')}</div>`;
+    }
+    if(r.omitidos && r.omitidos.length) extra += `<p class="subtle">${r.omitidos.length} pedido(s) se omitieron por datos incompletos.</p>`;
+    document.getElementById('cargaMasivaResultado').innerHTML = extra;
+    render();
+  }catch(e){}
+}
+async function revertirLoteCargaMasiva(loteId){
+  const ok = await confirmDialog('¿Revertir este lote? Los pedidos y piezas que creó quedarán cancelados (no se borra nada, queda todo en el historial).', { textoOk:'Sí, revertir' });
+  if(!ok) return;
+  try{
+    const r = await api('POST', `/api/carga-masiva/${loteId}/revertir`, {});
+    toast(`Lote revertido: ${r.pedidosCancelados} pedido(s) y ${r.piezasCanceladas} pieza(s) cancelados.`, 'success');
+    render();
   }catch(e){}
 }
 
