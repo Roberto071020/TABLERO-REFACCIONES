@@ -1378,3 +1378,105 @@ test('PENDIENTE-2: un complemento de más de $1,000 MXN no puede autorizarlo Orl
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Propuesta Orlando/Vanessa/Beto (25-ago-2026): fusión de captura y paneles por rol ===================== */
+
+test('PROPUESTA-1: la fecha de borrador de captura la gana el primer registro, sin importar quién la mande', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FUSION-1', aseguradora: 'GNP' })).data;
+  const primero = await req('PATCH', '/api/siniestros/' + s.id, { fecha_borrador_captura: '2026-08-20' });
+  assert.equal(primero.data.fecha_borrador_captura, '2026-08-20');
+
+  const segundo = await req('PATCH', '/api/siniestros/' + s.id, { fecha_borrador_captura: '2026-08-22' });
+  assert.equal(segundo.data.fecha_borrador_captura, '2026-08-20', 'debe conservarse la primera fecha registrada, sin error');
+});
+
+test('PROPUESTA-2: al marcar por primera vez excel/fotos/envío se sella la fecha automáticamente si no se manda una explícita', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FUSION-2', aseguradora: 'GNP' })).data;
+  const hoy = new Date().toISOString().slice(0,10);
+
+  const r1 = await req('PATCH', '/api/siniestros/' + s.id, { excel_capturado: true });
+  assert.equal(r1.data.excel_capturado, 1);
+  assert.equal(r1.data.excel_capturado_fecha, hoy);
+
+  const r2 = await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: true });
+  assert.equal(r2.data.fotos_completas_fecha, hoy);
+
+  const r3 = await req('PATCH', '/api/siniestros/' + s.id, { enviado_propietario: true });
+  assert.equal(r3.data.enviado_propietario_fecha, hoy);
+
+  // Una fecha explícita distinta sí se respeta en la primera captura.
+  const s2 = (await req('POST', '/api/siniestros', { numero: 'FUSION-2B', aseguradora: 'GNP' })).data;
+  const r4 = await req('PATCH', '/api/siniestros/' + s2.id, { excel_capturado: true, excel_capturado_fecha: '2026-08-10' });
+  assert.equal(r4.data.excel_capturado_fecha, '2026-08-10');
+});
+
+test('PROPUESTA-3: al resolverse la autorización (autorizada o parcial) se crea una tarea automática para avisar al propietario', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FUSION-3', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador Mapfre' });
+  const tareas = await req('GET', '/api/tareas?siniestro_id=' + s.id);
+  assert.ok(tareas.data.some(t => t.disparador === 'autorizacion_resuelta'), 'debe crearse una tarea para avisar al propietario');
+
+  // No debe duplicarse si ya hay una tarea abierta con el mismo disparador.
+  await req('PATCH', '/api/siniestros/' + s.id, { autorizacion_restricciones: 'Sin refacciones genéricas' });
+  const tareas2 = await req('GET', '/api/tareas?siniestro_id=' + s.id);
+  const conteo = tareas2.data.filter(t => t.disparador === 'autorizacion_resuelta').length;
+  assert.equal(conteo, 1, 'no debe duplicarse la tarea automática');
+});
+
+test('PROPUESTA-4: /api/reportes/resumen incluye los contadores de los paneles por rol', async () => {
+  const r = await req('GET', '/api/reportes/resumen');
+  assert.equal(r.status, 200);
+  for(const campo of ['ovPendientesRevision','ovBorradoresPorCapturar','ovFotosPorCompletar','ovListosParaEnviar',
+    'betoPorVencer','betoListasParaIniciar','betoVencidas','piezasPorConfirmar','piezasMalSurtidas','citasHoy','porAvisarAutorizacion']){
+    assert.ok(campo in r.data, `falta el campo ${campo} en el resumen`);
+  }
+});
+
+test('PROPUESTA-5: panorama-beto asigna prioridad 1 a siniestros vencidos o que vencen hoy/mañana', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P1', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X', fecha_entrega_prevista: '2020-01-01' });
+
+  const panorama = await req('GET', '/api/reportes/panorama-beto');
+  const item = panorama.data.find(x => x.numero === 'BETO-P1');
+  assert.ok(item, 'debe aparecer en el panorama de Beto tras ser autorizado');
+  assert.equal(item.prioridad, 1);
+});
+
+test('PROPUESTA-6: panorama-beto asigna prioridad 2 a una OT reciente con pocas operaciones sin tocar', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P2', aseguradora: 'GNP', fecha_entrega_prevista: '2027-01-01' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X' });
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-BETO-P2' })).data;
+  await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Cambio de defensa', area: 'Laminado', secuencia: 1 });
+
+  const panorama = await req('GET', '/api/reportes/panorama-beto');
+  const item = panorama.data.find(x => x.numero === 'BETO-P2');
+  assert.ok(item);
+  assert.equal(item.prioridad, 2);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('PROPUESTA-7: panorama-beto asigna prioridad 3 cuando está en piso y las refacciones ya están completas', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P3', aseguradora: 'GNP', fecha_entrega_prevista: '2027-01-01', requiere_refacciones: 'si' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'BETO-P3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre' })).data;
+  await req('POST', `/api/piezas/${z.id}/recibir`);
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X' });
+
+  const panorama = await req('GET', '/api/reportes/panorama-beto');
+  const item = panorama.data.find(x => x.numero === 'BETO-P3');
+  assert.ok(item);
+  assert.equal(item.prioridad, 3);
+});
+
+test('PROPUESTA-8: panorama-beto deja en prioridad 4 (proceso normal) lo que no cae en ningún caso especial', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P4', aseguradora: 'GNP', fecha_entrega_prevista: '2027-01-01', requiere_refacciones: 'si' })).data;
+  await req('POST', '/api/pedidos', { numero: 'BETO-P4-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X', estado_produccion: 'en_proceso' });
+
+  const panorama = await req('GET', '/api/reportes/panorama-beto');
+  const item = panorama.data.find(x => x.numero === 'BETO-P4');
+  assert.ok(item);
+  assert.equal(item.prioridad, 4);
+});

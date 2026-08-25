@@ -679,4 +679,29 @@ CREATE TABLE IF NOT EXISTS checklist_calidad (
 CREATE INDEX IF NOT EXISTS idx_checklist_calidad_siniestro ON checklist_calidad(siniestro_id);
 `);
 
+
+
+/* ===================== MIGRACIONES ADITIVAS — Propuesta Orlando/Vanessa fusionados + paneles por rol (2026-08-24) =====================
+   Documento "Propuesta_Orlando_Vanessa_Beto": Orlando absorbe la captura de Vanessa (Excel, fotos, envío
+   al propietario) de cara a su ausencia por nacimiento de su bebé (~40 días), sin necesitar su usuario.
+   Es una capa ADITIVA sobre lo ya construido en la Fase B (revisión técnica) y Fase C (expediente digital):
+   no reemplaza esa lógica, según confirmó Roberto. */
+
+const NUEVAS_COLUMNAS_FUSION_OV = [
+  ['fecha_borrador_captura', 'TEXT'],   // Fecha de entrega del borrador a captura. Campo compartido: gana
+                                          // la primera vez que se registra (confirmado por Roberto), sin
+                                          // importar si lo capturó Orlando o Vanessa.
+  ['excel_capturado', 'INTEGER NOT NULL DEFAULT 0'],
+  ['excel_capturado_fecha', 'TEXT'],
+  ['fotos_completas', 'INTEGER NOT NULL DEFAULT 0'],
+  ['fotos_completas_fecha', 'TEXT'],
+  ['enviado_propietario', 'INTEGER NOT NULL DEFAULT 0'],
+  ['enviado_propietario_fecha', 'TEXT']
+];
+for(const [col, def] of NUEVAS_COLUMNAS_FUSION_OV){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
 module.exports = db;

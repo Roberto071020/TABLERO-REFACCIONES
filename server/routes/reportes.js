@@ -118,8 +118,50 @@ router.get('/resumen', requireAuth, (req, res)=>{
       )) > 3
   `).get().n;
 
+  // Propuesta Orlando/Vanessa fusionados: panorama único que cubre revisión de daños + captura, para
+  // que Orlando pueda operar ambas partes sin cambiar de usuario (Vanessa sigue activa mientras esté).
+  const ovPendientesRevision = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica IS NULL`).get().n;
+  const ovEnRevision = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='en_revision'`).get().n;
+  const ovEsperandoDesarme = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='requiere_desarme'`).get().n;
+  const ovComplementosPendientes = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE decision='pendiente'`).get().n;
+  const ovBorradoresPorCapturar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='revision_terminada' AND excel_capturado=0`).get().n;
+  const ovFotosPorCompletar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND excel_capturado=1 AND fotos_completas=0`).get().n;
+  const ovListosParaEnviar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND fotos_completas=1 AND enviado_propietario=0`).get().n;
+
+  // Propuesta: panorama de Beto (6 tarjetas, pensado para celular con el mínimo de texto/toques).
+  const betoReingresosSinRecibir = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND cita_fecha IS NOT NULL AND cita_fecha != '' AND cita_fecha < ? AND (fecha_admision IS NULL OR fecha_admision='')`).get(hoy).n;
+  const manana = new Date(Date.now()+86400000).toISOString().slice(0,10);
+  const betoPorVencer = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND fecha_entrega_prevista IN (?,?) AND (estado_produccion IS NULL OR estado_produccion != 'terminado')`).get(hoy, manana).n;
+  const betoListasParaIniciar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND (estado_produccion IS NULL OR estado_produccion='programado') AND estado_autorizacion IN ('autorizada','parcial')`).get().n;
+  const haceSieteDias = new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+  const betoOtRapidasSinAsignar = db.prepare(`
+    SELECT COUNT(*) n FROM ordenes_trabajo ot WHERE ot.creado_en >= ?
+      AND (SELECT COUNT(*) FROM ot_operaciones o WHERE o.ot_id = ot.id) <= 2
+      AND NOT EXISTS (SELECT 1 FROM ot_operaciones o WHERE o.ot_id = ot.id AND o.estado != 'programado')
+  `).get(haceSieteDias).n;
+  const betoEnProcesoDesglose = db.prepare(`SELECT COALESCE(estado_produccion,'sin_iniciar') estado, COUNT(*) n FROM siniestros WHERE archivado=0 AND (estado_produccion IS NULL OR estado_produccion != 'terminado') AND estado_autorizacion IN ('autorizada','parcial') GROUP BY estado`).all();
+  const betoVencidas = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND fecha_entrega_prevista != '' AND fecha_entrega_prevista IS NOT NULL AND fecha_entrega_prevista < ? AND (estado_produccion IS NULL OR estado_produccion != 'terminado')`).get(hoy).n;
+
+  // Propuesta: 4 contadores nuevos para el panorama de Daniela (los otros 6 ya existían: pedidosNuevos,
+  // piezasVencidas, sinProveedor, recibidosParciales, incidenciasAbiertas y cierresHoy = "recibidas hoy").
+  const piezasPorConfirmar = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Asignada'`).get().n;
+  const piezasMalSurtidas = db.prepare(`SELECT COUNT(*) n FROM incidencias WHERE tipo IN ('incorrecta','incompleta') AND estado IN ('abierta','en_proceso')`).get().n;
+  const piezasEnDevolucion = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Devuelta'`).get().n;
+
+  // Propuesta: contadores de Alejandra. "Por avisar autorización" y "refacciones por avisar" reutilizan
+  // el mismo patrón de tareas automáticas ya existente (refacciones_completas) en vez de inventar un
+  // mecanismo de seguimiento nuevo — es la forma en que ya se le notifica una tarea pendiente a Alejandra.
+  const citasHoy = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND cita_fecha=?`).get(hoy).n;
+  const entregasProgramadas = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_entrega='cita_confirmada'`).get().n;
+  const porAvisarAutorizacion = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='autorizacion_resuelta' AND estado IN ('pendiente','en_proceso')`).get().n;
+  const refaccionesPorAvisar = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='refacciones_completas' AND estado IN ('pendiente','en_proceso')`).get().n;
+
   res.json({ pedidosNuevos, piezasVencidas, sinProveedor, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
-    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar });
+    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
+    ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
+    betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
+    piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
+    citasHoy, entregasProgramadas, porAvisarAutorizacion, refaccionesPorAvisar });
 });
 
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.
@@ -249,6 +291,48 @@ router.get('/bandeja-calidad', requireAuth, (req, res)=>{
     const retrabajosCriticos = db.prepare(`SELECT COUNT(*) n FROM retrabajos WHERE siniestro_id=? AND severidad='critica' AND estado != 'cerrado'`).get(s.id).n;
     return { ...s, checklist_rechazados: rechazados, retrabajos_criticos: retrabajosCriticos };
   });
+  res.json(out);
+});
+
+
+// Propuesta: orden sugerido de trabajo para Beto (sección 4) — se calcula solo con datos que ya existen
+// (fecha promesa, fecha de asignación de OT, refacciones completas); Beto no captura nada adicional.
+router.get('/panorama-beto', requireAuth, (req, res)=>{
+  const hoy = new Date().toISOString().slice(0,10);
+  const manana = new Date(Date.now()+86400000).toISOString().slice(0,10);
+  const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado=0 AND estado_autorizacion IN ('autorizada','parcial')
+    AND (estado_produccion IS NULL OR estado_produccion != 'terminado') ORDER BY creado_en DESC`).all();
+
+  const out = siniestros.map(s=>{
+    const ots = db.prepare(`SELECT * FROM ordenes_trabajo WHERE siniestro_id = ? ORDER BY creado_en DESC`).all(s.id);
+    const otMasReciente = ots[0] || null;
+    let otRapidaSinTocar = false;
+    if(otMasReciente){
+      const ops = db.prepare(`SELECT estado FROM ot_operaciones WHERE ot_id = ?`).all(otMasReciente.id);
+      otRapidaSinTocar = ops.length > 0 && ops.length <= 2 && ops.every(o => o.estado === 'programado');
+    }
+    const pedidos = db.prepare(`SELECT id FROM pedidos WHERE siniestro_id = ?`).all(s.id);
+    let refaccionesCompletas = s.requiere_refacciones !== 'si';
+    if(!refaccionesCompletas && pedidos.length){
+      refaccionesCompletas = pedidos.every(p=>{
+        const piezas = db.prepare(`SELECT estatus FROM piezas WHERE pedido_id = ?`).all(p.id);
+        return piezas.length > 0 && piezas.every(z => z.estatus === 'Recibida físicamente');
+      });
+    }
+    const enPiso = !s.estado_produccion || s.estado_produccion === 'programado';
+    const vencidaOProxima = s.fecha_entrega_prevista && (s.fecha_entrega_prevista <= manana);
+
+    let prioridad = 4, motivo = 'En proceso normal, dentro de fecha.';
+    if(vencidaOProxima){ prioridad = 1; motivo = s.fecha_entrega_prevista < hoy ? 'Vencida.' : 'Vence hoy o mañana.'; }
+    else if(otRapidaSinTocar){ prioridad = 2; motivo = 'Reparación rápida recién asignable, sin tocar.'; }
+    else if(enPiso && refaccionesCompletas){ prioridad = 3; motivo = 'Lista para iniciar: refacciones completas.'; }
+
+    return { id:s.id, numero:s.numero, vehiculo:s.vehiculo, placas:s.placas, aseguradora:s.aseguradora,
+      fecha_entrega_prevista:s.fecha_entrega_prevista, estado_produccion:s.estado_produccion,
+      ot_numero: otMasReciente ? otMasReciente.numero : null, prioridad, motivo };
+  });
+
+  out.sort((a,b)=> a.prioridad - b.prioridad || (a.fecha_entrega_prevista||'9999').localeCompare(b.fecha_entrega_prevista||'9999'));
   res.json(out);
 });
 

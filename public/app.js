@@ -204,6 +204,10 @@ async function render(){
 async function viewInicio(){
   const r = await api('GET','/api/reportes/resumen');
   const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
+  const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
+  const verBeto = currentUser && ['beto','admin','jefe'].includes(currentUser.rol);
+  const colaBeto = verBeto ? await api('GET','/api/reportes/panorama-beto') : [];
+  const LABEL_PROD = { programado:'Programado', en_laminado:'En laminado', mecanica:'Mecánica', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
   return `
   <h2>Resumen diario</h2>
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
@@ -212,16 +216,62 @@ async function viewInicio(){
     <div class="card azul"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
     <div class="card rojo"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
     <div class="card ambar"><div class="num">${r.sinProveedor}</div><div class="label">Sin proveedor</div></div>
+    <div class="card ambar"><div class="num">${r.piezasPorConfirmar}</div><div class="label">Por confirmar</div></div>
     <div class="card azul"><div class="num">${r.recibidosParciales}</div><div class="label">Recibidos parciales</div></div>
+    <div class="card rojo"><div class="num">${r.piezasMalSurtidas}</div><div class="label">Mal surtidas</div></div>
+    <div class="card ambar"><div class="num">${r.piezasEnDevolucion}</div><div class="label">En devolución</div></div>
     <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
-    <div class="card verde"><div class="num">${r.cierresHoy}</div><div class="label">Cierres de hoy</div></div>
+    <div class="card verde"><div class="num">${r.cierresHoy}</div><div class="label">Recibidas hoy</div></div>
   </div>
+  ${verOrlandoVanessa ? `
+  <div class="section">
+    <h3>Revisión técnica y captura (Orlando + Vanessa)</h3>
+    <p class="subtle">Panorama único que cubre revisión de daños y captura del expediente, para operar ambas partes sin cambiar de usuario.</p>
+    <div class="grid-cards">
+      <div class="card ambar"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
+      <div class="card azul"><div class="num">${r.ovEnRevision}</div><div class="label">En revisión</div></div>
+      <div class="card rojo"><div class="num">${r.ovEsperandoDesarme}</div><div class="label">Esperando apoyo/desarme</div></div>
+      <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.ovComplementosPendientes}</div><div class="label">Complementos pendientes</div></div>
+      <div class="card ambar"><div class="num">${r.ovBorradoresPorCapturar}</div><div class="label">Borradores por capturar a Excel</div></div>
+      <div class="card azul"><div class="num">${r.ovFotosPorCompletar}</div><div class="label">Fotos/carpetas por completar</div></div>
+      <div class="card verde"><div class="num">${r.ovListosParaEnviar}</div><div class="label">Listos para enviar al propietario</div></div>
+    </div>
+  </div>` : ''}
+  ${verBeto ? `
+  <div class="section">
+    <h3>Panorama de patio (Beto)</h3>
+    <div class="grid-cards">
+      <div class="card ${r.betoReingresosSinRecibir>0?'rojo':'verde'}" onclick="goTo('produccion')"><div class="num">${r.betoReingresosSinRecibir}</div><div class="label">Reingresos sin recibir</div></div>
+      <div class="card ambar" onclick="goTo('produccion')"><div class="num">${r.betoPorVencer}</div><div class="label">Por vencer (1-2 días)</div></div>
+      <div class="card verde" onclick="goTo('produccion')"><div class="num">${r.betoListasParaIniciar}</div><div class="label">Listas para iniciar (piso)</div></div>
+      <div class="card azul" onclick="goTo('produccion')"><div class="num">${r.betoOtRapidasSinAsignar}</div><div class="label">OT rápidas sin asignar</div></div>
+      <div class="card rojo" onclick="goTo('produccion')"><div class="num">${r.betoVencidas}</div><div class="label">Vencidas</div></div>
+    </div>
+    ${r.betoEnProcesoDesglose.length?`<p class="subtle" style="margin-top:8px;">En proceso: ${r.betoEnProcesoDesglose.map(x=>`${LABEL_PROD[x.estado]||x.estado} (${x.n})`).join(' · ')}</p>`:''}
+    <h4 style="margin-top:14px;">Orden sugerido de trabajo</h4>
+    <p class="subtle">Calculado solo con lo que ya está en el sistema (fecha promesa, OT, refacciones) — no necesitas capturar nada extra.</p>
+    ${colaBeto.length===0?'<div class="empty">Sin unidades autorizadas pendientes de producción.</div>':`
+    <table><thead><tr><th>#</th><th>Siniestro</th><th>Vehículo</th><th>OT</th><th>F. promesa</th><th>Motivo</th></tr></thead><tbody>
+    ${colaBeto.slice(0,20).map((x,i)=>`<tr>
+      <td><span class="badge ${x.prioridad===1?'rojo':x.prioridad===2?'ambar':x.prioridad===3?'azul':'gris'}">${x.prioridad}</span></td>
+      <td><span class="link" onclick="goSiniestro(${x.id})">${esc(x.numero)}</span></td>
+      <td>${esc(x.vehiculo||'—')} ${esc(x.placas?('· '+x.placas):'')}</td>
+      <td>${esc(x.ot_numero||'—')}</td>
+      <td>${esc(x.fecha_entrega_prevista||'—')}</td>
+      <td class="subtle">${esc(x.motivo)}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>` : ''}
   ${verClientes ? `
   <div class="section">
     <h3>Atención a clientes</h3>
     <p class="subtle">Seguimiento del lado del cliente (módulo de Alejandra), aparte de las refacciones.</p>
     <div class="grid-cards">
-      <div class="card ${r.expedientesSinActualizar>0?'rojo':'verde'}"><div class="num">${r.expedientesSinActualizar}</div><div class="label">Expedientes sin actualizar (+3 días)</div></div>
+      <div class="card azul"><div class="num">${r.citasHoy}</div><div class="label">Citas del día</div></div>
+      <div class="card verde"><div class="num">${r.entregasProgramadas}</div><div class="label">Entregas programadas</div></div>
+      <div class="card ambar"><div class="num">${r.porAvisarAutorizacion}</div><div class="label">Por avisar autorización</div></div>
+      <div class="card ambar"><div class="num">${r.refaccionesPorAvisar}</div><div class="label">Refacciones por avisar</div></div>
+      <div class="card ${r.expedientesSinActualizar>0?'rojo':'verde'}"><div class="num">${r.expedientesSinActualizar}</div><div class="label">Sin respuesta reciente (+3 días)</div></div>
       <div class="card ambar"><div class="num">${r.tareasPendientes}</div><div class="label">Tareas pendientes</div></div>
       <div class="card ${r.tareasVencidas>0?'rojo':'verde'}"><div class="num">${r.tareasVencidas}</div><div class="label">Tareas vencidas</div></div>
       <div class="card azul"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Hitos listos, sin avisar al cliente</div></div>
@@ -596,6 +646,7 @@ async function viewSiniestro(id){
     const archivosDisp = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
     const puedeAdmision = currentUser && ['atencion_cliente','vanessa','admin','jefe'].includes(currentUser.rol);
     const puedeTecnica = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
+    const puedeCaptura = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
     const LABEL_ADM = { admitido:'Admitido', condicionado:'Condicionado', no_admitido:'No admitido' };
     const BADGE_ADM = { admitido:'verde', condicionado:'ambar', no_admitido:'rojo' };
     const LABEL_REV = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
@@ -638,7 +689,17 @@ async function viewSiniestro(id){
       <td>${puedeTecnica?`<button class="btn small secondary" onclick="abrirFormEditarHallazgo(${h.id})">Editar</button>`:''}</td>
     </tr>`).join('')}
     </tbody></table>`}
-    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}`;
+    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Captura y envío (Orlando + Vanessa)</h3>
+    <p class="subtle">Continuación del flujo de Vanessa: Excel capturado, fotos/carpeta completas y envío al propietario. Cualquiera de los dos puede capturarlo — el sistema no distingue quién lo hizo.</p>
+    <table class="kv"><tbody>
+      <tr><td>Fecha de entrega del borrador a captura</td><td>${esc(s.fecha_borrador_captura||'—')}</td></tr>
+      <tr><td>Excel capturado</td><td>${s.excel_capturado?`<span class="badge verde">Sí</span> · ${esc(s.excel_capturado_fecha||'')}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Fotos/carpeta completas</td><td>${s.fotos_completas?`<span class="badge verde">Sí</span> · ${esc(s.fotos_completas_fecha||'')}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Enviado al propietario</td><td>${s.enviado_propietario?`<span class="badge verde">Sí</span> · ${esc(s.enviado_propietario_fecha||'')}`:'<span class="badge gris">No</span>'}</td></tr>
+    </tbody></table>
+    ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormCapturaEnvio(${id})">Actualizar captura / envío</button></div>`:''}`;
   } else if(state.subtabSiniestro==='expediente'){
     const documentos = await api('GET','/api/documentos-expediente?siniestro_id='+id);
     const puedeExpediente = currentUser && ['vanessa','admin','jefe'].includes(currentUser.rol);
@@ -1733,6 +1794,36 @@ async function guardarFiniquito(siniestroId){
       encuesta_calificacion: document.getElementById('ffin_calificacion').value||null, encuesta_comentarios: document.getElementById('ffin_comentarios').value
     });
     toast('Finiquito/encuesta actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.message){ /* el toast del error ya se mostró */ }
+  }
+}
+
+async function abrirFormCapturaEnvio(siniestroId){
+  const s = await api('GET','/api/siniestros/'+siniestroId);
+  openModal('Captura y envío (Orlando + Vanessa)', `
+    <div class="field"><label>Fecha de borrador de captura</label><input id="fcap_borrador" type="date" value="${s.fecha_borrador_captura||''}" ${s.fecha_borrador_captura?'disabled':''}></div>
+    ${s.fecha_borrador_captura?'<div class="subtle">Ya quedó registrada (gana el primer registro); no se puede cambiar.</div>':''}
+    <div class="row-flex">
+      <div class="field"><label><input id="fcap_excel" type="checkbox" ${s.excel_capturado?'checked':''}> Excel capturado</label>${s.excel_capturado_fecha?`<div class="subtle">Desde: ${s.excel_capturado_fecha}</div>`:''}</div>
+      <div class="field"><label><input id="fcap_fotos" type="checkbox" ${s.fotos_completas?'checked':''}> Fotos completas</label>${s.fotos_completas_fecha?`<div class="subtle">Desde: ${s.fotos_completas_fecha}</div>`:''}</div>
+      <div class="field"><label><input id="fcap_enviado" type="checkbox" ${s.enviado_propietario?'checked':''}> Enviado al propietario</label>${s.enviado_propietario_fecha?`<div class="subtle">Desde: ${s.enviado_propietario_fecha}</div>`:''}</div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarCapturaEnvio(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarCapturaEnvio(siniestroId){
+  try{
+    const payload = {
+      excel_capturado: document.getElementById('fcap_excel').checked ? 1 : 0,
+      fotos_completas: document.getElementById('fcap_fotos').checked ? 1 : 0,
+      enviado_propietario: document.getElementById('fcap_enviado').checked ? 1 : 0
+    };
+    const borradorEl = document.getElementById('fcap_borrador');
+    if(borradorEl && !borradorEl.disabled && borradorEl.value){ payload.fecha_borrador_captura = borradorEl.value; }
+    await api('PATCH','/api/siniestros/'+siniestroId, payload);
+    toast('Captura y envío actualizados.', 'success');
     closeModal(); render();
   }catch(e){
     if(e.message){ /* el toast del error ya se mostró */ }

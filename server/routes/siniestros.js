@@ -97,10 +97,28 @@ router.patch('/:id', requireAuth, (req, res)=>{
     'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
     // Documento Maestro / Fase F: control de calidad, entrega, finiquito y encuesta
     'estado_calidad','entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega',
-    'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios'];
+    'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios',
+    // Propuesta Orlando/Vanessa fusionados: Excel capturado, fotos/carpeta completas, enviado al propietario
+    'fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
   nuevo.completo = calcularCompleto(nuevo);
+
+  // Propuesta Orlando/Vanessa: "quién registra la fecha de entrega del borrador a captura" — Roberto
+  // confirmó que gana la primera vez que se registra, sin importar quién la mandó. Si ya tenía valor,
+  // se ignora cualquier intento posterior de sobrescribirla (no error: transición sin fricción).
+  if(anterior.fecha_borrador_captura){
+    nuevo.fecha_borrador_captura = anterior.fecha_borrador_captura;
+  }
+  // Al marcar por primera vez Excel capturado / fotos completas / enviado al propietario, se sella la
+  // fecha automáticamente si no se mandó una explícita — así ninguno de los dos tiene que capturarla aparte.
+  const hoyISO = new Date().toISOString().slice(0,10);
+  if(nuevo.excel_capturado && !anterior.excel_capturado && !nuevo.excel_capturado_fecha) nuevo.excel_capturado_fecha = hoyISO;
+  if(nuevo.fotos_completas && !anterior.fotos_completas && !nuevo.fotos_completas_fecha) nuevo.fotos_completas_fecha = hoyISO;
+  if(nuevo.enviado_propietario && !anterior.enviado_propietario && !nuevo.enviado_propietario_fecha) nuevo.enviado_propietario_fecha = hoyISO;
+  nuevo.excel_capturado = nuevo.excel_capturado ? 1 : 0;
+  nuevo.fotos_completas = nuevo.fotos_completas ? 1 : 0;
+  nuevo.enviado_propietario = nuevo.enviado_propietario ? 1 : 0;
 
   // F-17/F-21 del documento maestro: una excepción o condición fuera de lo normal debe traer motivo,
   // igual que Daniela exige motivo de cancelación en pedidos. Mismo criterio aquí para admisión y riesgo.
@@ -158,6 +176,10 @@ router.patch('/:id', requireAuth, (req, res)=>{
   // automáticamente una tarea de seguimiento para Alejandra (mismo patrón que el resto de automatizaciones).
   const nuevaInconformidad = nuevo.finiquito_estado === 'inconformidad_abierta' && anterior.finiquito_estado !== 'inconformidad_abierta';
 
+  // Propuesta: "unidades por avisar autorización" (panorama de Alejandra) — mismo patrón que
+  // refacciones_completas: cuando la autorización se resuelve, se crea una tarea de aviso al cliente.
+  const autorizacionReciénResuelta = ['autorizada','parcial'].includes(nuevo.estado_autorizacion) && !['autorizada','parcial'].includes(anterior.estado_autorizacion);
+
   // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
   // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
   const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
@@ -176,6 +198,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
       entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
       finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,
+      fecha_borrador_captura=?,excel_capturado=?,excel_capturado_fecha=?,fotos_completas=?,fotos_completas_fecha=?,enviado_propietario=?,enviado_propietario_fecha=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
@@ -189,12 +212,21 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
       nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
       nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios,
+      nuevo.fecha_borrador_captura, nuevo.excel_capturado, nuevo.excel_capturado_fecha, nuevo.fotos_completas, nuevo.fotos_completas_fecha, nuevo.enviado_propietario, nuevo.enviado_propietario_fecha,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   if(nuevaInconformidad){
     db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
       VALUES (?,?,?,?,'pendiente','automatica','inconformidad_finiquito',?)`)
       .run(req.params.id, 'seguimiento', 'Dar seguimiento a la inconformidad registrada en el finiquito.', new Date().toISOString().slice(0,10), req.session.user.id);
+  }
+  if(autorizacionReciénResuelta){
+    const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='autorizacion_resuelta' AND estado IN ('pendiente','en_proceso')`).get(req.params.id);
+    if(!yaExiste){
+      db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+        VALUES (?,?,?,?,'pendiente','automatica','autorizacion_resuelta',?)`)
+        .run(req.params.id, 'mensaje', 'Autorización resuelta: avisar al cliente y explicar el siguiente paso.', new Date().toISOString().slice(0,10), req.session.user.id);
+    }
   }
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
 });
