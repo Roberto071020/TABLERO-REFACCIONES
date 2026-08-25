@@ -157,12 +157,12 @@ const TABS = [
   {k:'lista', label:'Lista maestra'},
   {k:'proveedores', label:'Proveedores'},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
-  {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
-  {k:'expediente', label:'Armado de expediente', roles:['vanessa','admin','jefe']},
-  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
-  {k:'produccion', label:'Producción', roles:['beto','admin','jefe']},
-  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','admin','jefe']},
-  {k:'reglas', label:'Reglas', roles:['admin','jefe']}
+  {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
+  {k:'expediente', label:'Armado de expediente', roles:['vanessa','operativo','admin','jefe']},
+  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
+  {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
+  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
+  {k:'reglas', label:'Reglas', roles:['operativo','admin','jefe']}
 ];
 function renderTabs(){
   const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));

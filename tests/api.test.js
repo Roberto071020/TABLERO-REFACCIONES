@@ -1053,6 +1053,7 @@ test('DOC-MAESTRO-1: motor de reglas por aseguradora — GNP 1-3 piezas = autosu
 });
 
 test('DOC-MAESTRO-2: el expediente recalcula la ruta de refacciones al cambiar aseguradora o piezas autorizadas', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'DOCM2-SIN', aseguradora: 'GNP' })).data;
   assert.equal(s.aseguradora_ruta_refacciones, 'pendiente_confirmar');
 
@@ -1065,6 +1066,7 @@ test('DOC-MAESTRO-2: el expediente recalcula la ruta de refacciones al cambiar a
 
   const r3 = await req('PATCH', `/api/siniestros/${s.id}`, { aseguradora: 'ANA' });
   assert.equal(r3.data.aseguradora_ruta_refacciones, 'pago_danos');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-3: los 3 roles nuevos (Orlando, Vanessa, Beto) existen y pueden iniciar sesión', async () => {
@@ -1078,6 +1080,7 @@ test('DOC-MAESTRO-3: los 3 roles nuevos (Orlando, Vanessa, Beto) existen y puede
 /* ===================== Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando) ===================== */
 
 test('DOC-MAESTRO-B-1: admisión condicionada o no admitida exige motivo', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-ADM1', aseguradora: 'GNP' })).data;
   const sinMotivo = await req('PATCH', '/api/siniestros/' + s.id, { estado_admision: 'condicionado' });
   assert.equal(sinMotivo.status, 400, 'sin motivo debe rechazarse');
@@ -1085,18 +1088,22 @@ test('DOC-MAESTRO-B-1: admisión condicionada o no admitida exige motivo', async
   assert.equal(conMotivo.status, 200);
   assert.equal(conMotivo.data.estado_admision, 'condicionado');
   assert.equal(conMotivo.data.motivo_admision, 'Falta tarjeta de circulación');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-B-2: riesgo de seguridad exige motivo técnico', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-RIESGO1', aseguradora: 'GNP' })).data;
   const sinMotivo = await req('PATCH', '/api/siniestros/' + s.id, { riesgo_seguridad: 1 });
   assert.equal(sinMotivo.status, 400, 'riesgo sin motivo debe rechazarse');
   const conMotivo = await req('PATCH', '/api/siniestros/' + s.id, { riesgo_seguridad: 1, riesgo_seguridad_motivo: 'Fuga de frenos, no debe circular' });
   assert.equal(conMotivo.status, 200);
   assert.equal(conMotivo.data.riesgo_seguridad, 1);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-B-3: campos de admisión (tabla 21, circulando vs grúa) se guardan y reutilizan ingreso_tipo/ingreso_seguro de Fase A', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-ADM2', aseguradora: 'GNP' })).data;
   const r = await req('PATCH', '/api/siniestros/' + s.id, {
     ingreso_tipo: 'grua', ingreso_seguro: 0, grua_operador: 'Grúas Rápidas SA', grua_hora: '08:30',
@@ -1109,6 +1116,7 @@ test('DOC-MAESTRO-B-3: campos de admisión (tabla 21, circulando vs grúa) se gu
   assert.equal(r.data.grua_operador, 'Grúas Rápidas SA');
   assert.equal(r.data.llaves_entregadas, 1);
   assert.equal(r.data.estado_admision, 'admitido');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-B-4: crear un hallazgo de daños/evidencia exige zona/pieza y expediente válido', async () => {
@@ -1142,6 +1150,7 @@ test('DOC-MAESTRO-B-5: solo orlando/vanessa/admin/jefe pueden registrar hallazgo
 });
 
 test('DOC-MAESTRO-B-6: bandeja técnica de Orlando lista expedientes pendientes y los excluye al terminar la revisión', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-BANDEJA1', aseguradora: 'GNP' })).data;
   let bandeja = await req('GET', '/api/reportes/bandeja-tecnica');
   assert.ok(bandeja.data.some(x => x.numero === 'FASEB-BANDEJA1'), 'debe aparecer pendiente de revisión técnica');
@@ -1149,6 +1158,7 @@ test('DOC-MAESTRO-B-6: bandeja técnica de Orlando lista expedientes pendientes 
   await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
   bandeja = await req('GET', '/api/reportes/bandeja-tecnica');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEB-BANDEJA1'), 'ya no debe aparecer una vez terminada la revisión');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== Documento Maestro / Fase C: captura y armado de expediente (Vanessa) ===================== */
@@ -1190,6 +1200,7 @@ test('DOC-MAESTRO-C-3: solo vanessa/admin/jefe pueden capturar documentos del ex
 });
 
 test('DOC-MAESTRO-C-4: bandeja de expediente de Vanessa lista pendientes y los excluye al quedar listos para valuación', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEC-BANDEJA1', aseguradora: 'GNP' })).data;
   let bandeja = await req('GET', '/api/reportes/bandeja-expediente');
   assert.ok(bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'debe aparecer pendiente de armar expediente');
@@ -1197,11 +1208,13 @@ test('DOC-MAESTRO-C-4: bandeja de expediente de Vanessa lista pendientes y los e
   await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
   bandeja = await req('GET', '/api/reportes/bandeja-expediente');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'ya no debe aparecer una vez listo para valuación');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== Documento Maestro / Fase D: valuación, autorización y motor de reglas ===================== */
 
 test('DOC-MAESTRO-D-1: marcar la valuación como enviada/observada/etc. exige fecha de envío', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASED-VAL1', aseguradora: 'GNP' })).data;
   const sinFecha = await req('PATCH', '/api/siniestros/' + s.id, { estado_valuacion: 'enviada' });
   assert.equal(sinFecha.status, 400);
@@ -1209,9 +1222,11 @@ test('DOC-MAESTRO-D-1: marcar la valuación como enviada/observada/etc. exige fe
   assert.equal(conFecha.status, 200);
   assert.equal(conFecha.data.estado_valuacion, 'enviada');
   assert.equal(conFecha.data.valuacion_folio, 'V-001');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-D-2: autorizar (total o parcial) exige fecha de respuesta y autorizador', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASED-AUT1', aseguradora: 'GNP' })).data;
   const incompleto = await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada' });
   assert.equal(incompleto.status, 400);
@@ -1221,9 +1236,11 @@ test('DOC-MAESTRO-D-2: autorizar (total o parcial) exige fecha de respuesta y au
   assert.equal(completo.status, 200);
   assert.equal(completo.data.estado_autorizacion, 'autorizada');
   assert.equal(completo.data.autorizador, 'Ajustador GNP');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-D-3: la autorización de piezas (GNP 1-3) recalcula la ruta de refacciones a autosurtido obligatorio', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASED-GNP2', aseguradora: 'GNP' })).data;
   assert.equal(s.aseguradora_ruta_refacciones, 'pendiente_confirmar');
   const r = await req('PATCH', '/api/siniestros/' + s.id, {
@@ -1232,9 +1249,11 @@ test('DOC-MAESTRO-D-3: la autorización de piezas (GNP 1-3) recalcula la ruta de
   assert.equal(r.status, 200);
   assert.equal(r.data.aseguradora_ruta_refacciones, 'autosurtido');
   assert.match(r.data.aseguradora_regla_aplicada, /autosurtido OBLIGATORIO/);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-D-4: bandeja de valuación solo incluye expedientes con checklist documental listo y excluye autorizados/rechazados', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASED-BANDEJA1', aseguradora: 'GNP' })).data;
   let bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'no debe aparecer sin expediente listo para valuación');
@@ -1246,6 +1265,7 @@ test('DOC-MAESTRO-D-4: bandeja de valuación solo incluye expedientes con checkl
   await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador' });
   bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'ya no debe aparecer una vez autorizado');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== Documento Maestro / Fase E: orden de trabajo y producción (Beto) ===================== */
@@ -1322,7 +1342,8 @@ test('DOC-MAESTRO-E-4: cerrar un retrabajo exige registrar la corrección aplica
 });
 
 test('DOC-MAESTRO-E-5: bandeja de producción solo incluye expedientes autorizados y refleja bloqueos/retrabajos abiertos', async () => {
-  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-BANDEJA1', aseguradora: 'GNP' })).data;
   let bandeja = await req('GET', '/api/reportes/bandeja-produccion');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEE-BANDEJA1'), 'no debe aparecer sin autorización');
@@ -1384,6 +1405,7 @@ test('DOC-MAESTRO-F-2: no se puede registrar la entrega con retrabajos críticos
 });
 
 test('DOC-MAESTRO-F-3: el finiquito no puede firmarse antes de la entrega; una inconformidad crea una tarea automática', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEF-FIN1', aseguradora: 'GNP' })).data;
   const sinEntrega = await req('PATCH', '/api/siniestros/' + s.id, { finiquito_estado: 'firmado' });
   assert.equal(sinEntrega.status, 400);
@@ -1398,6 +1420,7 @@ test('DOC-MAESTRO-F-3: el finiquito no puede firmarse antes de la entrega; una i
   assert.equal(inconforme.status, 200);
   const tareas = await req('GET', '/api/tareas?siniestro_id=' + s2.id);
   assert.ok(tareas.data.some(t => t.disparador === 'inconformidad_finiquito'), 'debe crearse automáticamente una tarea de seguimiento');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('DOC-MAESTRO-F-4: bandeja de calidad incluye producción terminada pendiente de calidad/entrega', async () => {
@@ -1410,16 +1433,18 @@ test('DOC-MAESTRO-F-4: bandeja de calidad incluye producción terminada pendient
   bandeja = await req('GET', '/api/reportes/bandeja-calidad');
   assert.ok(bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'debe aparecer con producción terminada y sin calidad liberada');
 
-  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
   await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
   bandeja = await req('GET', '/api/reportes/bandeja-calidad');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'ya no debe aparecer una vez liberado y entregado');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== Pendientes resueltos por Roberto (24-ago-2026): SLA de autorización y límite de compra ===================== */
 
 test('PENDIENTE-1: la bandeja de valuación marca "sin respuesta" a los 3 días hábiles de enviada la autorización, igual para cualquier aseguradora', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'SLA-AUT1', aseguradora: 'Mapfre' })).data;
   await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
 
@@ -1435,6 +1460,7 @@ test('PENDIENTE-1: la bandeja de valuación marca "sin respuesta" a los 3 días 
   bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
   item = bandeja.data.find(x => x.numero === 'SLA-AUT1');
   assert.equal(item.autorizacion_vencida, true, 'con más de 3 días hábiles sin respuesta debe marcarse vencida');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PENDIENTE-2: un complemento de más de $1,000 MXN no puede autorizarlo Orlando/Beto; sí admin/jefe', async () => {
@@ -1460,15 +1486,18 @@ test('PENDIENTE-2: un complemento de más de $1,000 MXN no puede autorizarlo Orl
 /* ===================== Propuesta Orlando/Vanessa/Beto (25-ago-2026): fusión de captura y paneles por rol ===================== */
 
 test('PROPUESTA-1: la fecha de borrador de captura la gana el primer registro, sin importar quién la mande', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FUSION-1', aseguradora: 'GNP' })).data;
   const primero = await req('PATCH', '/api/siniestros/' + s.id, { fecha_borrador_captura: '2026-08-20' });
   assert.equal(primero.data.fecha_borrador_captura, '2026-08-20');
 
   const segundo = await req('PATCH', '/api/siniestros/' + s.id, { fecha_borrador_captura: '2026-08-22' });
   assert.equal(segundo.data.fecha_borrador_captura, '2026-08-20', 'debe conservarse la primera fecha registrada, sin error');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PROPUESTA-2: al marcar por primera vez excel/fotos/envío se sella la fecha automáticamente si no se manda una explícita', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FUSION-2', aseguradora: 'GNP' })).data;
   const hoy = new Date().toISOString().slice(0,10);
 
@@ -1486,9 +1515,11 @@ test('PROPUESTA-2: al marcar por primera vez excel/fotos/envío se sella la fech
   const s2 = (await req('POST', '/api/siniestros', { numero: 'FUSION-2B', aseguradora: 'GNP' })).data;
   const r4 = await req('PATCH', '/api/siniestros/' + s2.id, { excel_capturado: true, excel_capturado_fecha: '2026-08-10' });
   assert.equal(r4.data.excel_capturado_fecha, '2026-08-10');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PROPUESTA-3: al resolverse la autorización (autorizada o parcial) se crea una tarea automática para avisar al propietario', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FUSION-3', aseguradora: 'GNP' })).data;
   await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-24', autorizador: 'Ajustador Mapfre' });
   const tareas = await req('GET', '/api/tareas?siniestro_id=' + s.id);
@@ -1499,6 +1530,7 @@ test('PROPUESTA-3: al resolverse la autorización (autorizada o parcial) se crea
   const tareas2 = await req('GET', '/api/tareas?siniestro_id=' + s.id);
   const conteo = tareas2.data.filter(t => t.disparador === 'autorizacion_resuelta').length;
   assert.equal(conteo, 1, 'no debe duplicarse la tarea automática');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PROPUESTA-4: /api/reportes/resumen incluye los contadores de los paneles por rol', async () => {
@@ -1511,6 +1543,7 @@ test('PROPUESTA-4: /api/reportes/resumen incluye los contadores de los paneles p
 });
 
 test('PROPUESTA-5: panorama-beto asigna prioridad 1 a siniestros vencidos o que vencen hoy/mañana', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P1', aseguradora: 'GNP' })).data;
   await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X', fecha_entrega_prevista: '2020-01-01' });
 
@@ -1518,13 +1551,14 @@ test('PROPUESTA-5: panorama-beto asigna prioridad 1 a siniestros vencidos o que 
   const item = panorama.data.find(x => x.numero === 'BETO-P1');
   assert.ok(item, 'debe aparecer en el panorama de Beto tras ser autorizado');
   assert.equal(item.prioridad, 1);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PROPUESTA-6: panorama-beto asigna prioridad 2 a una OT reciente con pocas operaciones sin tocar', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P2', aseguradora: 'GNP', fecha_entrega_prevista: '2027-01-01' })).data;
   await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X' });
 
-  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-BETO-P2' })).data;
   await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Cambio de defensa', area: 'Laminado', secuencia: 1 });
 
@@ -1536,6 +1570,7 @@ test('PROPUESTA-6: panorama-beto asigna prioridad 2 a una OT reciente con pocas 
 });
 
 test('PROPUESTA-7: panorama-beto asigna prioridad 3 cuando está en piso y las refacciones ya están completas', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P3', aseguradora: 'GNP', fecha_entrega_prevista: '2027-01-01', requiere_refacciones: 'si' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'BETO-P3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
   const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre' })).data;
@@ -1546,9 +1581,11 @@ test('PROPUESTA-7: panorama-beto asigna prioridad 3 cuando está en piso y las r
   const item = panorama.data.find(x => x.numero === 'BETO-P3');
   assert.ok(item);
   assert.equal(item.prioridad, 3);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PROPUESTA-8: panorama-beto deja en prioridad 4 (proceso normal) lo que no cae en ningún caso especial', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'BETO-P4', aseguradora: 'GNP', fecha_entrega_prevista: '2027-01-01', requiere_refacciones: 'si' })).data;
   await req('POST', '/api/pedidos', { numero: 'BETO-P4-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' });
   await req('PATCH', '/api/siniestros/' + s.id, { estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-01', autorizador: 'X', estado_produccion: 'en_proceso' });
@@ -1557,6 +1594,7 @@ test('PROPUESTA-8: panorama-beto deja en prioridad 4 (proceso normal) lo que no 
   const item = panorama.data.find(x => x.numero === 'BETO-P4');
   assert.ok(item);
   assert.equal(item.prioridad, 4);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('PROPUESTA-9: la búsqueda global también encuentra el siniestro por VIN, para que Beto lo localice y vea la OT adjunta', async () => {
@@ -1680,6 +1718,7 @@ test('TRIAGE-ARCHIVO-2: eliminar un archivo lo manda a la papelera (no lo borra)
 });
 
 test('TRIAGE-SEMAFORO-1: GET /api/siniestros/:id incluye el semáforo de completitud por sección', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'SEMAFORO-1', aseguradora: 'GNP' })).data;
   const inicial = await req('GET', '/api/siniestros/' + s.id);
   assert.equal(inicial.data.semaforo.admision, 'pendiente');
@@ -1691,6 +1730,7 @@ test('TRIAGE-SEMAFORO-1: GET /api/siniestros/:id incluye el semáforo de complet
   assert.equal(despues.data.semaforo.admision, 'completo');
   assert.equal(despues.data.semaforo.produccion, 'completo');
   assert.equal(despues.data.semaforo.calidad, 'pendiente');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 /* ===================== Triage documento de Daniela (25-ago-2026), item 9 =====================
@@ -1712,4 +1752,65 @@ test('TRIAGE-BUSQUEDA-1: la búsqueda global encuentra piezas por número de par
 
   const porContacto = await req('GET', '/api/reportes/buscar?q=Marisol Contacto');
   assert.ok(porContacto.data.proveedores.some(x => x.id === pv.id), 'debe encontrar el proveedor por su contacto');
+});
+
+/* ===================== Triage documento de Daniela (25-ago-2026), item 10 =====================
+   Matriz de roles + acceso de solo lectura para Daniela en todos los módulos operativos.
+   DEF-018 del documento original: Daniela (operativo) no veía ni un dato de admisión, expediente,
+   valuación, producción o calidad — no solo le faltaban controles de captura, la pantalla entera
+   estaba oculta. La corrección tiene dos partes: (1) el frontend ahora le muestra esos módulos como
+   consulta (menú + colas de trabajo), y (2) el backend, que antes aceptaba que CUALQUIER usuario
+   autenticado escribiera esos campos vía API sin importar su rol, ahora exige el rol dueño de cada
+   módulo — para que "solo lectura" sea real y no solo un botón oculto en pantalla. */
+
+test('TRIAGE-ROLES-1: Daniela (operativo) puede leer los módulos especializados pero el backend le bloquea escribir en ellos', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ROLES-1', aseguradora: 'GNP' })).data;
+
+  // Lectura: las bandejas/colas de todos los módulos especializados deben responder 200 para Daniela.
+  for (const ruta of ['bandeja-tecnica', 'bandeja-expediente', 'bandeja-valuacion', 'bandeja-produccion', 'bandeja-calidad']) {
+    const r = await req('GET', '/api/reportes/' + ruta);
+    assert.equal(r.status, 200, `Daniela debe poder consultar ${ruta}`);
+  }
+  const ficha = await req('GET', '/api/siniestros/' + s.id);
+  assert.equal(ficha.status, 200, 'Daniela debe poder ver la ficha completa del siniestro, incluidos los campos de todos los módulos');
+
+  // Escritura: cada campo de un módulo ajeno debe rechazarse con 403, sin importar que Daniela esté autenticada.
+  const casos = [
+    [{ estado_revision_tecnica: 'revision_terminada' }, 'revisión técnica (Orlando)'],
+    [{ estado_expediente: 'listo_para_valuacion' }, 'expediente digital (Vanessa)'],
+    [{ estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-25', autorizador: 'X' }, 'valuación/autorización'],
+    [{ estado_produccion: 'terminado' }, 'producción (Beto)'],
+    [{ estado_calidad: 'liberado' }, 'calidad'],
+    [{ finiquito_estado: 'firmado' }, 'finiquito/encuesta'],
+  ];
+  for (const [body, nombre] of casos) {
+    const r = await req('PATCH', '/api/siniestros/' + s.id, body);
+    assert.equal(r.status, 403, `Daniela (operativo) no debe poder escribir campos de ${nombre}`);
+  }
+
+  // Los campos generales del expediente (los que siempre pudo editar) siguen abiertos.
+  const general = await req('PATCH', '/api/siniestros/' + s.id, { notas: 'Nota general de Daniela' });
+  assert.equal(general.status, 200, 'los campos generales del expediente deben seguir editables por Daniela');
+});
+
+test('TRIAGE-ROLES-2: el rol dueño de cada módulo (y admin/jefe) sí puede escribir sus propios campos', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ROLES-2', aseguradora: 'GNP' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const tecnica = await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  assert.equal(tecnica.status, 200, 'Orlando sí debe poder actualizar revisión técnica');
+
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const expediente = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.equal(expediente.status, 200, 'Vanessa sí debe poder actualizar el expediente');
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const produccion = await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'terminado' });
+  assert.equal(produccion.status, 200, 'Beto sí debe poder actualizar producción');
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const finiquito = await req('PATCH', '/api/siniestros/' + s.id, { finiquito_estado: 'firmado' });
+  assert.equal(finiquito.status, 400, 'admin sí tiene permiso de rol, pero la regla de negocio de firmar sin entrega registrada sigue aplicando');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
