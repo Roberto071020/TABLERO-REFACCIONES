@@ -1882,3 +1882,41 @@ test('TRIAGE-RESPALDO-3: descargar un nombre de respaldo que no existe da 404, n
   assert.equal(r.status, 404);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Investigación Inpart/Gmail (25-ago-2026) =====================
+   Preparación de la integración con Gmail (Camino B: cuenta dedicada + contraseña de aplicación),
+   confirmado por Roberto. Mientras GMAIL_USER/GMAIL_APP_PASSWORD no estén configurados en el
+   entorno (nunca lo están en pruebas, ni deben estarlo), /api/comunicaciones/:id/enviar debe
+   responder 503 de forma clara y dejar el correo en 'aprobado', para que el flujo manual de
+   copiar/pegar de Daniela siga funcionando exactamente igual que hoy. Es intencional que estas
+   pruebas NUNCA intenten un envío real. */
+
+test('GMAIL-1: enviar un correo por Gmail responde 503 mientras no esté configurado, y el correo sigue disponible para enviarse manualmente', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'GMAIL-1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'GMAIL-1-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const com = (await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'proveedor-prueba@ejemplo.mx', asunto: 'Prueba', cuerpo: 'Cuerpo de prueba' })).data;
+
+  const envio = await req('POST', '/api/comunicaciones/' + com.id + '/enviar');
+  assert.equal(envio.status, 503, 'sin GMAIL_USER/GMAIL_APP_PASSWORD debe responder 503, nunca intentar un envío real');
+  assert.match(envio.data.error, /no está configurado/);
+
+  const auditoria = await req('GET', '/api/auditoria?entidad_tipo=comunicacion&entidad_id=' + com.id);
+  assert.ok(!auditoria.data.some(a => a.accion === 'correo_enviado_automaticamente'), 'no debe registrarse un envío automático que nunca ocurrió');
+});
+
+test('GMAIL-2: solo operativo/admin pueden intentar el envío automático; no se puede enviar un correo que no está aprobado', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'GMAIL-2', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'GMAIL-2-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const com = (await req('POST', '/api/comunicaciones', { pedido_id: p.id, destinatarios: 'proveedor-prueba@ejemplo.mx' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const sinPermiso = await req('POST', '/api/comunicaciones/' + com.id + '/enviar');
+  assert.equal(sinPermiso.status, 403, 'orlando no debe poder enviar correos con proveedores');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+
+  // Este correo se creó ya con estado 'aprobado' por defecto (comportamiento histórico documentado
+  // en el propio código), así que probamos el caso contrario: uno descartado no debe poder enviarse.
+  await req('PATCH', '/api/comunicaciones/' + com.id + '/descartar', { motivo: 'ya no aplica' });
+  const descartado = await req('POST', '/api/comunicaciones/' + com.id + '/enviar');
+  assert.equal(descartado.status, 400, 'no se puede enviar un correo descartado');
+});

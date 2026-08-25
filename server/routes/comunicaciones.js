@@ -153,6 +153,28 @@ router.patch('/:id/aprobar', requireAuth, requireRole('operativo','admin'), (req
   res.json(db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(com.id));
 });
 
+// Envío automático real por Gmail (investigación del 25-ago-2026). Exclusivo de Daniela/admin,
+// igual que aprobar. Solo funciona si Roberto ya configuró GMAIL_USER/GMAIL_APP_PASSWORD en el
+// servidor; mientras no estén, responde 503 con un mensaje claro y el correo se queda en
+// 'aprobado' para que se pueda seguir copiando y pegando a mano, como siempre.
+router.post('/:id/enviar', requireAuth, requireRole('operativo','admin'), async (req, res)=>{
+  const { configurado, enviarCorreo } = require('../correoSaliente');
+  const com = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(req.params.id);
+  if(!com) return res.status(404).json({ error:'Comunicación no encontrada.' });
+  if(com.estado !== 'aprobado') return res.status(400).json({ error:'Solo se puede enviar un correo ya aprobado.' });
+  if(!configurado()){
+    return res.status(503).json({ error:'El envío automático por Gmail no está configurado todavía. Copia el correo manualmente como hasta ahora.' });
+  }
+  try{
+    await enviarCorreo({ to: com.destinatarios, cc: com.copia, subject: com.asunto, text: com.cuerpo });
+  }catch(e){
+    return res.status(502).json({ error:'Gmail rechazó el envío: ' + e.message + '. El correo sigue disponible para enviarlo manualmente.' });
+  }
+  db.prepare(`UPDATE comunicaciones SET estado='enviado', enviado_automaticamente_en=datetime('now') WHERE id=?`).run(com.id);
+  registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id: com.id, accion:'correo_enviado_automaticamente', usuario:req.session.user, valor_nuevo: com.destinatarios });
+  res.json(db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(com.id));
+});
+
 // Descartar un correo preparado automáticamente (ej. caso ANA de pago de daños, o ya no aplica). Exclusivo de Daniela/admin.
 router.patch('/:id/descartar', requireAuth, requireRole('operativo','admin'), (req, res)=>{
   const com = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(req.params.id);

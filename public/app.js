@@ -376,7 +376,8 @@ async function abrirRevisarCorreo(id){
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal()">Cerrar</button>
       <button class="btn danger" onclick="descartarCorreoPendiente(${c.id})">Descartar</button>
-      <button class="btn" onclick="aprobarCorreoPendiente(${c.id})">Aprobar</button>
+      <button class="btn secondary" onclick="aprobarCorreoPendiente(${c.id})">Solo aprobar (lo envío yo)</button>
+      <button class="btn" onclick="aprobarYEnviarCorreoPendiente(${c.id})">Aprobar y enviar por Gmail</button>
     </div>
   `, true);
 }
@@ -391,6 +392,26 @@ async function aprobarCorreoPendiente(id){
     toast('Correo aprobado (sigue en modo borrador/sandbox).', 'success');
     closeModal(); render();
   }catch(e){}
+}
+async function aprobarYEnviarCorreoPendiente(id){
+  const destinatarios = document.getElementById('fcor_dest').value.trim();
+  if(!destinatarios){ toast('Falta el destinatario.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/comunicaciones/${id}/aprobar`, {
+      destinatarios, copia: document.getElementById('fcor_copia').value,
+      asunto: document.getElementById('fcor_asunto').value, cuerpo: document.getElementById('fcor_cuerpo').value
+    });
+  }catch(e){ return; }
+  try{
+    await api('POST', `/api/comunicaciones/${id}/enviar`, {}, { silent:true });
+    toast('Correo aprobado y enviado por Gmail.', 'success');
+  }catch(e){
+    // El backend responde 503 con un mensaje claro cuando el envío por Gmail todavía no está
+    // configurado (Roberto no ha entregado GMAIL_USER/GMAIL_APP_PASSWORD): el correo queda
+    // aprobado igual, solo falta enviarlo a mano como hasta ahora.
+    toast('Correo aprobado. El envío automático por Gmail no está configurado todavía — cópialo y envíalo tú.', 'warn');
+  }
+  closeModal(); render();
 }
 async function descartarCorreoPendiente(id){
   const ok = await confirmDialog('¿Descartar este correo preparado automáticamente? No se enviará ni se volverá a preparar para este mismo caso.', { textoOk:'Sí, descartar', peligro:true });

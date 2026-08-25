@@ -346,6 +346,14 @@ if(!tieneColumna('comunicaciones', 'aprobado_en')){
   db.exec("ALTER TABLE comunicaciones ADD COLUMN aprobado_en TEXT;");
 }
 
+// Investigación Inpart/Gmail (25-ago-2026): columna para el envío automático real por Gmail,
+// cuando Roberto configure GMAIL_USER/GMAIL_APP_PASSWORD. Se agrega vacía y no cambia en nada
+// el comportamiento de "aprobado" existente (que sigue siendo copiar/pegar manual mientras esto
+// no esté configurado).
+if(!tieneColumna('comunicaciones', 'enviado_automaticamente_en')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN enviado_automaticamente_en TEXT;");
+}
+
 // 3) Archivo de siniestros a 3 meses de la entrega: no se borra nada, solo se marca y se oculta de vistas diarias.
 if(!tieneColumna('siniestros', 'archivado')){
   db.exec("ALTER TABLE siniestros ADD COLUMN archivado INTEGER NOT NULL DEFAULT 0;");
