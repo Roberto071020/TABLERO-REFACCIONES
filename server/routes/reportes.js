@@ -93,6 +93,9 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const pedidosNuevos = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Nuevo'`).get().n;
   const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus NOT IN ('Recibida físicamente','Cancelada') AND fecha_prometida != '' AND fecha_prometida < ?`).get(hoy).n;
   const sinProveedor = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Sin proveedor'`).get().n;
+  // Triage documento de Daniela (DEF-016): "sinProveedor" solo contaba piezas ya capturadas sin proveedor,
+  // pero un pedido sin NINGUNA pieza capturada todavía es un vacío más grande y no aparecía en ningún lado.
+  const pedidosSinPiezas = db.prepare(`SELECT COUNT(*) n FROM pedidos p WHERE p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND NOT EXISTS (SELECT 1 FROM piezas z WHERE z.pedido_id = p.id)`).get().n;
   const recibidosParciales = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Recibido parcial'`).get().n;
   // Requerimiento de Daniela: ahora refleja la bandeja real de correos preparados en espera de su aprobación.
   const correosPendientes = db.prepare(`SELECT COUNT(*) n FROM comunicaciones WHERE estado='pendiente_aprobacion'`).get().n;
@@ -156,7 +159,7 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const porAvisarAutorizacion = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='autorizacion_resuelta' AND estado IN ('pendiente','en_proceso')`).get().n;
   const refaccionesPorAvisar = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='refacciones_completas' AND estado IN ('pendiente','en_proceso')`).get().n;
 
-  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
+  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
@@ -167,13 +170,19 @@ router.get('/resumen', requireAuth, (req, res)=>{
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.
 router.get('/buscar', requireAuth, (req, res)=>{
   const q = String(req.query.q||'').trim();
-  if(!q) return res.json({ siniestros:[], pedidos:[], proveedores:[] });
+  if(!q) return res.json({ siniestros:[], pedidos:[], proveedores:[], piezas:[] });
   const like = `%${q}%`;
   // Propuesta Orlando/Vanessa/Beto: Beto necesita poder localizar el siniestro (y su OT adjunta) buscando por VIN, no solo numero/placas.
   const siniestros = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, vin FROM siniestros WHERE numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ? OR vin LIKE ? LIMIT 20`).all(like,like,like,like);
   const pedidos = db.prepare(`SELECT p.id, p.numero, s.numero as siniestro_numero, s.id as siniestro_id FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.numero LIKE ? LIMIT 20`).all(like);
-  const proveedores = db.prepare(`SELECT id, razon_social, correo FROM proveedores WHERE razon_social LIKE ? LIMIT 20`).all(like);
-  res.json({ siniestros, pedidos, proveedores, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });
+  // Triage documento de Daniela (REQ-023): la búsqueda global ahora también cubre proveedor por
+  // contacto (no solo razón social) y pieza por descripción o número de parte.
+  const proveedores = db.prepare(`SELECT id, razon_social, correo, contacto FROM proveedores WHERE razon_social LIKE ? OR contacto LIKE ? LIMIT 20`).all(like,like);
+  const piezas = db.prepare(`
+    SELECT z.id, z.descripcion, z.numero_parte, z.estatus, p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero
+    FROM piezas z JOIN pedidos p ON p.id = z.pedido_id JOIN siniestros s ON s.id = p.siniestro_id
+    WHERE z.descripcion LIKE ? OR z.numero_parte LIKE ? LIMIT 20`).all(like,like);
+  res.json({ siniestros, pedidos, proveedores, piezas, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });
 });
 
 

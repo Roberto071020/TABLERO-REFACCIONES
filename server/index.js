@@ -8,6 +8,7 @@ const SqliteSessionStore = require('./sqliteSessionStore');
 require('./seed'); // idempotente: crea usuarios/proveedores/caso de prueba solo si no existen
 require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: solo rellena campos vacíos en expedientes ya existentes
 require('./resetEmergenciaDaniela').resetEmergenciaDaniela(); // idempotente: corre una sola vez
+require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: respaldo diario + rotación; no-op en pruebas
 const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword } = require('./auth');
 const bcrypt = require('bcryptjs');
 
@@ -62,6 +63,8 @@ app.use('/api/ot-operaciones', require('./routes/otOperaciones'));
 app.use('/api/complementos', require('./routes/complementos'));
 app.use('/api/retrabajos', require('./routes/retrabajos'));
 app.use('/api/checklist-calidad', require('./routes/checklistCalidad'));
+app.use('/api/mapeo-estatus-inpart', require('./routes/mapeoEstatusInpart'));
+app.use('/api/respaldos', require('./routes/respaldos'));
 
 // ---- Frontend estático ----
 app.use(express.static(path.join(__dirname, '..', 'public')));

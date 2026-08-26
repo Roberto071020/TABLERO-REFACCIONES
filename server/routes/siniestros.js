@@ -1,13 +1,47 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido } = require('../utils');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo } = require('../utils');
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
 function esGenerico(v){ return !v || PLACEHOLDERS.includes(String(v).trim().toLowerCase()); }
 function calcularCompleto(row){
   return (!esGenerico(row.vehiculo) && !esGenerico(row.placas)) ? 1 : 0;
+}
+
+// Triage Daniela, item 10 (matriz de roles): el PATCH general de siniestros cubre campos de varios
+// módulos especializados (admisión, técnica, expediente, valuación/autorización, producción, calidad,
+// entrega, finiquito). El frontend ya oculta los botones de captura a quien no es el rol dueño de cada
+// módulo, pero el backend no lo exigía: cualquier usuario autenticado podía escribir esos campos llamando
+// la API directamente. Esto formaliza en el servidor la misma separación que ya existe en pantalla, para
+// que "solo lectura" sea real y no solo una convención de la interfaz. Los campos generales del expediente
+// (vehículo, placas, cliente, notas, etc.) siguen abiertos a cualquier usuario autenticado, como siempre.
+const GRUPOS_CAMPOS_RESTRINGIDOS = [
+  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro'],
+    roles:['atencion_cliente','vanessa','admin','jefe'], nombre:'admisión' },
+  { campos:['estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia'],
+    roles:['orlando','admin','jefe'], nombre:'revisión técnica' },
+  { campos:['fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'],
+    roles:['orlando','vanessa','admin','jefe'], nombre:'captura y envío' },
+  { campos:['estado_expediente','sistema_valuacion','expediente_folio'],
+    roles:['vanessa','admin','jefe'], nombre:'expediente digital' },
+  { campos:['valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_observaciones',
+      'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
+      'piezas_autorizadas_cambio','estado_valuacion'],
+    roles:['orlando','admin','jefe'], nombre:'valuación/autorización' },
+  { campos:['estado_produccion'], roles:['beto','orlando','admin','jefe'], nombre:'producción' },
+  { campos:['estado_calidad'], roles:['beto','orlando','admin','jefe'], nombre:'calidad' },
+  { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega'],
+    roles:['beto','atencion_cliente','admin','jefe'], nombre:'entrega' },
+  { campos:['finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios'],
+    roles:['atencion_cliente','admin','jefe'], nombre:'finiquito/encuesta' }
+];
+function campoRestringidoSinPermiso(body, rol){
+  for(const g of GRUPOS_CAMPOS_RESTRINGIDOS){
+    if(g.campos.some(c=> body[c] !== undefined) && !g.roles.includes(rol)) return g.nombre;
+  }
+  return null;
 }
 
 router.get('/', requireAuth, (req, res)=>{
@@ -33,7 +67,7 @@ router.get('/', requireAuth, (req, res)=>{
 router.get('/:id', requireAuth, (req, res)=>{
   const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
-  res.json(s);
+  res.json({ ...s, semaforo: calcularSemaforo(s) });
 });
 
 router.post('/', requireAuth, (req, res)=>{
@@ -83,6 +117,8 @@ router.post('/', requireAuth, (req, res)=>{
 router.patch('/:id', requireAuth, (req, res)=>{
   const anterior = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!anterior) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  const moduloSinPermiso = campoRestringidoSinPermiso(req.body, req.session.user.rol);
+  if(moduloSinPermiso) return res.status(403).json({ error: `No tienes permiso para modificar campos de ${moduloSinPermiso}.` });
   const campos = ['aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
     'cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen','etapa_actual','prioridad',
     'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada',

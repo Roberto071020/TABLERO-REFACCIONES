@@ -1,8 +1,10 @@
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite'); // módulo integrado en Node 22+: sin compilación nativa ni descargas al instalar
 
-const DB_PATH = process.env.TEST_DB_PATH || (process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'tablero.db') : path.join(__dirname, '..', 'data', 'tablero.db'));
+const DATA_DIR = process.env.TEST_DB_PATH ? path.dirname(process.env.TEST_DB_PATH) : (process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
+const DB_PATH = process.env.TEST_DB_PATH || path.join(DATA_DIR, 'tablero.db');
 const db = new DatabaseSync(DB_PATH);
+db.DATA_DIR = DATA_DIR; // Item 11 (respaldo/restauración): otros módulos necesitan saber dónde vive la carpeta de datos.
 db.exec('PRAGMA journal_mode = DELETE;');
 db.exec('PRAGMA foreign_keys = ON;');
 
@@ -342,6 +344,14 @@ if(!tieneColumna('comunicaciones', 'aprobado_por')){
 }
 if(!tieneColumna('comunicaciones', 'aprobado_en')){
   db.exec("ALTER TABLE comunicaciones ADD COLUMN aprobado_en TEXT;");
+}
+
+// Investigación Inpart/Gmail (25-ago-2026): columna para el envío automático real por Gmail,
+// cuando Roberto configure GMAIL_USER/GMAIL_APP_PASSWORD. Se agrega vacía y no cambia en nada
+// el comportamiento de "aprobado" existente (que sigue siendo copiar/pegar manual mientras esto
+// no esté configurado).
+if(!tieneColumna('comunicaciones', 'enviado_automaticamente_en')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN enviado_automaticamente_en TEXT;");
 }
 
 // 3) Archivo de siniestros a 3 meses de la entrega: no se borra nada, solo se marca y se oculta de vistas diarias.
@@ -710,5 +720,98 @@ for(const [col, def] of NUEVAS_COLUMNAS_FUSION_OV){
 if(!tieneColumna('proveedores', 'telefono_alterno')){
   db.exec(`ALTER TABLE proveedores ADD COLUMN telefono_alterno TEXT;`);
 }
+
+/* ===================== Triage documento de Daniela (25-ago-2026), items 3/4/6 =====================
+   Rediseño de la carga masiva: importación a nivel pieza, mapeo de estatus Inpart editable (no
+   hard-codeado), y trazabilidad por lote para poder revertir una carga sin borrar nada (soft-revert,
+   igual que el resto del sistema: nunca se elimina físicamente). */
+
+// Mapeo de estatus de Inpart -> estatus internos. Vive en tabla editable (no en código) porque Inpart
+// puede usar textos distintos con el tiempo; admin/operativo lo pueden ajustar desde /api/mapeo-estatus-inpart.
+db.exec(`
+CREATE TABLE IF NOT EXISTS mapeo_estatus_inpart (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  valor_inpart TEXT NOT NULL UNIQUE,
+  estatus_pieza TEXT,
+  estatus_pedido TEXT,
+  activo INTEGER NOT NULL DEFAULT 1,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+const seedMapeo = db.prepare('SELECT COUNT(*) n FROM mapeo_estatus_inpart').get().n;
+if(seedMapeo === 0){
+  // Regla dura (hallazgo CLAUDE-06 del documento de Daniela): "Facturado no significa recibido
+  // físicamente". Ningún valor de Inpart mapea a 'Recibida físicamente' — esa transición es EXCLUSIVA
+  // de la confirmación manual del taller (endpoint /recibir), nunca de una importación.
+  const filas = [
+    ['Aguardando confirmación', 'Sin proveedor', 'Nuevo'],
+    ['Pendiente', 'Sin proveedor', 'Nuevo'],
+    ['Cotizado', 'Asignada', 'Por revisar'],
+    ['Confirmado', 'Confirmada', 'Esperando proveedor'],
+    ['Facturado', 'Facturada', 'Esperando proveedor'],
+    ['En tránsito', 'En tránsito', 'Esperando proveedor'],
+    ['Entregado', 'Entregada por proveedor', 'Recibido parcial'],
+    ['Recibido en almacén', 'Entregada por proveedor', 'Recibido parcial'],
+    ['Devuelto', 'Devuelta', 'Con incidencia'],
+    ['Incorrecto', 'Incorrecta/dañada', 'Con incidencia'],
+    ['Dañado', 'Incorrecta/dañada', 'Con incidencia'],
+    ['Cancelado', 'Cancelada', 'Cancelado'],
+  ];
+  const ins = db.prepare('INSERT INTO mapeo_estatus_inpart (valor_inpart,estatus_pieza,estatus_pedido) VALUES (?,?,?)');
+  filas.forEach(f=>ins.run(...f));
+}
+
+// Trazabilidad por lote de carga masiva, para poder revertir sin borrar nada.
+db.exec(`
+CREATE TABLE IF NOT EXISTS cargas_masivas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER REFERENCES usuarios(id),
+  resumen TEXT,
+  estado TEXT NOT NULL DEFAULT 'confirmada' CHECK(estado IN ('confirmada','revertida')),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  revertido_en TEXT,
+  revertido_por INTEGER REFERENCES usuarios(id)
+);
+`);
+if(!tieneColumna('siniestros', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+if(!tieneColumna('pedidos', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE pedidos ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+if(!tieneColumna('piezas', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE piezas ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+if(!tieneColumna('proveedores', 'creado_por_lote_id')){
+  db.exec(`ALTER TABLE proveedores ADD COLUMN creado_por_lote_id INTEGER REFERENCES cargas_masivas(id);`);
+}
+
+/* ===================== Triage documento de Daniela (25-ago-2026), item 7 =====================
+   REQ-018: faltaba sustitución y eliminación recuperable de archivos. Aditivo, mismo patrón. */
+if(!tieneColumna('archivos', 'eliminado')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN eliminado INTEGER NOT NULL DEFAULT 0;`);
+}
+if(!tieneColumna('archivos', 'eliminado_en')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN eliminado_en TEXT;`);
+}
+if(!tieneColumna('archivos', 'eliminado_por')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN eliminado_por INTEGER REFERENCES usuarios(id);`);
+}
+if(!tieneColumna('archivos', 'version')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN version INTEGER NOT NULL DEFAULT 1;`);
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS archivos_versiones_anteriores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archivo_id INTEGER NOT NULL REFERENCES archivos(id),
+  version INTEGER NOT NULL,
+  nombre_original TEXT,
+  nombre_almacenado TEXT NOT NULL,
+  mime TEXT,
+  tamano INTEGER,
+  reemplazado_por INTEGER REFERENCES usuarios(id),
+  reemplazado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
 
 module.exports = db;

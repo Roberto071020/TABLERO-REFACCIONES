@@ -122,6 +122,32 @@ async function guardarPassword(){
 /* ===================== ESTADO / NAV ===================== */
 let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{} };
 
+// Triage documento de Daniela (DEF-023/REQ-022): traducir los códigos internos de auditoría a texto
+// legible en la línea de tiempo, en vez de mostrar el nombre técnico crudo (alta_carga_masiva, etc.).
+const LABEL_ACCION = {
+  alta: 'Alta', edicion: 'Edición', eliminacion: 'Eliminación', restauracion: 'Restaurado desde papelera',
+  sustitucion: 'Archivo sustituido', cierre: 'Cierre', cierre_automatico: 'Cierre automático',
+  alta_carga_masiva: 'Alta por carga masiva (Inpart)', actualizacion_carga_masiva: 'Actualizado por carga masiva (Inpart)',
+  archivado_automatico: 'Archivado automático (90 días sin movimiento)', desarchivado_manual: 'Reactivado manualmente',
+  completado_desde_libreta: 'Datos completados desde la libreta', automatico: 'Cambio automático del sistema',
+  cambio_por_incidencia: 'Cambio por incidencia registrada', entrega_proveedor: 'Marcada como entregada por el proveedor',
+  recepcion_fisica: 'Recepción física confirmada', entrega_registrada: 'Entrega al cliente registrada',
+  incidencia_registrada: 'Incidencia registrada', respuesta_registrada: 'Respuesta del proveedor registrada',
+  correo_aprobado: 'Correo aprobado (borrador/sandbox)', correo_descartado: 'Correo descartado',
+  exclusion_temporal: 'Proveedor excluido de un envío puntual', reversion: 'Carga masiva revertida',
+  login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador'
+};
+const LABEL_CAMPO = {
+  estatus_operativo: 'Estatus operativo', estatus_inpart: 'Estatus Inpart', fecha_prevista: 'Fecha promesa',
+  vehiculo: 'Vehículo', placas: 'Placas', vin: 'VIN', proveedor_id: 'Proveedor', precio: 'Precio', estatus: 'Estatus'
+};
+// Triage documento de Daniela (DEF-024/REQ-020): semáforo visual de completitud por sección.
+function renderSemaforo(sem){
+  if(!sem) return '';
+  const COLOR = { completo:'verde', en_proceso:'ambar', pendiente:'gris' };
+  const LABEL = { admision:'Admisión', expediente:'Expediente', valuacion:'Valuación', produccion:'Producción', calidad:'Calidad' };
+  return Object.entries(sem).map(([k,v])=>`<span class="badge ${COLOR[v]||'gris'}" title="${LABEL[k]}: ${v.replace('_',' ')}">${LABEL[k]}</span>`).join(' ');
+}
 const TABS = [
   {k:'inicio', label:'Inicio'},
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
@@ -131,12 +157,13 @@ const TABS = [
   {k:'lista', label:'Lista maestra'},
   {k:'proveedores', label:'Proveedores'},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
-  {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
-  {k:'expediente', label:'Armado de expediente', roles:['vanessa','admin','jefe']},
-  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
-  {k:'produccion', label:'Producción', roles:['beto','admin','jefe']},
-  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','admin','jefe']},
-  {k:'reglas', label:'Reglas'}
+  {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
+  {k:'expediente', label:'Armado de expediente', roles:['vanessa','operativo','admin','jefe']},
+  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
+  {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
+  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
+  {k:'reglas', label:'Reglas', roles:['operativo','admin','jefe']},
+  {k:'respaldos', label:'Respaldos', roles:['admin']}
 ];
 function renderTabs(){
   const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
@@ -167,7 +194,10 @@ async function doGlobalSearch(){
       ${r.pedidos.length===0?'<div class="empty">Sin coincidencias.</div>':r.pedidos.map(p=>`<div class="result-item" onclick="closeModal();goSiniestro(${p.siniestro_id})"><b>${esc(p.numero)}</b> · siniestro ${esc(p.siniestro_numero)}</div>`).join('')}
     </div>
     <div class="results-group"><h4>Proveedores (${r.proveedores.length})</h4>
-      ${r.proveedores.length===0?'<div class="empty">Sin coincidencias.</div>':r.proveedores.map(pv=>`<div class="result-item" onclick="closeModal();goProveedor(${pv.id})"><b>${esc(pv.razon_social)}</b> · ${esc(pv.correo||'')}</div>`).join('')}
+      ${r.proveedores.length===0?'<div class="empty">Sin coincidencias.</div>':r.proveedores.map(pv=>`<div class="result-item" onclick="closeModal();goProveedor(${pv.id})"><b>${esc(pv.razon_social)}</b> · ${esc(pv.correo||'')}${pv.contacto?' · '+esc(pv.contacto):''}</div>`).join('')}
+    </div>
+    <div class="results-group"><h4>Piezas (${r.piezas.length})</h4>
+      ${r.piezas.length===0?'<div class="empty">Sin coincidencias.</div>':r.piezas.map(z=>`<div class="result-item" onclick="closeModal();goSiniestro(${z.siniestro_id})"><b>${esc(z.descripcion)}</b>${z.numero_parte?' · N.P. '+esc(z.numero_parte):''} · siniestro ${esc(z.siniestro_numero)} · pedido ${esc(z.pedido_numero)} · ${esc(z.estatus)}</div>`).join('')}
     </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
   `, true);
@@ -194,6 +224,7 @@ async function render(){
     else if(state.view==='produccion') app.innerHTML = await viewProduccion();
     else if(state.view==='calidad') app.innerHTML = await viewCalidad();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
+    else if(state.view==='respaldos') app.innerHTML = await viewRespaldos();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
     if(e.message !== 'Sesión expirada. Vuelve a iniciar sesión.') app.innerHTML = `<div class="empty">No se pudo cargar la vista: ${esc(e.message)}</div>`;
@@ -345,7 +376,8 @@ async function abrirRevisarCorreo(id){
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal()">Cerrar</button>
       <button class="btn danger" onclick="descartarCorreoPendiente(${c.id})">Descartar</button>
-      <button class="btn" onclick="aprobarCorreoPendiente(${c.id})">Aprobar</button>
+      <button class="btn secondary" onclick="aprobarCorreoPendiente(${c.id})">Solo aprobar (lo envío yo)</button>
+      <button class="btn" onclick="aprobarYEnviarCorreoPendiente(${c.id})">Aprobar y enviar por Gmail</button>
     </div>
   `, true);
 }
@@ -361,6 +393,26 @@ async function aprobarCorreoPendiente(id){
     closeModal(); render();
   }catch(e){}
 }
+async function aprobarYEnviarCorreoPendiente(id){
+  const destinatarios = document.getElementById('fcor_dest').value.trim();
+  if(!destinatarios){ toast('Falta el destinatario.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/comunicaciones/${id}/aprobar`, {
+      destinatarios, copia: document.getElementById('fcor_copia').value,
+      asunto: document.getElementById('fcor_asunto').value, cuerpo: document.getElementById('fcor_cuerpo').value
+    });
+  }catch(e){ return; }
+  try{
+    await api('POST', `/api/comunicaciones/${id}/enviar`, {}, { silent:true });
+    toast('Correo aprobado y enviado por Gmail.', 'success');
+  }catch(e){
+    // El backend responde 503 con un mensaje claro cuando el envío por Gmail todavía no está
+    // configurado (Roberto no ha entregado GMAIL_USER/GMAIL_APP_PASSWORD): el correo queda
+    // aprobado igual, solo falta enviarlo a mano como hasta ahora.
+    toast('Correo aprobado. El envío automático por Gmail no está configurado todavía — cópialo y envíalo tú.', 'warn');
+  }
+  closeModal(); render();
+}
 async function descartarCorreoPendiente(id){
   const ok = await confirmDialog('¿Descartar este correo preparado automáticamente? No se enviará ni se volverá a preparar para este mismo caso.', { textoOk:'Sí, descartar', peligro:true });
   if(!ok) return;
@@ -369,21 +421,35 @@ async function descartarCorreoPendiente(id){
   closeModal(); render();
 }
 
-/* ===================== VISTA: CARGA MASIVA (requerimiento de Daniela) ===================== */
+/* ===================== VISTA: CARGA MASIVA (rediseño item 3/4/6 del triage) ===================== */
 let cargaMasivaValidada = null;
-function viewCargaMasiva(){
+async function viewCargaMasiva(){
   cargaMasivaValidada = null;
+  const lotes = await api('GET','/api/carga-masiva/lotes');
   return `
   <h2>Carga masiva</h2>
-  <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar expedientes y pedidos, por ejemplo los activos de GNP. Primero se valida, después confirmas antes de registrar.</p>
-  <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, proveedor, telefono_proveedor, contacto_proveedor</p>
+  <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar o actualizar expedientes, pedidos, piezas y proveedores. Cada fila puede traer una pieza; varias filas con el mismo numero_pedido se agrupan en un solo pedido. Primero se valida, después confirmas antes de registrar.</p>
+  <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, vin, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, numero_parte, descripcion_pieza, tipo_pieza, cantidad, precio, estatus_inpart_pieza, fecha_prometida_pieza, proveedor, contacto_proveedor, telefono_proveedor, correo_proveedor</p>
   <div class="field"><textarea id="fcm_csv" style="min-height:180px;font-family:monospace;" placeholder="numero_siniestro,aseguradora,...,fecha_prevista,..."></textarea></div>
   <div class="modal-actions" style="justify-content:flex-start;">
     <button class="btn" onclick="validarCargaMasiva()">Validar</button>
     <input type="file" id="fcm_archivo" accept=".csv,.txt" style="display:none" onchange="cargarArchivoCsv(event)">
     <button class="btn secondary" onclick="document.getElementById('fcm_archivo').click()">Cargar desde archivo…</button>
   </div>
-  <div id="cargaMasivaResultado" style="margin-top:16px;"></div>`;
+  <div id="cargaMasivaResultado" style="margin-top:16px;"></div>
+  <div class="section" style="margin-top:20px;">
+    <h3>Lotes recientes</h3>
+    ${lotes.length===0?'<div class="empty">Sin cargas registradas todavía.</div>':`
+    <table><thead><tr><th>Fecha</th><th>Usuario</th><th>Estado</th><th>Resumen</th><th></th></tr></thead><tbody>
+    ${lotes.map(l=>{ let r={}; try{ r=JSON.parse(l.resumen||'{}'); }catch(e){}
+      return `<tr>
+      <td>${esc(l.creado_en)}</td><td>${esc(l.usuario_nombre||'—')}</td>
+      <td><span class="badge ${l.estado==='revertida'?'rojo':'verde'}">${l.estado==='revertida'?'Revertida':'Confirmada'}</span></td>
+      <td class="subtle">${r.pedidosCreados||0} pedidos nuevos, ${r.pedidosActualizados||0} actualizados, ${r.piezasCreadas||0} piezas nuevas</td>
+      <td>${l.estado!=='revertida'?`<button class="btn small danger" onclick="revertirLoteCargaMasiva(${l.id})">Revertir</button>`:''}</td>
+    </tr>`; }).join('')}
+    </tbody></table>`}
+  </div>`;
 }
 function cargarArchivoCsv(ev){
   const file = ev.target.files[0];
@@ -398,31 +464,56 @@ async function validarCargaMasiva(){
   try{
     const r = await api('POST','/api/carga-masiva/validar', { csv });
     cargaMasivaValidada = r;
+    const validos = r.pedidos.filter(p=>p.errores.length===0);
+    const conError = r.pedidos.filter(p=>p.errores.length>0);
+    const conAdvertencia = r.pedidos.filter(p=>p.errores.length===0 && p.advertencias.length>0);
     const cont = document.getElementById('cargaMasivaResultado');
     cont.innerHTML = `
     <div class="grid-cards">
-      <div class="card verde"><div class="num">${r.validas.length}</div><div class="label">Filas listas para registrar</div></div>
-      <div class="card rojo"><div class="num">${r.errores.length}</div><div class="label">Filas con error</div></div>
+      <div class="card verde"><div class="num">${validos.length}</div><div class="label">Pedidos listos</div></div>
+      <div class="card rojo"><div class="num">${conError.length}</div><div class="label">Pedidos con error</div></div>
+      <div class="card ambar"><div class="num">${conAdvertencia.length}</div><div class="label">Con advertencia (revisar)</div></div>
+      <div class="card azul"><div class="num">${r.resumen.piezasTotal}</div><div class="label">Piezas detectadas</div></div>
     </div>
-    ${r.errores.length>0?`<h3>Errores</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Motivo</th></tr></thead><tbody>
-      ${r.errores.map(e=>`<tr><td>${e.fila}</td><td>${esc(e.dato.numero_siniestro)}</td><td>${esc(e.dato.numero_pedido)}</td><td>${esc(e.motivos.join(' '))}</td></tr>`).join('')}
+    ${conError.length>0?`<h3>Pedidos con error (no se registrarán)</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Motivo</th></tr></thead><tbody>
+      ${conError.map(p=>`<tr><td>${p.fila}</td><td>${esc(p.dato.numero_siniestro)}</td><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.errores.join(' '))}</td></tr>`).join('')}
       </tbody></table>`:''}
-    ${r.validas.length>0?`<h3 style="margin-top:14px;">Listas para registrar</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Fecha promesa</th></tr></thead><tbody>
-      ${r.validas.map(v=>`<tr><td>${v.fila}</td><td>${esc(v.dato.numero_siniestro)}</td><td>${esc(v.dato.numero_pedido)}</td><td>${esc(v.dato.aseguradora)}</td><td>${esc(v.dato.fecha_prevista)}</td></tr>`).join('')}
+    ${conAdvertencia.length>0?`<h3 style="margin-top:14px;">Advertencias (sí se registrarán, pero revisa)</h3><table><thead><tr><th>Pedido</th><th>Advertencia</th></tr></thead><tbody>
+      ${conAdvertencia.map(p=>`<tr><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.advertencias.join(' '))}</td></tr>`).join('')}
+      </tbody></table>`:''}
+    ${validos.length>0?`<h3 style="margin-top:14px;">Listos para registrar</h3><table><thead><tr><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Fecha promesa</th><th>Piezas</th><th>Acción</th></tr></thead><tbody>
+      ${validos.map(p=>`<tr><td>${esc(p.dato.numero_siniestro)}</td><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.dato.aseguradora)}</td><td>${esc(p.dato.fecha_prevista)}</td><td>${p.piezas.length}</td><td>${p.accion==='crear'?'<span class="badge verde">Nuevo</span>':'<span class="badge azul">Actualizar</span>'}</td></tr>`).join('')}
       </tbody></table>
-      <div class="modal-actions" style="justify-content:flex-start;margin-top:10px;"><button class="btn" onclick="confirmarCargaMasiva()">Confirmar y registrar ${r.validas.length} fila(s)</button></div>`:''}`;
+      <div class="modal-actions" style="justify-content:flex-start;margin-top:10px;"><button class="btn" onclick="confirmarCargaMasiva()">Confirmar y registrar ${validos.length} pedido(s)</button></div>`:''}`;
   }catch(e){}
 }
 async function confirmarCargaMasiva(){
-  if(!cargaMasivaValidada || cargaMasivaValidada.validas.length===0) return;
-  const ok = await confirmDialog(`¿Registrar ${cargaMasivaValidada.validas.length} fila(s) válidas? Las filas con error no se tocan.`, { textoOk:'Sí, registrar' });
+  if(!cargaMasivaValidada) return;
+  const validos = cargaMasivaValidada.pedidos.filter(p=>p.errores.length===0);
+  if(validos.length===0) return;
+  const ok = await confirmDialog(`¿Registrar ${validos.length} pedido(s) válidos? Los que tienen error no se tocan.`, { textoOk:'Sí, registrar' });
   if(!ok) return;
   try{
-    const r = await api('POST','/api/carga-masiva/confirmar', { filas: cargaMasivaValidada.validas.map(v=>v.dato) });
-    toast(`Carga completa: ${r.siniestrosCreados} siniestro(s) nuevo(s), ${r.pedidosCreados} pedido(s) registrados.`, 'success');
+    const r = await api('POST','/api/carga-masiva/confirmar', { pedidos: validos });
+    toast(`Carga completa: ${r.siniestrosCreados} siniestro(s) nuevo(s), ${r.pedidosCreados} pedido(s) nuevos, ${r.pedidosActualizados} actualizados, ${r.piezasCreadas} pieza(s) nueva(s).`, 'success');
     cargaMasivaValidada = null;
     document.getElementById('fcm_csv').value = '';
-    document.getElementById('cargaMasivaResultado').innerHTML = r.omitidos.length ? `<p class="subtle">${r.omitidos.length} fila(s) se omitieron por ya existir.</p>` : '';
+    let extra = '';
+    if(r.conflictos_detalle && r.conflictos_detalle.length){
+      extra += `<div class="banner ambar">${r.conflictos_detalle.length} conflicto(s): datos ya capturados distintos a los del archivo, no se sobrescribieron. <br>${r.conflictos_detalle.map(c=>`Siniestro ${esc(c.numero)}, campo ${esc(c.campo)}: ya tenía "${esc(c.valorActual)}", el archivo traía "${esc(c.valorNuevo)}".`).join('<br>')}</div>`;
+    }
+    if(r.omitidos && r.omitidos.length) extra += `<p class="subtle">${r.omitidos.length} pedido(s) se omitieron por datos incompletos.</p>`;
+    document.getElementById('cargaMasivaResultado').innerHTML = extra;
+    render();
+  }catch(e){}
+}
+async function revertirLoteCargaMasiva(loteId){
+  const ok = await confirmDialog('¿Revertir este lote? Los pedidos y piezas que creó quedarán cancelados (no se borra nada, queda todo en el historial).', { textoOk:'Sí, revertir' });
+  if(!ok) return;
+  try{
+    const r = await api('POST', `/api/carga-masiva/${loteId}/revertir`, {});
+    toast(`Lote revertido: ${r.pedidosCancelados} pedido(s) y ${r.piezasCanceladas} pieza(s) cancelados.`, 'success');
+    render();
   }catch(e){}
 }
 
@@ -947,20 +1038,30 @@ async function viewSiniestro(id){
     </tbody></table>`;
   } else if(state.subtabSiniestro==='archivos'){
     const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
-    body = `<table><thead><tr><th>Tipo</th><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
-    ${archivos.length===0?'<tr><td colspan="4" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>${esc(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Descargar</a></td></tr>`).join('')}
+    const papelera = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id+'&incluir_eliminados=1');
+    const enPapelera = papelera.filter(a=>a.eliminado);
+    body = `<table><thead><tr><th>Tipo</th><th>Nombre</th><th>Versión</th><th>Fecha</th><th></th></tr></thead><tbody>
+    ${archivos.length===0?'<tr><td colspan="5" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>v${a.version}</td><td>${esc(a.creado_en)}</td><td>
+      <a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Descargar</a>
+      <button class="btn small secondary" onclick="abrirFormSustituirArchivo(${a.id})">Sustituir</button>
+      <button class="btn small danger" onclick="eliminarArchivo(${a.id})">Eliminar</button>
+    </td></tr>`).join('')}
     </tbody></table>
     <form id="formArchivo" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;" onsubmit="return subirArchivo(event, ${id})">
       <input type="file" id="archivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required>
       <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option></select>
       <button class="btn small" type="submit">Subir archivo real</button>
-    </form>`;
+    </form>
+    ${enPapelera.length>0?`<h4 style="margin-top:16px;">Papelera (${enPapelera.length})</h4>
+    <table><thead><tr><th>Nombre</th><th>Eliminado</th><th></th></tr></thead><tbody>
+    ${enPapelera.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${esc(a.eliminado_en)}</td><td><button class="btn small secondary" onclick="restaurarArchivo(${a.id})">Restaurar</button></td></tr>`).join('')}
+    </tbody></table>`:''}`;
   } else if(state.subtabSiniestro==='timeline'){
     const eventos = await api('GET','/api/auditoria?entidad_tipo=siniestro&entidad_id='+id);
     let pedEventos = [];
     for(const p of peds){ const e = await api('GET','/api/auditoria?entidad_tipo=pedido&entidad_id='+p.id); pedEventos.push(...e); }
     const todos = [...eventos, ...pedEventos].sort((a,b)=> b.id - a.id);
-    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${esc(e.fecha)}</b> — ${esc(e.accion)}${e.campo?` (${esc(e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
+    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${esc(e.fecha)}</b> — ${esc(LABEL_ACCION[e.accion]||e.accion)}${e.campo?` (${esc(LABEL_CAMPO[e.campo]||e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
   }
 
   const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
@@ -976,6 +1077,7 @@ async function viewSiniestro(id){
         <p class="subtle">${esc(s.vehiculo||'')} ${esc(s.anio_modelo||'')} · Placas ${esc(s.placas||'')} · Ingreso: ${esc(s.fecha_ingreso||'')} · Responsable: ${esc(s.responsable||'')}</p>
         ${s.cliente_nombre?`<p class="subtle">Cliente: ${esc(s.cliente_nombre)}${s.cliente_telefono?' · '+esc(s.cliente_telefono):''}${s.etapa_actual?' · Etapa: '+esc(s.etapa_actual):''}</p>`:''}
         <p class="subtle">Entrega de unidad: ${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</p>
+        <p class="subtle" style="margin-top:4px;">${renderSemaforo(s.semaforo)}</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
         ${puedeEntregar && s.estatus_general!=='Cerrado'?`<button class="btn small secondary" onclick="abrirFormEntrega(${s.id})">${s.fecha_entrega_real?'Editar entrega':'Registrar entrega'}</button>`:''}
@@ -2055,6 +2157,41 @@ async function subirArchivo(ev, siniestroId){
   render();
   return false;
 }
+function abrirFormSustituirArchivo(archivoId){
+  showModal(`
+    <h3>Sustituir archivo</h3>
+    <p class="subtle">La versión anterior no se borra, queda disponible para el administrador.</p>
+    <div class="field"><input type="file" id="sustArchivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarSustitucionArchivo(${archivoId})">Guardar</button></div>
+  `);
+}
+async function guardarSustitucionArchivo(archivoId){
+  const input = document.getElementById('sustArchivoInput');
+  if(!input.files[0]){ toast('Selecciona un archivo.', 'error'); return; }
+  const fd = new FormData();
+  fd.append('archivo', input.files[0]);
+  const res = await fetch('/api/archivos/'+archivoId+'/sustituir', { method:'PATCH', body: fd });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(data.error||'No se pudo sustituir el archivo.', 'error'); return; }
+  toast('Archivo sustituido.', 'success');
+  closeModal(); render();
+}
+async function eliminarArchivo(archivoId){
+  const ok = await confirmDialog('¿Eliminar este archivo? Queda en la papelera, no se borra permanentemente.', { textoOk:'Sí, eliminar' });
+  if(!ok) return;
+  try{
+    await api('DELETE','/api/archivos/'+archivoId);
+    toast('Archivo movido a la papelera.', 'success');
+    render();
+  }catch(e){}
+}
+async function restaurarArchivo(archivoId){
+  try{
+    await api('POST','/api/archivos/'+archivoId+'/restaurar');
+    toast('Archivo restaurado.', 'success');
+    render();
+  }catch(e){}
+}
 
 /* ===================== GENERADOR DE CORREOS ===================== */
 async function abrirGenerador(pedidoId){
@@ -2063,6 +2200,7 @@ async function abrirGenerador(pedidoId){
     showModal(`<h3>Generador de correo</h3><p><span class="badge verde">No requiere correo</span></p><p>${esc(r.mensaje)}</p><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
     return;
   }
+  const avisoSinProveedor = (r.piezasSinProveedor && r.piezasSinProveedor.length) ? `<div class="banner ambar">${r.piezasSinProveedor.length} pieza(s) sin proveedor asignado no se incluyeron en ningún correo: ${esc(r.piezasSinProveedor.join(', '))}. Asígnales proveedor primero si también necesitan seguimiento.</div>` : '';
   const content = r.borradores.map((d,idx)=>`
     <div class="email-block" id="email-${idx}">
       <div style="display:flex;justify-content:space-between;align-items:center;"><b>${esc(d.proveedor_nombre)}</b><span class="badge ${d.tipo_plantilla==='incidencia'?'morado':'azul'}">${esc(d.tipo_plantilla)}</span></div>
@@ -2078,7 +2216,7 @@ async function abrirGenerador(pedidoId){
       <div class="field"><label>Cuerpo</label><textarea id="cuerpo-${idx}" style="min-height:160px;">${esc(d.cuerpo)}</textarea></div>
       <button class="btn small" ${d.proveedor_id?'':'disabled'} onclick="aprobarCorreo(${pedidoId}, ${idx}, ${d.proveedor_id||'null'})">Aprobar y registrar (borrador/sandbox)</button>
     </div>`).join('');
-  showModal(`<h3>Generador de correo de seguimiento</h3><p class="subtle">Piezas recibidas o canceladas nunca aparecen aquí (regla R-04). No se envían correos reales todavía.</p>${content}<div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
+  showModal(`<h3>Generador de correo de seguimiento</h3><p class="subtle">Piezas recibidas o canceladas nunca aparecen aquí (regla R-04). No se envían correos reales todavía.</p>${avisoSinProveedor}${content}<div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
 }
 async function aprobarCorreo(pedidoId, idx, proveedorId){
   const bloque = document.getElementById('email-'+idx);
@@ -2608,6 +2746,40 @@ function viewReglas(){
     <h3>Sobre las pruebas de este sistema</h3>
     <p class="subtle">Las pruebas de aceptación (CA-01 a CA-10 y el caso real de Daniela) ahora son un archivo de pruebas automatizadas real en el proyecto (<code>tests/api.test.js</code>), que falla de verdad si una regla se rompe — no un panel que siempre marca "aprobado" (corrección F-09).</p>
   </div>`;
+}
+
+/* ===================== VISTA: RESPALDOS (solo admin) ===================== */
+async function viewRespaldos(){
+  const lista = await api('GET', '/api/respaldos');
+  function fmtBytes(n){
+    if(n > 1024*1024) return (n/1024/1024).toFixed(2) + ' MB';
+    if(n > 1024) return (n/1024).toFixed(0) + ' KB';
+    return n + ' B';
+  }
+  return `
+  <h2>Respaldos de la base de datos</h2>
+  <p class="subtle">Ítem 11 del triage de Daniela. Se crea un respaldo automático completo cada 24 horas
+  (se conservan los últimos 14). Además del respaldo automático de Render (instantánea diaria del disco,
+  conservada al menos 7 días, restaurable desde su panel), aquí puedes crear y descargar un respaldo
+  manual de la base de datos en cualquier momento — por ejemplo, antes de una carga masiva grande.</p>
+  <div class="section">
+    <button class="btn" onclick="crearRespaldoAhora()">Crear respaldo ahora</button>
+  </div>
+  <div class="section">
+    ${lista.length===0?'<div class="empty">Sin respaldos todavía. Crea el primero con el botón de arriba.</div>':`
+    <table><thead><tr><th>Archivo</th><th>Tamaño</th><th>Creado</th><th></th></tr></thead><tbody>
+    ${lista.map(r=>`<tr>
+      <td>${esc(r.nombre)}</td>
+      <td>${fmtBytes(r.tamano_bytes)}</td>
+      <td>${esc(r.creado_en)}</td>
+      <td><a class="link" href="/api/respaldos/${encodeURIComponent(r.nombre)}/descargar" target="_blank">Descargar</a></td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+async function crearRespaldoAhora(){
+  await api('POST', '/api/respaldos');
+  render();
 }
 
 /* ===================== INIT ===================== */
