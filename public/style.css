@@ -102,7 +102,20 @@ footer.note{font-size:11.5px;color:var(--gris-500);text-align:center;padding:20p
 .results-group h4{font-size:12px;text-transform:uppercase;color:var(--gris-500);margin:10px 0 4px;}
 .result-item{padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer;font-size:13px;}
 .result-item:hover{background:var(--gris-50);}
+.nav-toggle{display:none;background:#ffffff18;border:1px solid #ffffff33;color:#fff;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;}
+
+/* Hallazgo de Daniela (26-ago-2026): en movil el menu (13+ botones envueltos) ocupaba casi toda la
+   primera pantalla. Debajo de 720px el menu se colapsa detras de un boton "Menu" y se muestra como
+   lista vertical solo cuando se abre; se cierra solo al navegar (renderTabs() reconstruye el nav sin
+   la clase "open"). */
 @media (max-width:720px){
   .search-box input{width:120px;}
   header.top{padding:8px 10px;}
+  .nav-toggle{display:inline-block;order:1;}
+  header.top .brand{order:0;}
+  header.top .search-box{order:2;}
+  header.top .userchip{order:4;}
+  nav.tabs{display:none;order:5;width:100%;flex-direction:column;gap:2px;background:#ffffff10;border-radius:8px;padding:6px;margin-top:4px;}
+  nav.tabs.open{display:flex;}
+  nav.tabs button{width:100%;text-align:left;}
 }
