@@ -10,6 +10,7 @@ require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: so
 require('./resetEmergenciaDaniela').resetEmergenciaDaniela(); // idempotente: corre una sola vez
 require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: respaldo diario + rotación; no-op en pruebas
 if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendientesExistentes(db); } // hallazgo de Daniela 26-ago-2026: limpieza unica de correos automaticos duplicados ya acumulados
+if(!process.env.TEST_DB_PATH){ require('./utils').corregirBorradoresAutomaticosExistentes(db); } // hallazgo de Daniela 27-ago-2026: corrige destinatario/copia/cuerpo de los borradores automaticos ya existentes
 const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword } = require('./auth');
 const bcrypt = require('bcryptjs');
 

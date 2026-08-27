@@ -85,22 +85,21 @@ function crearTareaFechaPromesaModificada(db, { siniestroId, pedidoNumero, fecha
 
 // ===================== Requerimientos de Daniela (Fase 4): correos automáticos =====================
 
-// Reglas de destinatario/copia conocidas por aseguradora (sección "CORREOS" del documento de Daniela).
-// Donde no tenemos direcciones reales, dejamos una nota clara para que Daniela la complete antes de aprobar
-// (decisión tomada con Roberto: nunca inventamos correos, siempre queda editable).
+// Reglas de copia conocidas por aseguradora (seccion "CORREOS" del documento de Daniela).
+// Correccion del 27-ago-2026: antes se guardaba texto de INSTRUCCION ("Copiar a Jorge Contreras y
+// Edgar...") directo en el campo de copia, y se mostraba como si fuera contenido real del correo.
+// Ahora solo se usan direcciones reales confirmadas (por ahora, unicamente GNP); donde no hay una
+// direccion real configurada, el campo de copia queda vacio -- nunca texto de instruccion ni
+// direcciones inventadas.
 const CC_GNP = 'cristian.hernandezortiz@gnp.com.mx, luis.ramirezalvarez@gnp.com.mx, roveytia@hotmail.com';
 const REGLAS_ASEGURADORA = {
   'GNP': CC_GNP,
-  'Mapfre': 'Copiar a Jorge Contreras y Edgar (completar sus correos antes de aprobar).',
-  'Inbursa': 'Copiar a Monserrat Ibáñez y Ana Lucero (completar sus correos antes de aprobar).',
-  'Afirme': 'Copiar a Nancy Monserrat (completar su correo antes de aprobar).',
-  'Allianz': 'Destinatario pendiente de definir según el hilo — revisar antes de aprobar.',
-  'Zurich': 'Pendiente conforme al funcionamiento de eFile — revisar antes de aprobar.',
-  'ANA': 'Revisar cada caso: algunos corresponden a pago de daños y podrían no requerir este correo.',
 };
 function copiaSugeridaPorAseguradora(aseguradora){
   return REGLAS_ASEGURADORA[aseguradora] || '';
 }
+
+const EMAIL_VALIDO_AUTOMATICO = /^[^\s@,;]+@[^\s@]+\.[^\s@]+$/;
 
 function esDiaHabil(fecha){
   const d = new Date(fecha + 'T00:00:00Z').getUTCDay();
@@ -119,18 +118,39 @@ function sumarDiasHabiles(fechaStr, n){
   return d.toISOString().slice(0,10);
 }
 
-function construirCuerpoAutomatico(disparador, { siniestroNumero, pedidoNumero, fechaPrevista }){
-  const firma = '\n\nSaludos,\nDaniela Sosa\nRefacciones';
-  if(disparador === 'pedido_nuevo'){
-    return `Buen día.\n\nSe registró un nuevo pedido (${pedidoNumero}) para el siniestro ${siniestroNumero}. Quedamos atentos a la confirmación de refacciones, proveedor asignado y fecha estimada de entrega.${firma}`;
+const ESTATUS_PIEZA_CERRADOS_CORREO = ['Recibida físicamente','Cancelada'];
+
+// Corrección de Daniela/Roberto (27-ago-2026): las piezas que van en el correo automático (para el
+// listado y para resolver a qué proveedor escribir) son solo las que siguen pendientes -- nunca las ya
+// recibidas o canceladas (regla R-04, ahora también aplicada a los tres disparadores automáticos, antes
+// solo se aplicaba al borrador manual de generar-borrador).
+function piezasPendientesDePedido(db, pedidoId){
+  return db.prepare(`SELECT z.*, pv.correo as proveedor_correo, pv.razon_social as proveedor_nombre
+                      FROM piezas z LEFT JOIN proveedores pv ON pv.id = z.proveedor_id
+                      WHERE z.pedido_id = ? AND z.estatus NOT IN (?,?)`)
+    .all(pedidoId, ...ESTATUS_PIEZA_CERRADOS_CORREO);
+}
+
+// Corrección de Daniela/Roberto (27-ago-2026): el destinatario se obtiene SIEMPRE del proveedor real
+// asignado a las piezas pendientes del pedido -- nunca un correo de ejemplo ni queda vacío sin marcar.
+// Si las piezas pendientes tienen más de un proveedor distinto, o ninguna tiene proveedor con correo
+// válido, el borrador se marca "incompleto" (bloqueado para aprobar hasta que alguien lo complete a mano).
+function resolverDestinatarioAutomatico(piezasPendientes){
+  const conProveedorValido = piezasPendientes.filter(z => z.proveedor_id && z.proveedor_correo && EMAIL_VALIDO_AUTOMATICO.test(z.proveedor_correo.trim()));
+  const proveedoresUnicos = [...new Set(conProveedorValido.map(z => z.proveedor_id))];
+  if(proveedoresUnicos.length === 1){
+    return { destinatario: conProveedorValido[0].proveedor_correo.trim(), proveedorId: proveedoresUnicos[0], incompleto: 0 };
   }
-  if(disparador === 'vencimiento_dia1'){
-    return `Buen día.\n\nLa fecha promesa indicada por Inpart para el pedido ${pedidoNumero} del siniestro ${siniestroNumero} era ${fechaPrevista} y ya se cumplió sin confirmación de entrega. ¿Nos podrían indicar el estatus actualizado y la nueva fecha estimada?${firma}`;
-  }
-  if(disparador === 'seguimiento_2dias'){
-    return `Buen día.\n\nDamos seguimiento al pedido ${pedidoNumero} del siniestro ${siniestroNumero}. No hemos recibido respuesta a nuestro mensaje anterior. Quedamos atentos a sus comentarios.${firma}`;
-  }
-  return '';
+  return { destinatario: '', proveedorId: null, incompleto: 1 };
+}
+
+// Plantilla única para los tres motivos automáticos (pedido nuevo, vencimiento día 1, seguimiento cada
+// 2 días), según el texto exacto pedido por Daniela/Roberto el 27-ago-2026. Antes cada motivo tenía un
+// mensaje distinto y ninguno pedía con claridad estatus + piezas + fecha compromiso + incidencias, ni
+// listaba las piezas pendientes.
+function construirCuerpoAutomatico(pedidoNumero, siniestroNumero, piezasPendientes){
+  const listado = piezasPendientes.map(p => '- ' + p).join('\n');
+  return `Buen día.\n\n¿Nos podrían apoyar confirmando el estatus actualizado del pedido ${pedidoNumero}, correspondiente al siniestro ${siniestroNumero}, así como la disponibilidad y fecha estimada de entrega de las siguientes piezas pendientes?\n\n${listado}\n\nEn caso de existir algún retraso, faltante o incidencia, agradeceremos nos indiquen la situación y la nueva fecha compromiso.\n\nQuedo atenta a sus comentarios.\n\nSaludos,\nDaniela Sosa\nRefacciones`;
 }
 
 // Se llama al crear un pedido (F-04 de Daniela: "preparar correo cuando se detecte un pedido nuevo").
@@ -138,18 +158,18 @@ function construirCuerpoAutomatico(disparador, { siniestroNumero, pedidoNumero, 
 function prepararCorreoPedidoNuevo(db, { pedido, siniestro }){
   const yaExiste = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND disparador='pedido_nuevo'`).get(pedido.id);
   if(yaExiste) return;
-  // Triage documento de Daniela (DEF-009): antes esto se disparaba para CUALQUIER pedido activo, sin
-  // piezas ni proveedor, generando un aluvión de correos con destinatario vacío. Ahora solo se prepara
-  // el correo "pedido nuevo" una vez que el pedido tiene al menos una pieza CON proveedor asignado —
-  // antes de eso no hay a quién escribirle ni qué pedirle.
-  const piezaConProveedor = db.prepare(`SELECT z.*, pv.correo as proveedor_correo, pv.id as proveedor_id FROM piezas z JOIN proveedores pv ON pv.id = z.proveedor_id WHERE z.pedido_id = ? LIMIT 1`).get(pedido.id);
-  if(!piezaConProveedor) return;
-  db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
-    .run(pedido.id, siniestro.id, piezaConProveedor.proveedor_id, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, piezaConProveedor.proveedor_correo || '',
+  // Triage documento de Daniela (DEF-009), y R-05 (27-ago-2026): si el pedido no tiene ninguna pieza
+  // pendiente (recién creado sin piezas capturadas, o todas ya recibidas/canceladas), no hay a quién
+  // escribirle ni qué pedirle -- no se prepara nada todavía.
+  const piezasPendientes = piezasPendientesDePedido(db, pedido.id);
+  if(piezasPendientes.length === 0) return;
+  const { destinatario, proveedorId, incompleto } = resolverDestinatarioAutomatico(piezasPendientes);
+  db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio,incompleto)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)`)
+    .run(pedido.id, siniestro.id, proveedorId, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, destinatario,
       copiaSugeridaPorAseguradora(siniestro.aseguradora),
-      construirCuerpoAutomatico('pedido_nuevo', { siniestroNumero: siniestro.numero, pedidoNumero: pedido.numero }),
-      'pedido_nuevo', 'pendiente_aprobacion', 'pedido_nuevo', null);
+      construirCuerpoAutomatico(pedido.numero, siniestro.numero, piezasPendientes.map(z => z.descripcion)),
+      'pedido_nuevo', 'pendiente_aprobacion', 'pedido_nuevo', null, incompleto);
 }
 
 // Escaneo idempotente de vencimientos y seguimientos (F-DF-02/03 de Daniela). Se ejecuta de forma perezosa
@@ -180,6 +200,11 @@ function verificarCorreosPendientes(db){
     const siniestro = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(pedido.siniestro_id);
     if(!siniestro) continue;
 
+    // R-05 (27-ago-2026): si el pedido ya no tiene ninguna pieza pendiente (todas recibidas o
+    // canceladas), ningún aviso automático debe generarse ni renovarse para él.
+    const piezasPendientes = piezasPendientesDePedido(db, pedido.id);
+    if(piezasPendientes.length === 0) continue;
+
     // Por si el pedido se creo antes de esta fase (o el hook no corrio), aseguramos el correo de "pedido nuevo".
     prepararCorreoPedidoNuevo(db, { pedido, siniestro });
 
@@ -188,12 +213,13 @@ function verificarCorreosPendientes(db){
       const yaVencimiento = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND disparador='vencimiento_dia1'`).get(pedido.id);
       if(!yaVencimiento){
         descartarPendientesAutomaticosPrevios(db, pedido.id);
-        db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
-          .run(pedido.id, siniestro.id, null, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, '',
+        const { destinatario, proveedorId, incompleto } = resolverDestinatarioAutomatico(piezasPendientes);
+        db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio,incompleto)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)`)
+          .run(pedido.id, siniestro.id, proveedorId, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, destinatario,
             copiaSugeridaPorAseguradora(siniestro.aseguradora),
-            construirCuerpoAutomatico('vencimiento_dia1', { siniestroNumero: siniestro.numero, pedidoNumero: pedido.numero, fechaPrevista: pedido.fecha_prevista }),
-            'vencimiento_dia1', 'pendiente_aprobacion', 'vencimiento_dia1', null);
+            construirCuerpoAutomatico(pedido.numero, siniestro.numero, piezasPendientes.map(z => z.descripcion)),
+            'vencimiento_dia1', 'pendiente_aprobacion', 'vencimiento_dia1', null, incompleto);
       }
     }
 
@@ -210,12 +236,13 @@ function verificarCorreosPendientes(db){
           const yaSeguimiento = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND disparador='seguimiento_2dias' AND fecha_envio > ?`).get(pedido.id, ultima.fecha_envio);
           if(!yaSeguimiento){
             descartarPendientesAutomaticosPrevios(db, pedido.id);
-            db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
-              .run(pedido.id, siniestro.id, ultima.proveedor_id, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, ultima.destinatarios || '',
+            const { destinatario, proveedorId, incompleto } = resolverDestinatarioAutomatico(piezasPendientes);
+            db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio,incompleto)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)`)
+              .run(pedido.id, siniestro.id, proveedorId, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, destinatario,
                 copiaSugeridaPorAseguradora(siniestro.aseguradora),
-                construirCuerpoAutomatico('seguimiento_2dias', { siniestroNumero: siniestro.numero, pedidoNumero: pedido.numero }),
-                'seguimiento_2dias', 'pendiente_aprobacion', 'seguimiento_2dias', null);
+                construirCuerpoAutomatico(pedido.numero, siniestro.numero, piezasPendientes.map(z => z.descripcion)),
+                'seguimiento_2dias', 'pendiente_aprobacion', 'seguimiento_2dias', null, incompleto);
           }
         }
       }
@@ -239,6 +266,41 @@ function limpiarDuplicadosCorreosPendientesExistentes(db){
     }
   }
   if(total > 0) console.log(`Limpieza de correos duplicados: se descartaron ${total} avisos redundantes, conservando el mas reciente por pedido.`);
+}
+
+// Corrección única, idempotente, de la plantilla/destinatario/copia de los borradores automáticos ya
+// existentes en producción (27-ago-2026, hallazgo de Daniela: 212 borradores con destinatario
+// "correo@proveedor.mx" o vacío, copia con texto de instrucción, y cuerpo que no pedía la información
+// necesaria). Para cada borrador automático que SIGUE pendiente de aprobación:
+//  - si el pedido ya no tiene piezas pendientes, se descarta (R-05: no debería seguir pidiendo nada);
+//  - si sí tiene, se recalculan destinatario/proveedor/incompleto, copia y cuerpo con la lógica nueva,
+//    conservando el mismo id, el mismo estado 'pendiente_aprobacion' y sin tocar fecha_envio (no se
+//    aprueba, no se marca como enviado, no se manda ningún correo real).
+function corregirBorradoresAutomaticosExistentes(db){
+  const pendientes = db.prepare(`SELECT c.*, p.numero as pedido_numero, s.numero as siniestro_numero, s.aseguradora
+                                  FROM comunicaciones c JOIN pedidos p ON p.id = c.pedido_id JOIN siniestros s ON s.id = c.siniestro_id
+                                  WHERE c.estado='pendiente_aprobacion' AND c.disparador IN (${DISPARADORES_AUTOMATICOS.map(()=>'?').join(',')})`)
+    .all(...DISPARADORES_AUTOMATICOS);
+  let corregidos = 0, descartadosSinPiezas = 0;
+  for(const com of pendientes){
+    const piezasPendientes = piezasPendientesDePedido(db, com.pedido_id);
+    if(piezasPendientes.length === 0){
+      db.prepare(`UPDATE comunicaciones SET estado='descartado' WHERE id=?`).run(com.id);
+      registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id:com.id, accion:'correo_descartado', usuario:null,
+        valor_nuevo:'El pedido ya no tiene piezas pendientes (todas recibidas/canceladas); se descarta al corregir la plantilla (27-ago-2026, R-05).' });
+      descartadosSinPiezas++;
+      continue;
+    }
+    const { destinatario, proveedorId, incompleto } = resolverDestinatarioAutomatico(piezasPendientes);
+    const nuevoCuerpo = construirCuerpoAutomatico(com.pedido_numero, com.siniestro_numero, piezasPendientes.map(z => z.descripcion));
+    const nuevaCopia = copiaSugeridaPorAseguradora(com.aseguradora);
+    db.prepare(`UPDATE comunicaciones SET destinatarios=?, copia=?, cuerpo=?, proveedor_id=?, incompleto=? WHERE id=?`)
+      .run(destinatario, nuevaCopia, nuevoCuerpo, proveedorId, incompleto, com.id);
+    registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id:com.id, accion:'correo_plantilla_corregida', usuario:null,
+      valor_nuevo:`Destinatario/copia/cuerpo recalculados con la plantilla corregida del 27-ago-2026 (incompleto=${incompleto}). Sigue pendiente_aprobacion, no se aprobó ni se envió.` });
+    corregidos++;
+  }
+  if(corregidos > 0 || descartadosSinPiezas > 0) console.log(`Corrección de plantilla de correos: ${corregidos} borrador(es) actualizados, ${descartadosSinPiezas} descartados por no tener piezas pendientes.`);
 }
 
 
@@ -310,5 +372,5 @@ function calcularSemaforo(s){
 
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
-  copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, esDiaHabil, sumarDiasHabiles,
+  copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo };

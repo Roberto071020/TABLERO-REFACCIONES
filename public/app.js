@@ -359,7 +359,7 @@ async function viewCorreos(){
   if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación por ahora.</div>'; return html; }
   html += `<table><thead><tr><th>Motivo</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Asunto</th><th></th></tr></thead><tbody>
   ${pendientes.map(c=>`<tr>
-    <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span></td>
+    <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span>${c.incompleto?' <span class="badge rojo" title="Sin proveedor con correo valido asignado a las piezas pendientes; hay que completarlo a mano antes de aprobar">Incompleto</span>':''}</td>
     <td><a class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero)}</a></td>
     <td>${esc(c.pedido_numero)}</td>
     <td>${esc(c.aseguradora)}</td>
@@ -376,7 +376,8 @@ async function abrirRevisarCorreo(id){
   showModal(`
     <h3>Revisar correo — ${esc(c.siniestro_numero)} / Pedido ${esc(c.pedido_numero)}</h3>
     <p class="subtle">Ajusta lo que haga falta antes de aprobar. Sigue en modo borrador: no se envía nada de verdad.</p>
-    <div class="field"><label>Destinatario</label><input id="fcor_dest" value="${esc(c.destinatarios||'')}" placeholder="correo@proveedor.mx"></div>
+    ${c.incompleto?'<p class="subtle" style="color:#b91c1c;">Este borrador quedo incompleto: ninguna pieza pendiente tiene un proveedor con correo valido asignado (o hay varios proveedores distintos). Agrega el destinatario a mano antes de aprobar.</p>':''}
+    <div class="field"><label>Destinatario</label><input id="fcor_dest" value="${esc(c.destinatarios||'')}" placeholder="Sin proveedor asignado — escribe el correo aqui"></div>
     <div class="field"><label>Copia</label><textarea id="fcor_copia">${esc(c.copia||'')}</textarea></div>
     <div class="field"><label>Asunto</label><input id="fcor_asunto" value="${esc(c.asunto||'')}"></div>
     <div class="field"><label>Cuerpo</label><textarea id="fcor_cuerpo" style="min-height:160px;">${esc(c.cuerpo||'')}</textarea></div>
