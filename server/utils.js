@@ -87,19 +87,30 @@ function crearTareaFechaPromesaModificada(db, { siniestroId, pedidoNumero, fecha
 // "Propuesta_Integracion_Tablero_Servicio_Cristian.docx", sección 3.1: un vehículo solo debe
 // aparecer disponible para la revisión de Orlando cuando Alejandra ya completó los requisitos de
 // admisión reales, según llegó circulando o en grúa.
-function requisitosAdmisionCompletos(db, siniestro){
+// Devuelve la lista de requisitos que TODAVÍA faltan (vacía = ya está completo). Circulando y grúa
+// tienen listas de requisitos distintas y no se mezclan: un vehículo circulando NUNCA debe pedir
+// llaves, inventario físico ni dado de seguridad -- esos tres son exclusivos de grúa.
+function requisitosAdmisionFaltantes(db, siniestro){
   if(siniestro.ingreso_tipo === 'grua'){
+    const faltan = [];
     const tieneInventario = !!db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='inventario_fisico' AND eliminado=0`).get(siniestro.id);
     const tieneOrdenAdmision = !!db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='orden_admision' AND eliminado=0`).get(siniestro.id);
-    const llaves = siniestro.llaves_entregadas === 1;
-    const dadoOk = !siniestro.requiere_dado_seguridad || siniestro.dado_seguridad_colocado === 1;
-    return tieneInventario && tieneOrdenAdmision && llaves && dadoOk;
+    if(siniestro.llaves_entregadas !== 1) faltan.push('Llaves entregadas');
+    if(!tieneInventario) faltan.push('Inventario físico/fotográfico');
+    if(!tieneOrdenAdmision) faltan.push('Orden de admisión');
+    if(siniestro.requiere_dado_seguridad && siniestro.dado_seguridad_colocado !== 1) faltan.push('Dado de seguridad colocado');
+    return faltan;
   }
   if(siniestro.ingreso_tipo === 'circulando'){
-    // Vehículo circulando: Alejandra solo necesita capturar y confirmar la información de admisión.
-    return !!(siniestro.fecha_admision && String(siniestro.fecha_admision).trim());
+    // Vehículo circulando/en tránsito: solo se pide la fecha de admisión -- no llaves, no inventario,
+    // no dado de seguridad (esos requisitos son exclusivos de las unidades que llegan en grúa).
+    return (siniestro.fecha_admision && String(siniestro.fecha_admision).trim()) ? [] : ['Fecha de admisión'];
   }
-  return false; // todavía no se definió cómo llegó el vehículo
+  return ['Tipo de ingreso (circulando o grúa)'];
+}
+
+function requisitosAdmisionCompletos(db, siniestro){
+  return requisitosAdmisionFaltantes(db, siniestro).length === 0;
 }
 
 // Sella fecha_hora_disponible_revision UNA sola vez (idempotente) en cuanto se cumplen los requisitos,
@@ -475,4 +486,4 @@ module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditar
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
   VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
-  requisitosAdmisionCompletos, verificarDisponibleParaRevision, limiteRevisionGrua };
+  requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua };

@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision } = require('../utils');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision, requisitosAdmisionFaltantes } = require('../utils');
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
@@ -67,7 +67,10 @@ router.get('/', requireAuth, (req, res)=>{
 router.get('/:id', requireAuth, (req, res)=>{
   const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
-  res.json({ ...s, semaforo: calcularSemaforo(s) });
+  // Detalle de qué falta exactamente para quedar disponible para revisión (sección 3.1 de la propuesta
+  // de Orlando) -- ya sellado (fecha_hora_disponible_revision) no hace falta recalcular nada.
+  const admisionFaltantes = s.fecha_hora_disponible_revision ? [] : requisitosAdmisionFaltantes(db, s);
+  res.json({ ...s, semaforo: calcularSemaforo(s), admision_faltantes: admisionFaltantes });
 });
 
 router.post('/', requireAuth, (req, res)=>{

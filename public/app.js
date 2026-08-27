@@ -775,7 +775,7 @@ async function viewSiniestro(id){
       ${s.requiere_dado_seguridad?`<tr><td>Dado de seguridad</td><td>${s.dado_seguridad_colocado?'<span class="badge verde">Colocado</span>':'<span class="badge rojo">Falta colocar</span>'}</td></tr>`:''}
       <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
       <tr><td>Estado de admisión</td><td><span class="badge ${BADGE_ADM[s.estado_admision]||'gris'}">${LABEL_ADM[s.estado_admision]||'Pendiente'}</span>${s.motivo_admision?` — ${esc(s.motivo_admision)}`:''}</td></tr>
-      <tr><td>Disponible para revisión</td><td>${s.fecha_hora_disponible_revision?`<span class="badge verde">Sí</span> · ${esc(s.fecha_hora_disponible_revision)}`:'<span class="badge ambar">Aún no (faltan requisitos de admisión)</span>'}</td></tr>
+      <tr><td>Disponible para revisión</td><td>${s.fecha_hora_disponible_revision?`<span class="badge verde">Sí</span> · ${esc(s.fecha_hora_disponible_revision)}`:`<span class="badge ambar">Aún no</span>${(s.admision_faltantes&&s.admision_faltantes.length)?` — falta: ${s.admision_faltantes.map(esc).join(', ')}`:''}`}</td></tr>
     </tbody></table>
     ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button></div>`:''}
 

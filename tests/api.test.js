@@ -2560,3 +2560,46 @@ test('ORLA-4: el plazo de 72 horas hábiles (3 días hábiles) solo se calcula/m
   assert.equal(filaCirc.revision_vencida, false);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('ORLA-5: el detalle de "qué falta" para admisión nunca pide llaves/inventario/dado a un vehículo circulando, y sí detalla lo que falta a uno en grúa', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
+  // Sin tipo de ingreso definido: el único faltante debe ser justamente ese.
+  const sSinTipo = (await req('POST', '/api/siniestros', { numero: 'ORLA5-SINTIPO', aseguradora: 'GNP' })).data;
+  const detalleSinTipo = await req('GET', '/api/siniestros/' + sSinTipo.id);
+  assert.deepEqual(detalleSinTipo.data.admision_faltantes, ['Tipo de ingreso (circulando o grúa)']);
+
+  // Circulando sin fecha de admisión: el único faltante debe ser la fecha, nunca llaves/inventario/dado.
+  const sCirc = (await req('POST', '/api/siniestros', { numero: 'ORLA5-CIRC', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sCirc.id, { ingreso_tipo: 'circulando' });
+  const detalleCirc = await req('GET', '/api/siniestros/' + sCirc.id);
+  assert.deepEqual(detalleCirc.data.admision_faltantes, ['Fecha de admisión']);
+  assert.ok(!detalleCirc.data.admision_faltantes.some(f => /llaves|inventario|dado/i.test(f)), 'circulando nunca debe pedir llaves, inventario ni dado de seguridad');
+
+  // Con fecha de admisión, circulando queda sin faltantes.
+  await req('PATCH', '/api/siniestros/' + sCirc.id, { fecha_admision: '2026-08-27' });
+  const detalleCircListo = await req('GET', '/api/siniestros/' + sCirc.id);
+  assert.deepEqual(detalleCircListo.data.admision_faltantes, []);
+
+  // Grúa con dado de seguridad requerido: debe listar los cuatro faltantes reales.
+  const sGrua = (await req('POST', '/api/siniestros', { numero: 'ORLA5-GRUA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sGrua.id, { ingreso_tipo: 'grua', requiere_dado_seguridad: 1 });
+  const detalleGrua = await req('GET', '/api/siniestros/' + sGrua.id);
+  assert.deepEqual(detalleGrua.data.admision_faltantes.sort(), ['Dado de seguridad colocado', 'Inventario físico/fotográfico', 'Llaves entregadas', 'Orden de admisión'].sort());
+
+  // Al resolver todo, la lista de faltantes queda vacía.
+  await req('PATCH', '/api/siniestros/' + sGrua.id, { llaves_entregadas: 1, dado_seguridad_colocado: 1 });
+  const fd1 = new FormData();
+  fd1.append('entidad_tipo', 'siniestro'); fd1.append('entidad_id', String(sGrua.id)); fd1.append('tipo', 'inventario_fisico');
+  fd1.append('archivo', new Blob([Buffer.from('x')], { type: 'application/pdf' }), 'inv.pdf');
+  await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd1 });
+  const fd2 = new FormData();
+  fd2.append('entidad_tipo', 'siniestro'); fd2.append('entidad_id', String(sGrua.id)); fd2.append('tipo', 'orden_admision');
+  fd2.append('archivo', new Blob([Buffer.from('x')], { type: 'application/pdf' }), 'oa.pdf');
+  await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd2 });
+  const detalleGruaListo = await req('GET', '/api/siniestros/' + sGrua.id);
+  assert.deepEqual(detalleGruaListo.data.admision_faltantes, [], 'ya disponible, sin faltantes que mostrar');
+  assert.ok(detalleGruaListo.data.fecha_hora_disponible_revision);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
