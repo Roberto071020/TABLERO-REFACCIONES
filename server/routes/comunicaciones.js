@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, verificarCorreosPendientes } = require('../utils');
+const { registrarAuditoria, verificarCorreosPendientes, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa } = require('../utils');
 const router = express.Router();
 
 const CC_GNP = 'cristian.hernandezortiz@gnp.com.mx, luis.ramirezalvarez@gnp.com.mx, roveytia@hotmail.com';
@@ -126,12 +126,14 @@ router.post('/exclusiones', requireAuth, (req, res)=>{
 // Corre el escaneo idempotente antes de responder (mismo patrón perezoso que el backfill de hitos de Alejandra).
 router.get('/pendientes', requireAuth, (req, res)=>{
   verificarCorreosPendientes(db);
+  // Ventana operativa (27-ago-2026): por default solo pedidos desde el 1-jun-2026; ?ventana=todas lo quita.
+  const conVentana = aplicaVentanaOperativa(req.query);
   const filas = db.prepare(`SELECT c.*, s.numero as siniestro_numero, s.aseguradora, p.numero as pedido_numero
                              FROM comunicaciones c
                              JOIN pedidos p ON p.id = c.pedido_id
                              JOIN siniestros s ON s.id = c.siniestro_id
-                             WHERE c.estado = 'pendiente_aprobacion'
-                             ORDER BY c.fecha_envio ASC`).all();
+                             WHERE c.estado = 'pendiente_aprobacion'${conVentana ? ' AND p.fecha_creacion >= ?' : ''}
+                             ORDER BY c.fecha_envio ASC`).all(...(conVentana ? [VENTANA_OPERATIVA_DESDE] : []));
   res.json(filas);
 });
 

@@ -120,6 +120,22 @@ function sumarDiasHabiles(fechaStr, n){
 
 const ESTATUS_PIEZA_CERRADOS_CORREO = ['Recibida físicamente','Cancelada'];
 
+// ===================== Ventana operativa (27-ago-2026, instrucción de Daniela/Roberto) =====================
+// El taller decidió operar el tablero de refacciones únicamente con datos de InPart desde el 1 de
+// junio de 2026 en adelante (la carga de enero-mayo no aporta a la operación real y solo saturaba las
+// vistas). Este corte se aplica a las pantallas y reportes DE REFACCIONES (lista maestra, Kanban,
+// indicadores, búsqueda de pedidos/piezas, correos pendientes, incidencias, exportaciones) filtrando por
+// la fecha de creación del PEDIDO -- nunca se borra ni se deja de importar nada, solo se deja de mostrar
+// por default. Los módulos de Alejandra/Orlando/Vanessa/Beto (admisión, técnica, expediente, valuación,
+// producción, calidad, entrega) NO se tocan: siguen viendo el expediente completo sin este corte, porque
+// ahí sí importa el historial real del vehículo sin importar cuándo se creó su pedido de refacciones.
+const VENTANA_OPERATIVA_DESDE = '2026-06-01';
+// ?ventana=todas en cualquiera de esos endpoints regresa al comportamiento sin corte (para auditoría /
+// soporte), igual que ya existe ?archivado=all para lo archivado.
+function aplicaVentanaOperativa(query){
+  return !(query && query.ventana === 'todas');
+}
+
 // Corrección de Daniela/Roberto (27-ago-2026): las piezas que van en el correo automático (para el
 // listado y para resolver a qué proveedor escribir) son solo las que siguen pendientes -- nunca las ya
 // recibidas o canceladas (regla R-04, ahora también aplicada a los tres disparadores automáticos, antes
@@ -373,4 +389,5 @@ function calcularSemaforo(s){
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
-  archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo };
+  archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
+  VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa };

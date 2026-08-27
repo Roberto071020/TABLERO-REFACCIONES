@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { registrarAuditoria, auditarCambios } = require('../utils');
+const { registrarAuditoria, auditarCambios, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa } = require('../utils');
 const router = express.Router();
 
 const TIPOS = ['incorrecta','danada','incompleta','devolucion','cancelacion','fecha_incumplida'];
@@ -21,7 +21,10 @@ router.get('/', requireAuth, (req, res)=>{
              WHERE 1=1`;
   const params = [];
   if(estado){ sql += ' AND i.estado = ?'; params.push(estado); }
+  // Al consultar una pieza puntual (desde el detalle de un siniestro ya abierto) nunca se aplica el
+  // corte de ventana operativa: ahí sí debe verse el historial completo de esa pieza en particular.
   if(pieza_id){ sql += ' AND i.pieza_id = ?'; params.push(pieza_id); }
+  else if(aplicaVentanaOperativa(req.query)){ sql += ' AND p.fecha_creacion >= ?'; params.push(VENTANA_OPERATIVA_DESDE); }
   sql += ' ORDER BY i.creado_en DESC';
   res.json(db.prepare(sql).all(...params));
 });

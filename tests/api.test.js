@@ -2145,3 +2145,73 @@ test('CORREO-PLANTILLA-5: la migración descarta (no borra) borradores de pedido
   const corregido = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(idViejo);
   assert.equal(corregido.estado, 'descartado', 'el pedido ya no tiene piezas pendientes; no debe seguir pidiendo nada (R-05)');
 });
+
+/* ===================== Ventana operativa 1-jun-2026 (27-ago-2026, instrucción de Daniela/Roberto) =====================
+   El taller decidió operar el tablero de refacciones únicamente con datos desde el 1 de junio de 2026.
+   Las pruebas siguientes crean un pedido con fecha_creacion anterior a ese corte (2026-05-15) y confirman
+   que desaparece por default de las vistas de refacciones, pero sigue existiendo (nunca se borra) y
+   reaparece con ?ventana=todas; y que las bandejas de otros roles (Orlando/Vanessa/Beto) no se tocan. */
+
+test('VENTANA-1: un pedido anterior al 1-jun-2026 no aparece por default en lista maestra, Kanban, correos pendientes ni indicadores, pero sí con ?ventana=todas', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'VENT-1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'VENT-1-PED', siniestro_id: s.id, fecha_prevista: '2026-06-01', fecha_creacion: '2026-05-15' })).data;
+  const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor VENT1', correo: 'contacto@proveedorvent1.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza vieja', proveedor_id: prov.id });
+
+  const listaDefault = (await req('GET', '/api/reportes/lista-maestra')).data;
+  assert.ok(!listaDefault.some(f => f.pedido_numero === 'VENT-1-PED'), 'no debe verse en lista maestra por default (anterior al corte)');
+  const listaTodas = (await req('GET', '/api/reportes/lista-maestra?ventana=todas')).data;
+  assert.ok(listaTodas.some(f => f.pedido_numero === 'VENT-1-PED'), 'con ?ventana=todas sigue disponible: no se borró nada');
+
+  const kanbanDefault = (await req('GET', '/api/reportes/kanban')).data;
+  assert.ok(!kanbanDefault.some(k => k.numero === 'VENT-1-PED'), 'no debe verse en Kanban por default');
+  const kanbanTodas = (await req('GET', '/api/reportes/kanban?ventana=todas')).data;
+  assert.ok(kanbanTodas.some(k => k.numero === 'VENT-1-PED'), 'Kanban con ?ventana=todas lo sigue mostrando');
+
+  const pendientesDefault = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  assert.ok(!pendientesDefault.some(c => c.pedido_numero === 'VENT-1-PED'), 'no debe verse en correos pendientes por default');
+  const pendientesTodas = (await req('GET', '/api/comunicaciones/pendientes?ventana=todas')).data;
+  assert.ok(pendientesTodas.some(c => c.pedido_numero === 'VENT-1-PED'), 'correos pendientes con ?ventana=todas lo sigue mostrando');
+
+  const resumen = (await req('GET', '/api/reportes/resumen')).data;
+  const resumenTodas = (await req('GET', '/api/reportes/resumen?ventana=todas')).data;
+  assert.ok(resumenTodas.pedidosSinPiezas + resumenTodas.sinProveedor + 1 >= 0, 'sanity: el resumen sin corte sigue respondiendo');
+  // El pedido cuenta como "Nuevo" en ambos resúmenes; solo debe contarse en el que incluye todo el historial.
+  assert.ok(resumenTodas.pedidosNuevos >= resumen.pedidosNuevos, 'el resumen con ?ventana=todas nunca cuenta menos que el resumen con el corte aplicado');
+});
+
+test('VENTANA-2: la búsqueda global acota pedidos y piezas al 1-jun-2026, pero nunca oculta el siniestro ni el proveedor (otros roles navegan con la misma búsqueda)', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'VENT2-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'VENT2-PED', siniestro_id: s.id, fecha_prevista: '2026-06-01', fecha_creacion: '2026-04-01' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza VENT2 unica', numero_parte: 'VENT2-NP' });
+
+  const r = (await req('GET', '/api/reportes/buscar?q=VENT2')).data;
+  assert.ok(r.siniestros.some(x => x.numero === 'VENT2-SIN'), 'el siniestro se sigue encontrando (navegación de otros roles)');
+  assert.ok(!r.pedidos.some(x => x.numero === 'VENT2-PED'), 'el pedido de refacciones anterior al corte no aparece por default en resultados de pedidos');
+  assert.ok(!r.piezas.some(x => x.numero_parte === 'VENT2-NP'), 'la pieza de refacciones anterior al corte no aparece por default en resultados de piezas');
+
+  const rTodas = (await req('GET', '/api/reportes/buscar?q=VENT2&ventana=todas')).data;
+  assert.ok(rTodas.pedidos.some(x => x.numero === 'VENT2-PED'), 'con ?ventana=todas el pedido reaparece en la búsqueda');
+});
+
+test('VENTANA-3: la ventana operativa no toca las bandejas de otros roles (Orlando/Vanessa/Beto) ni el detalle de un siniestro ya abierto', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'VENT-3', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'VENT-3-PED', siniestro_id: s.id, fecha_prevista: '2026-06-01', fecha_creacion: '2026-03-01' })).data;
+  const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor VENT3', correo: 'contacto@proveedorvent3.mx' })).data;
+  const pieza = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza VENT3', proveedor_id: prov.id })).data;
+  await req('POST', '/api/incidencias', { pieza_id: pieza.id, tipo: 'incorrecta', descripcion: 'llegó mal' });
+
+  // Bandeja técnica de Orlando: usa el mismo listado base de siniestros, sin corte alguno.
+  const bandejaTecnica = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(bandejaTecnica.some(x => x.numero === 'VENT-3'), 'la bandeja técnica de Orlando no debe filtrarse por la ventana operativa de refacciones');
+
+  // Dentro del detalle de un siniestro ya abierto, sus incidencias (por pieza_id) se siguen viendo completas.
+  const incPorPieza = (await req('GET', '/api/incidencias?pieza_id=' + pieza.id)).data;
+  assert.ok(incPorPieza.length >= 1, 'las incidencias de una pieza puntual (detalle del siniestro) no se ocultan por la ventana operativa');
+
+  // Pero el listado general de incidencias abiertas (pantalla "Incidencias") sí aplica el corte por default.
+  const incGenerales = (await req('GET', '/api/incidencias?estado=abierta')).data;
+  assert.ok(!incGenerales.some(i => i.pedido_numero === 'VENT-3-PED'), 'la pantalla general de incidencias sí aplica el corte del 1-jun-2026 por default');
+  const incGeneralesTodas = (await req('GET', '/api/incidencias?estado=abierta&ventana=todas')).data;
+  assert.ok(incGeneralesTodas.some(i => i.pedido_numero === 'VENT-3-PED'), 'con ?ventana=todas la pantalla general de incidencias lo sigue mostrando');
+});

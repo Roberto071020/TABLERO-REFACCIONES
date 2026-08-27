@@ -1,13 +1,13 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles } = require('../utils');
+const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa } = require('../utils');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
 
 // F-05: la lista maestra parte de PEDIDOS (no de piezas), así un pedido sin piezas capturadas sigue siendo visible.
-function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, incluir_archivados }){
+function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, incluir_archivados, ventana }){
   let sql = `SELECT p.id as pedido_id, p.numero as pedido_numero, p.estatus_operativo, p.fecha_prevista as pedido_fecha_prevista,
                     s.id as siniestro_id, s.numero as siniestro_numero, s.aseguradora, s.vehiculo, s.placas, s.archivado,
                     z.id as pieza_id, z.descripcion, z.estatus as pieza_estatus, z.fecha_prometida, z.proveedor_id,
@@ -18,6 +18,9 @@ function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, inclu
              LEFT JOIN proveedores pv ON pv.id = z.proveedor_id
              WHERE 1=1`;
   const params = [];
+  // Ventana operativa (27-ago-2026): por default la lista maestra solo muestra pedidos desde el 1 de
+  // junio de 2026 (la operación real del taller); ?ventana=todas regresa el historial completo.
+  if(aplicaVentanaOperativa({ ventana })){ sql += ' AND p.fecha_creacion >= ?'; params.push(VENTANA_OPERATIVA_DESDE); }
   if(aseguradora){ sql += ' AND s.aseguradora = ?'; params.push(aseguradora); }
   if(proveedor_id){ sql += ' AND z.proveedor_id = ?'; params.push(proveedor_id); }
   if(estatus){ sql += ' AND z.estatus = ?'; params.push(estatus); }
@@ -90,20 +93,22 @@ router.get('/resumen', requireAuth, (req, res)=>{
   verificarCorreosPendientes(db);
   archivarSiniestrosVencidos(db);
   const hoy = new Date().toISOString().slice(0,10);
-  const pedidosNuevos = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Nuevo'`).get().n;
-  const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus NOT IN ('Recibida físicamente','Cancelada') AND fecha_prometida != '' AND fecha_prometida < ?`).get(hoy).n;
-  const sinProveedor = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Sin proveedor'`).get().n;
+  // Ventana operativa (27-ago-2026): ?ventana=todas regresa los contadores sin el corte del 1-jun-2026.
+  const desdeVentanaResumen = aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01';
+  const pedidosNuevos = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Nuevo' AND fecha_creacion >= ?`).get(desdeVentanaResumen).n;
+  const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ?`).get(hoy, desdeVentanaResumen).n;
+  const sinProveedor = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Sin proveedor' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   // Triage documento de Daniela (DEF-016): "sinProveedor" solo contaba piezas ya capturadas sin proveedor,
   // pero un pedido sin NINGUNA pieza capturada todavía es un vacío más grande y no aparecía en ningún lado.
-  const pedidosSinPiezas = db.prepare(`SELECT COUNT(*) n FROM pedidos p WHERE p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND NOT EXISTS (SELECT 1 FROM piezas z WHERE z.pedido_id = p.id)`).get().n;
-  const recibidosParciales = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Recibido parcial'`).get().n;
+  const pedidosSinPiezas = db.prepare(`SELECT COUNT(*) n FROM pedidos p WHERE p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND p.fecha_creacion >= ? AND NOT EXISTS (SELECT 1 FROM piezas z WHERE z.pedido_id = p.id)`).get(desdeVentanaResumen).n;
+  const recibidosParciales = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Recibido parcial' AND fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   // Requerimiento de Daniela: ahora refleja la bandeja real de correos preparados en espera de su aprobación.
-  const correosPendientes = db.prepare(`SELECT COUNT(*) n FROM comunicaciones WHERE estado='pendiente_aprobacion'`).get().n;
-  const cierresHoy = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE fecha_recepcion LIKE ?`).get(hoy+'%').n;
-  const incidenciasAbiertas = db.prepare(`SELECT COUNT(*) n FROM incidencias WHERE estado IN ('abierta','en_proceso')`).get().n;
+  const correosPendientes = db.prepare(`SELECT COUNT(*) n FROM comunicaciones c JOIN pedidos p ON p.id=c.pedido_id WHERE c.estado='pendiente_aprobacion' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
+  const cierresHoy = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.fecha_recepcion LIKE ? AND p.fecha_creacion >= ?`).get(hoy+'%', desdeVentanaResumen).n;
+  const incidenciasAbiertas = db.prepare(`SELECT COUNT(*) n FROM incidencias i JOIN piezas z ON z.id=i.pieza_id JOIN pedidos p ON p.id=z.pedido_id WHERE i.estado IN ('abierta','en_proceso') AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   const pendientesCompletar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE completo = 0`).get().n;
   const expedientesEnSeguimiento = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado = 0 AND estatus_general != 'Cerrado'`).get().n;
-  const porAseguradora = db.prepare(`SELECT s.aseguradora, COUNT(DISTINCT p.id) abiertos FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo NOT IN ('Cerrado') GROUP BY s.aseguradora`).all();
+  const porAseguradora = db.prepare(`SELECT s.aseguradora, COUNT(DISTINCT p.id) abiertos FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo NOT IN ('Cerrado') AND p.fecha_creacion >= ? GROUP BY s.aseguradora`).all(desdeVentanaResumen);
 
   // Requerimiento de Roberto: el resumen diario solo hablaba de refacciones — agregar el lado de
   // atención y seguimiento a clientes (módulo de Alejandra), para que también se vea de un vistazo.
@@ -147,9 +152,9 @@ router.get('/resumen', requireAuth, (req, res)=>{
 
   // Propuesta: 4 contadores nuevos para el panorama de Daniela (los otros 6 ya existían: pedidosNuevos,
   // piezasVencidas, sinProveedor, recibidosParciales, incidenciasAbiertas y cierresHoy = "recibidas hoy").
-  const piezasPorConfirmar = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Asignada'`).get().n;
-  const piezasMalSurtidas = db.prepare(`SELECT COUNT(*) n FROM incidencias WHERE tipo IN ('incorrecta','incompleta') AND estado IN ('abierta','en_proceso')`).get().n;
-  const piezasEnDevolucion = db.prepare(`SELECT COUNT(*) n FROM piezas WHERE estatus='Devuelta'`).get().n;
+  const piezasPorConfirmar = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Asignada' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
+  const piezasMalSurtidas = db.prepare(`SELECT COUNT(*) n FROM incidencias i JOIN piezas z ON z.id=i.pieza_id JOIN pedidos p ON p.id=z.pedido_id WHERE i.tipo IN ('incorrecta','incompleta') AND i.estado IN ('abierta','en_proceso') AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
+  const piezasEnDevolucion = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Devuelta' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
 
   // Propuesta: contadores de Alejandra. "Por avisar autorización" y "refacciones por avisar" reutilizan
   // el mismo patrón de tareas automáticas ya existente (refacciones_completas) en vez de inventar un
@@ -174,14 +179,19 @@ router.get('/buscar', requireAuth, (req, res)=>{
   const like = `%${q}%`;
   // Propuesta Orlando/Vanessa/Beto: Beto necesita poder localizar el siniestro (y su OT adjunta) buscando por VIN, no solo numero/placas.
   const siniestros = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, vin FROM siniestros WHERE numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ? OR vin LIKE ? LIMIT 20`).all(like,like,like,like);
-  const pedidos = db.prepare(`SELECT p.id, p.numero, s.numero as siniestro_numero, s.id as siniestro_id FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.numero LIKE ? LIMIT 20`).all(like);
+  // Ventana operativa (27-ago-2026): los resultados de PEDIDOS y PIEZAS (datos de refacciones/InPart)
+  // se acotan al 1 de junio de 2026 en adelante por default; los de SINIESTROS y PROVEEDORES no se
+  // tocan porque otros roles (Alejandra, Orlando, Vanessa, Beto) usan esta misma búsqueda para navegar
+  // a cualquier expediente, sin importar cuándo se creó su pedido de refacciones.
+  const conVentana = aplicaVentanaOperativa(req.query);
+  const pedidos = db.prepare(`SELECT p.id, p.numero, s.numero as siniestro_numero, s.id as siniestro_id FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.numero LIKE ?${conVentana ? ' AND p.fecha_creacion >= ?' : ''} LIMIT 20`).all(...(conVentana ? [like, VENTANA_OPERATIVA_DESDE] : [like]));
   // Triage documento de Daniela (REQ-023): la búsqueda global ahora también cubre proveedor por
   // contacto (no solo razón social) y pieza por descripción o número de parte.
   const proveedores = db.prepare(`SELECT id, razon_social, correo, contacto FROM proveedores WHERE razon_social LIKE ? OR contacto LIKE ? LIMIT 20`).all(like,like);
   const piezas = db.prepare(`
     SELECT z.id, z.descripcion, z.numero_parte, z.estatus, p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero
     FROM piezas z JOIN pedidos p ON p.id = z.pedido_id JOIN siniestros s ON s.id = p.siniestro_id
-    WHERE z.descripcion LIKE ? OR z.numero_parte LIKE ? LIMIT 20`).all(like,like);
+    WHERE (z.descripcion LIKE ? OR z.numero_parte LIKE ?)${conVentana ? ' AND p.fecha_creacion >= ?' : ''} LIMIT 20`).all(...(conVentana ? [like,like, VENTANA_OPERATIVA_DESDE] : [like,like]));
   res.json({ siniestros, pedidos, proveedores, piezas, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });
 });
 
@@ -189,8 +199,9 @@ router.get('/buscar', requireAuth, (req, res)=>{
 // Vista enriquecida para el Kanban: todos los pedidos (F-03: ningún estatus se excluye) con resumen de piezas.
 router.get('/kanban', requireAuth, (req, res)=>{
   archivarSiniestrosVencidos(db);
+  const conVentanaKanban = aplicaVentanaOperativa(req.query);
   const pedidos = db.prepare(`SELECT p.*, s.numero as siniestro_numero, s.aseguradora, s.vehiculo, s.id as siniestro_id
-                               FROM pedidos p JOIN siniestros s ON s.id = p.siniestro_id WHERE s.archivado = 0 ORDER BY p.creado_en DESC`).all();
+                               FROM pedidos p JOIN siniestros s ON s.id = p.siniestro_id WHERE s.archivado = 0${conVentanaKanban ? ' AND p.fecha_creacion >= ?' : ''} ORDER BY p.creado_en DESC`).all(...(conVentanaKanban ? [VENTANA_OPERATIVA_DESDE] : []));
   const hoy = new Date().toISOString().slice(0,10);
   const out = pedidos.map(p=>{
     const piezas = db.prepare('SELECT z.*, pv.razon_social as proveedor_nombre FROM piezas z LEFT JOIN proveedores pv ON pv.id = z.proveedor_id WHERE z.pedido_id = ?').all(p.id);
