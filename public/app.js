@@ -162,7 +162,7 @@ const TABS = [
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
   {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
   {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
-  {k:'reglas', label:'Reglas', roles:['operativo','admin','jefe']},
+  {k:'reglas', label:'Reglas', roles:['admin','jefe']},
   {k:'respaldos', label:'Respaldos', roles:['admin']}
 ];
 function renderTabs(){
@@ -172,6 +172,13 @@ function renderTabs(){
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
 function goTo(view){ state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
+// Hallazgo de Daniela (26-ago-2026): el menu ocupaba casi toda la pantalla en movil. Se colapsa
+// detras de un boton "Menu" (ver CSS .nav-toggle / nav.tabs.open) y se cierra solo al navegar, porque
+// renderTabs() reconstruye el <nav> desde cero sin la clase "open" en cada render().
+function toggleMenuMovil(){
+  const nav = document.getElementById('mainTabs');
+  if(nav) nav.classList.toggle('open');
+}
 function goSiniestro(id){ state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render(); }
 function goProveedor(id){ state.view='proveedor'; state.proveedorId=id; render(); }
 function setSubtabSiniestro(tab){ state.subtabSiniestro = tab; render(); }
@@ -217,7 +224,7 @@ async function render(){
     else if(state.view==='proveedores') app.innerHTML = await viewProveedores();
     else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
     else if(state.view==='correos') app.innerHTML = await viewCorreos();
-    else if(state.view==='carga') app.innerHTML = viewCargaMasiva();
+    else if(state.view==='carga') app.innerHTML = await viewCargaMasiva();
     else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
     else if(state.view==='expediente') app.innerHTML = await viewExpediente();
     else if(state.view==='valuacion') app.innerHTML = await viewValuacion();
@@ -987,10 +994,10 @@ async function viewSiniestro(id){
     </tbody></table>
     ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormFiniquito(${id})">Actualizar finiquito / encuesta</button></div>`:''}`;
   } else if(state.subtabSiniestro==='pedidos'){
-    body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th>Total</th><th></th></tr></thead><tbody>
+    body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
       <select onchange="cambiarEstatusOperativo(${p.id}, this.value)">${ESTATUS_OPERATIVO.map(e=>`<option ${e===p.estatus_operativo?'selected':''}>${e}</option>`).join('')}</select>
-    </td><td>${fmtMoney(p.total)}</td>
+    </td>
     <td><button class="btn small" onclick="abrirGenerador(${p.id})">Generar correo</button></td></tr>`).join('')}
     </tbody></table>
     ${peds.length===0?'<div class="empty">Este siniestro todavía no tiene pedidos.</div>':''}`;
@@ -999,10 +1006,10 @@ async function viewSiniestro(id){
     for(const p of peds){ const zs = await api('GET','/api/piezas?pedido_id='+p.id); zs.forEach(z=>allz.push({z,p})); }
     const proveedoresNombre = {};
     (await api('GET','/api/proveedores')).forEach(pv=>{ proveedoresNombre[pv.id] = pv.razon_social; });
-    body = `<table><thead><tr><th>Pedido</th><th>Pieza</th><th>Proveedor</th><th>Precio</th><th>F. prometida</th><th>Estatus</th><th>Recepción</th><th></th></tr></thead><tbody>
+    body = `<table><thead><tr><th>Pedido</th><th>Pieza</th><th>Proveedor</th><th>F. prometida</th><th>Estatus</th><th>Recepción</th><th></th></tr></thead><tbody>
     ${allz.map(o=>`<tr>
       <td>${esc(o.p.numero)}</td><td>${esc(o.z.descripcion)}${o.z.observaciones?`<div class="subtle">${esc(o.z.observaciones)}</div>`:''}</td>
-      <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Sin proveedor</span>'}</td><td>${fmtMoney(o.z.precio)}</td>
+      <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Sin proveedor</span>'}</td>
       <td>${esc(o.z.fecha_prometida||'')}</td>
       <td>${esc(o.z.estatus)}</td>
       <td>${o.z.fecha_recepcion?esc(o.z.fecha_recepcion):'—'}</td>
@@ -2017,7 +2024,6 @@ async function abrirFormNuevaPieza(){
     <div class="row-flex">
       <div class="field"><label>Proveedor</label><select id="fz_prov"><option value="">Sin proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}">${esc(pv.razon_social)}</option>`).join('')}</select></div>
       <div class="field"><label>Cantidad</label><input id="fz_cant" type="number" value="1" min="1"></div>
-      <div class="field"><label>Precio</label><input id="fz_precio" type="number" step="0.01" value="0"></div>
     </div>
     <div class="field"><label>Fecha prometida</label><input id="fz_fecha" type="date" value="${todayISO()}"></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaPieza(${pedidoId})">Guardar</button></div>
@@ -2031,7 +2037,7 @@ async function guardarNuevaPieza(pedidoId){
       pedido_id: pedidoId, descripcion, numero_parte: document.getElementById('fz_parte').value,
       tipo: document.getElementById('fz_tipo').value, proveedor_id: document.getElementById('fz_prov').value || null,
       cantidad: +document.getElementById('fz_cant').value,
-      precio: +document.getElementById('fz_precio').value, fecha_prometida: document.getElementById('fz_fecha').value
+      fecha_prometida: document.getElementById('fz_fecha').value
     });
     toast('Pieza agregada.', 'success');
     closeModal(); render();
@@ -2053,7 +2059,6 @@ async function abrirFormEditarPieza(id){
     </div>
     <div class="row-flex">
       <div class="field"><label>Cantidad</label><input id="fez_cant" type="number" min="1" value="${z.cantidad}"></div>
-      <div class="field"><label>Precio</label><input id="fez_precio" type="number" step="0.01" value="${z.precio}"></div>
       <div class="field"><label>Fecha prometida</label><input id="fez_fecha" type="date" value="${esc(z.fecha_prometida||'')}"></div>
     </div>
     <div class="field"><label>Observaciones</label><textarea id="fez_obs">${esc(z.observaciones||'')}</textarea></div>
@@ -2067,7 +2072,7 @@ async function guardarEdicionPieza(id){
       tipo: document.getElementById('fez_tipo').value, proveedor_id: document.getElementById('fez_prov').value || null,
       estatus: document.getElementById('fez_estatus').value,
       cantidad: +document.getElementById('fez_cant').value,
-      precio: +document.getElementById('fez_precio').value, fecha_prometida: document.getElementById('fez_fecha').value,
+      fecha_prometida: document.getElementById('fez_fecha').value,
       observaciones: document.getElementById('fez_obs').value
     });
     toast('Pieza actualizada.', 'success');

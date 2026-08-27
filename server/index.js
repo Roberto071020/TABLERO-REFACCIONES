@@ -9,6 +9,7 @@ require('./seed'); // idempotente: crea usuarios/proveedores/caso de prueba solo
 require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: solo rellena campos vacíos en expedientes ya existentes
 require('./resetEmergenciaDaniela').resetEmergenciaDaniela(); // idempotente: corre una sola vez
 require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: respaldo diario + rotación; no-op en pruebas
+if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendientesExistentes(db); } // hallazgo de Daniela 26-ago-2026: limpieza unica de correos automaticos duplicados ya acumulados
 const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword } = require('./auth');
 const bcrypt = require('bcryptjs');
 
