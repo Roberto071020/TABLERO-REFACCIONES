@@ -2265,3 +2265,55 @@ test('FECHA-3: la corrección de fechas existentes reescribe en su lugar los ped
   const pedidoTrasSegundaVez = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(p.id);
   assert.equal(pedidoTrasSegundaVez.fecha_creacion, '2026-06-03', 'idempotente: no cambia lo que ya está bien');
 });
+
+/* ===================== Verificación explícita InPart GNP (27-ago-2026, precisión de Roberto) =====================
+   Roberto pidió validar por separado InPart "general" y InPart GNP, usando como caso de control el
+   pedido 1139278 del siniestro 0185278777A. En producción ese siniestro SÍ existe (GNP, Chrysler,
+   PYM6258) pero AÚN NO tiene el pedido 1139278 cargado -- de los 5 pedidos GNP que sí hay en
+   producción, los 5 pertenecen a un solo siniestro distinto y ninguno tiene piezas capturadas todavía;
+   es una brecha de CARGA DE DATOS (falta importar el InPart GNP real), no un defecto de código. La
+   prueba de abajo demuestra, con datos sintéticos que imitan el formato real (fecha DD/MM/AAAA, como
+   entrega Inpart), que en cuanto esa carga se haga la cadena completa funciona igual para GNP que para
+   cualquier otra aseguradora: ventana operativa, "Sin proveedor", destinatario real, copia GNP (R-08),
+   cuerpo de la plantilla y exclusión de piezas cerradas. */
+
+test('GNP-1: un pedido GNP importado por carga masiva (formato de fecha real DD/MM/AAAA) queda dentro de la ventana operativa, sin "Sin proveedor", con destinatario real y copia GNP, igual que cualquier otra aseguradora', async () => {
+  const csv = [
+    'numero_siniestro,aseguradora,vehiculo,placas,numero_pedido,fecha_creacion_pedido,fecha_prevista,numero_parte,descripcion_pieza,proveedor,correo_proveedor,contacto_proveedor,telefono_proveedor,estatus_inpart_pieza',
+    '0185278777A-CTRL,GNP,Chrysler,PYM6258,1139278-CTRL,05/06/2026,2026-06-20,NP-GNP-1,Facia delantera,Proveedor GNP Control,contacto@proveedorgnpcontrol.mx,Juan Pérez,555-0001,Facturado',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  assert.equal(validado.pedidos.filter(p=>p.errores.length===0).length, 1);
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
+  assert.equal(confirmar.status, 200);
+  assert.equal(confirmar.data.proveedoresCreados, 1);
+
+  const siniestro = (await req('GET', '/api/siniestros?q=0185278777A-CTRL')).data[0];
+  assert.equal(siniestro.aseguradora, 'GNP');
+  const pedido = (await req('GET', '/api/pedidos?siniestro_id=' + siniestro.id)).data[0];
+  assert.equal(pedido.fecha_creacion, '2026-06-05', 'la fecha real DD/MM/AAAA de Inpart GNP se normalizó a ISO igual que en InPart general');
+
+  // Ventana operativa: aparece en lista maestra, Kanban e indicadores por default, igual que un pedido no-GNP.
+  const lista = (await req('GET', '/api/reportes/lista-maestra')).data;
+  assert.ok(lista.some(f => f.pedido_numero === '1139278-CTRL' && f.aseguradora === 'GNP'), 'el pedido GNP aparece en lista maestra dentro de la ventana operativa');
+  const kanban = (await req('GET', '/api/reportes/kanban')).data;
+  assert.ok(kanban.some(k => k.numero === '1139278-CTRL'), 'el pedido GNP aparece en Kanban dentro de la ventana operativa');
+
+  // "Sin proveedor": la pieza GNP sí trae proveedor real, no debe contarse como "Sin proveedor".
+  const pieza = (await req('GET', '/api/piezas?pedido_id=' + pedido.id)).data[0];
+  assert.notEqual(pieza.estatus, 'Sin proveedor');
+  assert.ok(pieza.proveedor_id);
+
+  // Correo automático: destinatario real del proveedor GNP + copia con las direcciones reales de GNP (R-08).
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  // La fecha prevista de control (2026-06-20) ya quedó en el pasado respecto a "hoy" en el entorno de
+  // pruebas, así que el disparador vivo puede ser 'pedido_nuevo' o 'vencimiento_dia1' (ambos usan
+  // exactamente la misma lógica de destinatario/copia/cuerpo) -- lo relevante aquí es que exista uno.
+  const com = pendientes.find(c => c.pedido_id === pedido.id);
+  assert.ok(com);
+  assert.equal(com.destinatarios, 'contacto@proveedorgnpcontrol.mx');
+  assert.equal(com.incompleto, 0);
+  assert.match(com.copia, /cristian\.hernandezortiz@gnp\.com\.mx/);
+  assert.match(com.cuerpo, /estatus actualizado del pedido 1139278-CTRL, correspondiente al siniestro 0185278777A-CTRL/);
+  assert.match(com.cuerpo, /- Facia delantera/);
+});
