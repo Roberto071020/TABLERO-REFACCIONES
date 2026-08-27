@@ -2095,6 +2095,38 @@ test('CORREO-PLANTILLA-4: la migración corrige un borrador con datos "viejos" (
   assert.equal(total, 1);
 });
 
+test('CORREO-PLANTILLA-6: reimportar por carga masiva recalcula al instante un borrador ya marcado "Incompleto", sin esperar a un reinicio del servidor', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PLANT-6', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PLANT-6-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  // Pieza sin proveedor todavía (así llegan muchos pedidos reales antes de que Inpart tenga el dato
+  // completo): el borrador automático se genera pero queda "Incompleto", como reportó Daniela.
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Facia delantera', numero_parte: 'PLANT6-NP1' });
+
+  let pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  let com = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
+  assert.ok(com);
+  assert.equal(com.incompleto, 1, 'sin proveedor asignado, el borrador nace incompleto');
+  assert.equal(com.destinatarios, '');
+
+  // Ahora llega una carga masiva (reimportación de Inpart) que sí trae el proveedor y correo reales
+  // para esa misma pieza (mismo numero_pedido / numero_parte).
+  const csv = [
+    'numero_siniestro,aseguradora,numero_pedido,fecha_prevista,numero_parte,descripcion_pieza,proveedor,correo_proveedor',
+    'PLANT-6,GNP,PLANT-6-PED,2026-12-01,PLANT6-NP1,Facia delantera,Proveedor PLANT6,contacto@proveedorplant6.mx',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  const confirmar = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
+  assert.equal(confirmar.status, 200);
+
+  // El borrador YA EXISTENTE (mismo id) debe quedar corregido de inmediato, en la misma petición de
+  // carga masiva, sin necesitar un reinicio del servidor.
+  const comDespues = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data.find(c => c.id === com.id);
+  assert.ok(comDespues, 'sigue siendo el mismo borrador, no se creó uno nuevo');
+  assert.equal(comDespues.estado, 'pendiente_aprobacion', 'sigue pendiente de aprobación, no se aprobó ni se envió solo');
+  assert.equal(comDespues.destinatarios, 'contacto@proveedorplant6.mx');
+  assert.equal(comDespues.incompleto, 0, 'al llegar el proveedor real por carga masiva, deja de estar Incompleto sin esperar a un redeploy');
+});
+
 test('CORREO-PLANTILLA-5: la migración descarta (no borra) borradores de pedidos que ya no tienen piezas pendientes', async () => {
   const db = require('../server/db');
   const { corregirBorradoresAutomaticosExistentes } = require('../server/utils');

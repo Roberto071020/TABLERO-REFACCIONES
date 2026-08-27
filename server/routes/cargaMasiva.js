@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria } = require('../utils');
+const { registrarAuditoria, corregirBorradoresAutomaticosExistentes } = require('../utils');
 const router = express.Router();
 
 /* ===================== Documento de Daniela (25-ago-2026), items 3/4/6 =====================
@@ -313,6 +313,12 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
 
   const resumen = { siniestrosCreados, siniestrosActualizados, pedidosCreados, pedidosActualizados, piezasCreadas, piezasActualizadas, proveedoresCreados, omitidos: omitidos.length, conflictos: conflictos.length };
   db.prepare('UPDATE cargas_masivas SET resumen = ? WHERE id = ?').run(JSON.stringify(resumen), loteId);
+
+  // Hallazgo de Daniela (27-ago-2026): un borrador automatico marcado "incompleto" (o con datos
+  // desactualizados) no se recalculaba solo hasta el proximo reinicio del servidor. Si esta misma
+  // carga masiva acaba de traer el proveedor/correo real de un pedido con un borrador pendiente,
+  // lo recalculamos aqui mismo para no dejarlo obsoleto hasta el proximo despliegue.
+  corregirBorradoresAutomaticosExistentes(db);
 
   res.json({ loteId, ...resumen, omitidos, conflictos_detalle: conflictos });
 });
