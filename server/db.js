@@ -877,4 +877,22 @@ if(!tieneColumna('siniestros', 'cubre_deducible')){
   }
 }
 
+
+/* ===================== Propuesta de Orlando: compuerta de disponibilidad + SLA de revision (27-ago-2026) =====================
+   "Propuesta_Integracion_Tablero_Servicio_Cristian.docx". Un vehiculo solo debe aparecer en la
+   bandeja de revision tecnica de Orlando cuando Alejandra ya completo los requisitos de admision
+   (inventario fisico + orden de admision subidos, llaves confirmadas, y dado de seguridad si aplica
+   por dano de suspension). Se agregan las marcas de tiempo para medir el plazo de 72 horas habiles. */
+const NUEVAS_COLUMNAS_PROPUESTA_ORLANDO = [
+  ['requiere_dado_seguridad', 'INTEGER'],        // 1/0 -- Alejandra lo marca si hay dano de suspension
+  ['dado_seguridad_colocado', 'INTEGER'],        // 1/0 -- confirmacion de que ya se coloco
+  ['fecha_hora_disponible_revision', 'TEXT'],    // se sella solo, una vez, cuando se cumplen los requisitos
+  ['fecha_hora_revision_concluida', 'TEXT']      // se sella solo cuando Orlando marca revision_terminada
+];
+for(const [col, def] of NUEVAS_COLUMNAS_PROPUESTA_ORLANDO){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
 module.exports = db;

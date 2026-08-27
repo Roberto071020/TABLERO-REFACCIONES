@@ -4,7 +4,7 @@ const fs = require('fs');
 const multer = require('multer');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria } = require('../utils');
+const { registrarAuditoria, verificarDisponibleParaRevision } = require('../utils');
 const router = express.Router();
 
 const UPLOAD_DIR = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'uploads') : path.join(__dirname, '..', '..', 'uploads');
@@ -33,6 +33,13 @@ router.post('/', requireAuth, upload.single('archivo'), (req, res)=>{
     VALUES (?,?,?,?,?,?,?,?)`)
     .run(entidad_tipo, entidad_id, tipo||'Evidencia', req.file.originalname, req.file.filename, req.file.mimetype, req.file.size, req.session.user.id);
   registrarAuditoria(db, { entidad_tipo:'archivo', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user, valor_nuevo:req.file.originalname });
+
+  // Propuesta de Orlando (sección 3.1): la orden de admisión y el inventario fotográfico/físico son,
+  // junto con llaves y dado de seguridad, requisitos para que el vehículo quede disponible para revisión.
+  if(entidad_tipo === 'siniestro' && (tipo === 'inventario_fisico' || tipo === 'orden_admision')){
+    verificarDisponibleParaRevision(db, entidad_id, req.session.user);
+  }
+
   res.status(201).json(db.prepare('SELECT * FROM archivos WHERE id = ?').get(info.lastInsertRowid));
 });
 

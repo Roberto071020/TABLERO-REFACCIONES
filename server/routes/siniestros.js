@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo } = require('../utils');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision } = require('../utils');
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
@@ -18,7 +18,7 @@ function calcularCompleto(row){
 // que "solo lectura" sea real y no solo una convención de la interfaz. Los campos generales del expediente
 // (vehículo, placas, cliente, notas, etc.) siguen abiertos a cualquier usuario autenticado, como siempre.
 const GRUPOS_CAMPOS_RESTRINGIDOS = [
-  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro'],
+  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro','requiere_dado_seguridad','dado_seguridad_colocado'],
     roles:['atencion_cliente','vanessa','admin','jefe'], nombre:'admisión' },
   { campos:['estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia'],
     roles:['orlando','admin','jefe'], nombre:'revisión técnica' },
@@ -126,6 +126,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
     // Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando)
     'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
     'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
+    'requiere_dado_seguridad','dado_seguridad_colocado',
     // Documento Maestro / Fase C: captura y armado de expediente (Vanessa)
     'estado_expediente','sistema_valuacion','expediente_folio',
     // Documento Maestro / Fase D: valuación y autorización
@@ -167,6 +168,11 @@ router.patch('/:id', requireAuth, (req, res)=>{
   }
   nuevo.riesgo_seguridad = riesgoActivo ? 1 : (nuevo.riesgo_seguridad ? 1 : 0);
   nuevo.llaves_entregadas = (nuevo.llaves_entregadas===1||nuevo.llaves_entregadas===true||nuevo.llaves_entregadas==='1') ? 1 : (nuevo.llaves_entregadas ? 1 : 0);
+
+  // Propuesta de Orlando (sección 3.1): si el vehículo tiene daño de suspensión, se exige el dado de
+  // seguridad como cuarto requisito antes de aparecer disponible para su revisión.
+  nuevo.requiere_dado_seguridad = (nuevo.requiere_dado_seguridad===1||nuevo.requiere_dado_seguridad===true||nuevo.requiere_dado_seguridad==='1') ? 1 : (nuevo.requiere_dado_seguridad ? 1 : 0);
+  nuevo.dado_seguridad_colocado = (nuevo.dado_seguridad_colocado===1||nuevo.dado_seguridad_colocado===true||nuevo.dado_seguridad_colocado==='1') ? 1 : (nuevo.dado_seguridad_colocado ? 1 : 0);
 
   // Documento Maestro / Fase C, tabla 9: "criterio de salida: expediente digital validado y listo para
   // valuación." No se puede marcar listo si hay documentos faltantes o ilegibles pendientes (misma lógica
@@ -229,6 +235,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
       cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
       estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
+      requiere_dado_seguridad=?,dado_seguridad_colocado=?,
       estado_expediente=?,sistema_valuacion=?,expediente_folio=?,
       valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_observaciones=?,
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
@@ -243,6 +250,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
       nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
       nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
+      nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado,
       nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio,
       nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_observaciones,
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
@@ -264,6 +272,29 @@ router.patch('/:id', requireAuth, (req, res)=>{
         .run(req.params.id, 'mensaje', 'Autorización resuelta: avisar al cliente y explicar el siguiente paso.', new Date().toISOString().slice(0,10), req.session.user.id);
     }
   }
+
+  // Propuesta de Orlando (sección 3.1): si este PATCH tocó algún requisito de admisión (llaves, dado de
+  // seguridad, tipo de ingreso, fecha de admisión), reevalúa si el vehículo ya queda disponible para su
+  // revisión. verificarDisponibleParaRevision es idempotente: si ya estaba sellado, no hace nada.
+  const camposAdmisionTocados = ['llaves_entregadas','requiere_dado_seguridad','dado_seguridad_colocado','ingreso_tipo','fecha_admision'].some(c => req.body[c] !== undefined);
+  if(camposAdmisionTocados){
+    verificarDisponibleParaRevision(db, req.params.id, req.session.user);
+  }
+
+  // Propuesta de Orlando (sección 3.3): al cerrar su parte (Excel + orden de admisión + fotos listos =
+  // estado_revision_tecnica='revision_terminada'), se sella la hora de cierre una sola vez y se avisa a
+  // Roberto con una tarea visible en el expediente -- sin esperar a que Vanessa termine el expediente
+  // digital, que sigue siendo el criterio real para la bandeja de valuación (no se toca esa compuerta).
+  if(nuevo.estado_revision_tecnica === 'revision_terminada' && anterior.estado_revision_tecnica !== 'revision_terminada'){
+    db.prepare("UPDATE siniestros SET fecha_hora_revision_concluida=datetime('now') WHERE id=? AND fecha_hora_revision_concluida IS NULL").run(req.params.id);
+    const yaExisteAviso = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='revision_lista_para_evaluar'`).get(req.params.id);
+    if(!yaExisteAviso){
+      db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+        VALUES (?,?,?,?,'pendiente','automatica','revision_lista_para_evaluar',?)`)
+        .run(req.params.id, 'mensaje', 'Orlando cerró su revisión: Excel, orden de admisión y fotos listos para evaluar.', new Date().toISOString().slice(0,10), req.session.user.id);
+    }
+  }
+
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
 });
 

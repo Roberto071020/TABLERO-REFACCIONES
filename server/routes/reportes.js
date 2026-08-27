@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa } = require('../utils');
+const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua } = require('../utils');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -233,14 +233,29 @@ router.get('/bandeja-clientes', requireAuth, (req, res)=>{
 
 // Documento Maestro / Fase B — bandeja de revisión técnica de Orlando: expedientes admitidos que
 // todavía no tienen revisión terminada, con el conteo de hallazgos ya capturados y el flag de riesgo.
+// Propuesta de Orlando (sección 3.1, 27-ago-2026): la bandeja ahora solo muestra vehículos que ya
+// cumplieron los requisitos reales de admisión de Alejandra (fecha_hora_disponible_revision sellada) --
+// antes aparecían TODOS los no-terminados sin importar si ya estaban realmente disponibles para revisar.
 router.get('/bandeja-tecnica', requireAuth, (req, res)=>{
   const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0
     AND (estado_revision_tecnica IS NULL OR estado_revision_tecnica != 'revision_terminada')
-    ORDER BY creado_en DESC`).all();
+    AND fecha_hora_disponible_revision IS NOT NULL
+    ORDER BY fecha_hora_disponible_revision ASC`).all();
+  const ahoraISO = new Date().toISOString().slice(0,10);
   const out = siniestros.map(s=>{
     const hallazgos = db.prepare('SELECT COUNT(*) n FROM danos_evidencia WHERE siniestro_id=?').get(s.id).n;
     const ocultos = db.prepare("SELECT COUNT(*) n FROM danos_evidencia WHERE siniestro_id=? AND visibilidad='oculto'").get(s.id).n;
-    return { ...s, hallazgos, hallazgos_ocultos: ocultos };
+    // Indicador de tiempo (sección 4.3): 72 horas hábiles solo aplica -- y con mayor relevancia -- a los
+    // que llegan en grúa; para "circulando" se muestra el tiempo transcurrido sin marcar vencimiento.
+    let limiteRevision = null, vencido = false;
+    if(s.ingreso_tipo === 'grua'){
+      limiteRevision = limiteRevisionGrua(s.fecha_hora_disponible_revision);
+      vencido = !!limiteRevision && ahoraISO > limiteRevision;
+    }
+    const diasDisponible = s.fecha_hora_disponible_revision
+      ? Math.floor((Date.now() - new Date(String(s.fecha_hora_disponible_revision).replace(' ','T')+'Z').getTime()) / 86400000)
+      : null;
+    return { ...s, hallazgos, hallazgos_ocultos: ocultos, limite_revision_grua: limiteRevision, revision_vencida: vencido, dias_disponible_revision: diasDisponible };
   });
   res.json(out);
 });

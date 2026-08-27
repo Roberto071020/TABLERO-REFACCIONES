@@ -83,6 +83,52 @@ function crearTareaFechaPromesaModificada(db, { siniestroId, pedidoNumero, fecha
 }
 
 
+// ===================== Propuesta de Orlando: compuerta de disponibilidad para revisión (27-ago-2026) =====================
+// "Propuesta_Integracion_Tablero_Servicio_Cristian.docx", sección 3.1: un vehículo solo debe
+// aparecer disponible para la revisión de Orlando cuando Alejandra ya completó los requisitos de
+// admisión reales, según llegó circulando o en grúa.
+function requisitosAdmisionCompletos(db, siniestro){
+  if(siniestro.ingreso_tipo === 'grua'){
+    const tieneInventario = !!db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='inventario_fisico' AND eliminado=0`).get(siniestro.id);
+    const tieneOrdenAdmision = !!db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='orden_admision' AND eliminado=0`).get(siniestro.id);
+    const llaves = siniestro.llaves_entregadas === 1;
+    const dadoOk = !siniestro.requiere_dado_seguridad || siniestro.dado_seguridad_colocado === 1;
+    return tieneInventario && tieneOrdenAdmision && llaves && dadoOk;
+  }
+  if(siniestro.ingreso_tipo === 'circulando'){
+    // Vehículo circulando: Alejandra solo necesita capturar y confirmar la información de admisión.
+    return !!(siniestro.fecha_admision && String(siniestro.fecha_admision).trim());
+  }
+  return false; // todavía no se definió cómo llegó el vehículo
+}
+
+// Sella fecha_hora_disponible_revision UNA sola vez (idempotente) en cuanto se cumplen los requisitos,
+// y deja una tarea visible en el expediente para que Orlando lo note (además de que, ya sellado, el
+// siniestro entra a su bandeja de revisión técnica).
+function verificarDisponibleParaRevision(db, siniestroId, usuario){
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(siniestroId);
+  if(!s || s.fecha_hora_disponible_revision) return; // ya estaba sellado, o no existe
+  if(!requisitosAdmisionCompletos(db, s)) return;
+  db.prepare("UPDATE siniestros SET fecha_hora_disponible_revision=datetime('now'), actualizado_en=datetime('now') WHERE id=?").run(siniestroId);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: siniestroId, accion:'automatico',
+    valor_nuevo: 'Requisitos de admisión completos: disponible para revisión de Orlando.', usuario: usuario||null });
+  const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='disponible_revision_orlando'`).get(siniestroId);
+  if(!yaExiste){
+    db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+      VALUES (?,?,?,?,'pendiente','automatica','disponible_revision_orlando',?)`)
+      .run(siniestroId, 'mensaje', 'Vehículo disponible para revisión física y fotográfica.', new Date().toISOString().slice(0,10), usuario ? usuario.id : null);
+  }
+}
+
+// Plazo de 72 horas hábiles para revisar vehículos que llegan en grúa (sección 4.3 de la propuesta).
+// Mismo criterio de simplificación ya usado en sumarDiasHabiles: cuenta días hábiles completos
+// (lunes a viernes), sin calendario oficial de festivos. 72 horas hábiles = 3 días hábiles de 24h.
+function limiteRevisionGrua(fechaHoraDisponible){
+  if(!fechaHoraDisponible) return null;
+  const fecha = String(fechaHoraDisponible).slice(0,10);
+  return sumarDiasHabiles(fecha, 3);
+}
+
 // ===================== Requerimientos de Daniela (Fase 4): correos automáticos =====================
 
 // Reglas de copia conocidas por aseguradora (seccion "CORREOS" del documento de Daniela).
@@ -428,4 +474,5 @@ module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditar
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
-  VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes };
+  VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
+  requisitosAdmisionCompletos, verificarDisponibleParaRevision, limiteRevisionGrua };

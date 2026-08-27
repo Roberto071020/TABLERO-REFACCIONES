@@ -1164,6 +1164,9 @@ test('DOC-MAESTRO-B-5: solo orlando/vanessa/admin/jefe pueden registrar hallazgo
 test('DOC-MAESTRO-B-6: bandeja técnica de Orlando lista expedientes pendientes y los excluye al terminar la revisión', async () => {
   await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEB-BANDEJA1', aseguradora: 'GNP' })).data;
+  // Propuesta de Orlando (27-ago-2026): la bandeja solo muestra expedientes con admisión ya completa
+  // (ver ORLA-1/2). Aquí se cubre el caso simple (circulando) para no repetir esa cobertura.
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', fecha_admision: '2026-08-27' });
   let bandeja = await req('GET', '/api/reportes/bandeja-tecnica');
   assert.ok(bandeja.data.some(x => x.numero === 'FASEB-BANDEJA1'), 'debe aparecer pendiente de revisión técnica');
 
@@ -2201,9 +2204,13 @@ test('VENTANA-3: la ventana operativa no toca las bandejas de otros roles (Orlan
   const pieza = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza VENT3', proveedor_id: prov.id })).data;
   await req('POST', '/api/incidencias', { pieza_id: pieza.id, tipo: 'incorrecta', descripcion: 'llegó mal' });
 
-  // Bandeja técnica de Orlando: usa el mismo listado base de siniestros, sin corte alguno.
+  // Bandeja técnica de Orlando: usa el mismo listado base de siniestros, sin corte alguno -- pero desde la
+  // propuesta de Orlando (27-ago-2026) sí exige que la admisión ya esté completa (no la ventana operativa).
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', fecha_admision: '2026-03-01' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const bandejaTecnica = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
-  assert.ok(bandejaTecnica.some(x => x.numero === 'VENT-3'), 'la bandeja técnica de Orlando no debe filtrarse por la ventana operativa de refacciones');
+  assert.ok(bandejaTecnica.some(x => x.numero === 'VENT-3'), 'la bandeja técnica de Orlando no debe filtrarse por la ventana operativa de refacciones (aunque sí por la admisión completa, ya probado en ORLA-1/2)');
 
   // Dentro del detalle de un siniestro ya abierto, sus incidencias (por pieza_id) se siguen viendo completas.
   const incPorPieza = (await req('GET', '/api/incidencias?pieza_id=' + pieza.id)).data;
@@ -2421,5 +2428,135 @@ test('ALE-3: "Pendientes de hoy" clasifica correctamente en rojo/ámbar/verde us
   assert.equal(typeof p.rojo.total, 'number');
   assert.equal(typeof p.amarillo.total, 'number');
   assert.equal(typeof p.verde.total, 'number');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+// ===================== Propuesta de Orlando (27-ago-2026): compuerta de disponibilidad para =====================
+// ===================== revisión + aviso de cierre + indicador de 72h hábiles para grúa. =====================
+
+test('ORLA-1: vehículo "circulando" queda disponible para revisión en cuanto se captura fecha_admision (sin exigir llaves/dado/OA/fotos)', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ORLA1-CIRC', aseguradora: 'GNP' })).data;
+  const bandejaAntes = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(!bandejaAntes.some(x => x.numero === 'ORLA1-CIRC'), 'sin admisión capturada, no debe aparecer en la bandeja técnica');
+
+  const sinFecha = (await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando' })).data;
+  assert.equal(sinFecha.fecha_hora_disponible_revision, null, 'sin fecha_admision, "circulando" todavía no queda disponible');
+
+  const conFecha = (await req('PATCH', '/api/siniestros/' + s.id, { fecha_admision: '2026-08-27' })).data;
+  assert.ok(conFecha.fecha_hora_disponible_revision, 'con fecha_admision capturada, "circulando" ya queda disponible para revisión');
+
+  const bandejaDespues = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(bandejaDespues.some(x => x.numero === 'ORLA1-CIRC'), 'ya debe aparecer en la bandeja técnica de Orlando');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ORLA-2: vehículo que llega en grúa NO queda disponible hasta tener llaves + inventario físico + orden de admisión (y dado de seguridad si se requiere)', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ORLA2-GRUA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'grua', fecha_admision: '2026-08-27', requiere_dado_seguridad: 1 });
+
+  let bandeja = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(!bandeja.some(x => x.numero === 'ORLA2-GRUA'), 'sin llaves/OA/inventario/dado, no debe estar disponible');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { llaves_entregadas: 1 });
+  bandeja = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(!bandeja.some(x => x.numero === 'ORLA2-GRUA'), 'solo con llaves, todavía faltan OA/inventario/dado');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { dado_seguridad_colocado: 1 });
+  bandeja = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(!bandeja.some(x => x.numero === 'ORLA2-GRUA'), 'todavía faltan orden de admisión e inventario físico');
+
+  // Subir el inventario físico (aún falta la orden de admisión).
+  const fd1 = new FormData();
+  fd1.append('entidad_tipo', 'siniestro'); fd1.append('entidad_id', String(s.id)); fd1.append('tipo', 'inventario_fisico');
+  fd1.append('archivo', new Blob([Buffer.from('inventario')], { type: 'application/pdf' }), 'inventario.pdf');
+  const res1 = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd1 });
+  assert.equal(res1.status, 201);
+  bandeja = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(!bandeja.some(x => x.numero === 'ORLA2-GRUA'), 'con solo el inventario físico, todavía falta la orden de admisión');
+
+  // Subir la orden de admisión: con esto se completan TODOS los requisitos de grúa.
+  const fd2 = new FormData();
+  fd2.append('entidad_tipo', 'siniestro'); fd2.append('entidad_id', String(s.id)); fd2.append('tipo', 'orden_admision');
+  fd2.append('archivo', new Blob([Buffer.from('orden')], { type: 'application/pdf' }), 'orden.pdf');
+  const res2 = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd2 });
+  assert.equal(res2.status, 201);
+
+  const sFinal = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.ok(sFinal.fecha_hora_disponible_revision, 'con llaves + dado + inventario físico + orden de admisión, ya debe quedar disponible');
+
+  bandeja = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  assert.ok(bandeja.some(x => x.numero === 'ORLA2-GRUA'), 'ahora sí debe aparecer en la bandeja técnica');
+
+  // Idempotencia: un PATCH posterior que no toque nada relevante no debe volver a sellar ni duplicar la tarea.
+  const tareasAntes = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data
+    .filter(t => t.disparador === 'disponible_revision_orlando');
+  assert.equal(tareasAntes.length, 1, 'debe existir exactamente una tarea automática de disponibilidad');
+  await req('PATCH', '/api/siniestros/' + s.id, { llaves_entregadas: 1 });
+  const sinCambio = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(sinCambio.fecha_hora_disponible_revision, sFinal.fecha_hora_disponible_revision, 'la marca de tiempo no debe volver a sellarse');
+  const tareasDespues = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data
+    .filter(t => t.disparador === 'disponible_revision_orlando');
+  assert.equal(tareasDespues.length, 1, 'no debe duplicarse la tarea automática');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ORLA-3: al cerrar la revisión técnica ("revision_terminada") se sella la hora de cierre una sola vez y se avisa a Roberto', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ORLA3-CIERRE', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', fecha_admision: '2026-08-27' });
+
+  const antes = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(antes.fecha_hora_revision_concluida, null);
+
+  const cerrado = (await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' })).data;
+  assert.ok(cerrado.fecha_hora_revision_concluida, 'debe sellar la hora de cierre de la revisión');
+
+  const tareasAviso = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data
+    .filter(t => t.disparador === 'revision_lista_para_evaluar');
+  assert.equal(tareasAviso.length, 1, 'debe crear exactamente un aviso de "listo para evaluar"');
+
+  // Un segundo PATCH que no cambia el estado (sigue en 'revision_terminada') no debe volver a sellar ni duplicar el aviso.
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_evidencia: 'evidencia_completa' });
+  const despues = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(despues.fecha_hora_revision_concluida, cerrado.fecha_hora_revision_concluida, 'no debe re-sellarse la hora de cierre');
+  const tareasAvisoDespues = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data
+    .filter(t => t.disparador === 'revision_lista_para_evaluar');
+  assert.equal(tareasAvisoDespues.length, 1, 'no debe duplicarse el aviso de cierre');
+
+  // También cierra correctamente si "revision_terminada" ya venía de antes de la disponibilidad (caso circulando ya cubierto arriba).
+  assert.equal(despues.estado_revision_tecnica, 'revision_terminada');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ORLA-4: el plazo de 72 horas hábiles (3 días hábiles) solo se calcula/marca para vehículos que llegaron en grúa', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  // Grúa: admisión completa un viernes -> el límite de 3 días hábiles cae el miércoles siguiente.
+  const sGrua = (await req('POST', '/api/siniestros', { numero: 'ORLA4-GRUA-SLA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sGrua.id, { ingreso_tipo: 'grua', llaves_entregadas: 1 });
+  const fd1 = new FormData();
+  fd1.append('entidad_tipo', 'siniestro'); fd1.append('entidad_id', String(sGrua.id)); fd1.append('tipo', 'inventario_fisico');
+  fd1.append('archivo', new Blob([Buffer.from('x')], { type: 'application/pdf' }), 'inv.pdf');
+  await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd1 });
+  const fd2 = new FormData();
+  fd2.append('entidad_tipo', 'siniestro'); fd2.append('entidad_id', String(sGrua.id)); fd2.append('tipo', 'orden_admision');
+  fd2.append('archivo', new Blob([Buffer.from('x')], { type: 'application/pdf' }), 'oa.pdf');
+  await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd2 });
+
+  const bandeja = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  const filaGrua = bandeja.find(x => x.numero === 'ORLA4-GRUA-SLA');
+  assert.ok(filaGrua, 'debe estar disponible para revisión');
+  assert.ok(filaGrua.limite_revision_grua, 'debe traer un límite calculado de 72h hábiles para grúa');
+  assert.equal(typeof filaGrua.revision_vencida, 'boolean');
+
+  // Circulando: no debe traer límite de grúa (el documento solo pide el indicador de 72h para grúa).
+  const sCirc = (await req('POST', '/api/siniestros', { numero: 'ORLA4-CIRC-SLA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sCirc.id, { ingreso_tipo: 'circulando', fecha_admision: '2026-08-27' });
+  const bandeja2 = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  const filaCirc = bandeja2.find(x => x.numero === 'ORLA4-CIRC-SLA');
+  assert.ok(filaCirc, 'debe estar disponible para revisión (circulando con fecha de admisión)');
+  assert.equal(filaCirc.limite_revision_grua, null, 'circulando no debe traer límite de 72h de grúa');
+  assert.equal(filaCirc.revision_vencida, false);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });

@@ -772,8 +772,10 @@ async function viewSiniestro(id){
       <tr><td>Fecha de admisión</td><td>${esc(s.fecha_admision||'—')}</td></tr>
       <tr><td>Kilometraje / combustible</td><td>${esc(s.kilometraje||'—')} ${s.combustible_nivel?('· '+esc(s.combustible_nivel)):''}</td></tr>
       <tr><td>Llaves entregadas</td><td>${s.llaves_entregadas?'Sí':'No'}</td></tr>
+      ${s.requiere_dado_seguridad?`<tr><td>Dado de seguridad</td><td>${s.dado_seguridad_colocado?'<span class="badge verde">Colocado</span>':'<span class="badge rojo">Falta colocar</span>'}</td></tr>`:''}
       <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
       <tr><td>Estado de admisión</td><td><span class="badge ${BADGE_ADM[s.estado_admision]||'gris'}">${LABEL_ADM[s.estado_admision]||'Pendiente'}</span>${s.motivo_admision?` — ${esc(s.motivo_admision)}`:''}</td></tr>
+      <tr><td>Disponible para revisión</td><td>${s.fecha_hora_disponible_revision?`<span class="badge verde">Sí</span> · ${esc(s.fecha_hora_disponible_revision)}`:'<span class="badge ambar">Aún no (faltan requisitos de admisión)</span>'}</td></tr>
     </tbody></table>
     ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button></div>`:''}
 
@@ -1064,7 +1066,7 @@ async function viewSiniestro(id){
     </tbody></table>
     <form id="formArchivo" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;" onsubmit="return subirArchivo(event, ${id})">
       <input type="file" id="archivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required>
-      <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option></select>
+      <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option><option value="orden_admision">Orden de admisión</option><option value="inventario_fisico">Inventario físico/fotográfico</option></select>
       <button class="btn small" type="submit">Subir archivo real</button>
     </form>
     ${enPapelera.length>0?`<h4 style="margin-top:16px;">Papelera (${enPapelera.length})</h4>
@@ -1152,6 +1154,16 @@ function abrirFormAdmision(siniestroId){
         <option value="1" ${s.llaves_entregadas?'selected':''}>Sí</option>
         <option value="0" ${!s.llaves_entregadas?'selected':''}>No</option>
       </select></div>
+      <div class="row-flex">
+        <div class="field"><label>¿Requiere dado de seguridad?</label><select id="fad_requiere_dado">
+          <option value="0" ${!s.requiere_dado_seguridad?'selected':''}>No</option>
+          <option value="1" ${s.requiere_dado_seguridad?'selected':''}>Sí</option>
+        </select></div>
+        <div class="field"><label>¿Dado de seguridad colocado?</label><select id="fad_dado_colocado">
+          <option value="0" ${!s.dado_seguridad_colocado?'selected':''}>No</option>
+          <option value="1" ${s.dado_seguridad_colocado?'selected':''}>Sí</option>
+        </select></div>
+      </div>
       <div class="field"><label>Pertenencias del vehículo</label><textarea id="fad_pertenencias">${esc(s.pertenencias||'')}</textarea></div>
       <div class="field"><label>Estado de admisión</label><select id="fad_estado_admision" onchange="document.getElementById('fad_motivo_wrap').style.display=(this.value==='condicionado'||this.value==='no_admitido')?'block':'none'">
         <option value="" ${!s.estado_admision?'selected':''}>Pendiente</option>
@@ -1175,6 +1187,8 @@ async function guardarAdmision(siniestroId){
     kilometraje: document.getElementById('fad_kilometraje').value,
     combustible_nivel: document.getElementById('fad_combustible').value,
     llaves_entregadas: Number(document.getElementById('fad_llaves').value),
+    requiere_dado_seguridad: Number(document.getElementById('fad_requiere_dado').value),
+    dado_seguridad_colocado: Number(document.getElementById('fad_dado_colocado').value),
     pertenencias: document.getElementById('fad_pertenencias').value,
     estado_admision: document.getElementById('fad_estado_admision').value,
     motivo_admision: document.getElementById('fad_motivo_admision').value
@@ -2480,9 +2494,9 @@ async function viewTecnica(){
   const BADGE_REV = { en_revision:'ambar', requiere_desarme:'rojo', revision_terminada:'verde' };
   return `
   <h2>Revisión técnica</h2>
-  <p class="subtle">Expedientes admitidos pendientes de revisión de daños, desarme y evidencia (módulo de Orlando).</p>
-  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Ingreso</th><th>Admisión</th><th>Revisión</th><th>Hallazgos</th><th>Riesgo</th></tr></thead><tbody>
-  ${expedientes.length===0?'<tr><td colspan="8" class="empty">Sin expedientes pendientes de revisión técnica.</td></tr>':expedientes.map(s=>`
+  <p class="subtle">Vehículos ya disponibles para revisión (admisión completa) pendientes de daños, desarme y evidencia (módulo de Orlando).</p>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Ingreso</th><th>Admisión</th><th>Revisión</th><th>Hallazgos</th><th>Riesgo</th><th>Tiempo</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="9" class="empty">Sin expedientes disponibles para revisión técnica.</td></tr>':expedientes.map(s=>`
     <tr>
       <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
       <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
@@ -2492,9 +2506,10 @@ async function viewTecnica(){
       <td><span class="badge ${BADGE_REV[s.estado_revision_tecnica]||'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span></td>
       <td>${s.hallazgos>0?`${s.hallazgos}${s.hallazgos_ocultos>0?` (${s.hallazgos_ocultos} oculto${s.hallazgos_ocultos>1?'s':''})`:''}`:'—'}</td>
       <td>${s.riesgo_seguridad?'<span class="badge rojo">No seguro</span>':'—'}</td>
+      <td>${s.ingreso_tipo==='grua'?`<span class="badge ${s.revision_vencida?'rojo':'ambar'}">${s.revision_vencida?'Vencido (72h)':'Límite '+esc(s.limite_revision_grua||'—')}</span>`:(s.dias_disponible_revision!=null?`${s.dias_disponible_revision} día(s)`:'—')}</td>
     </tr>`).join('')}
   </tbody></table>
-  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Admisión / técnica", para capturar la admisión y los hallazgos.</p>`;
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) disponibles para revisión. Entra a la ficha del expediente, pestaña "Admisión / técnica", para capturar la admisión y los hallazgos. Las grúas tienen un plazo de 72 horas hábiles desde que quedan disponibles.</p>`;
 }
 
 function abrirFormNuevoEvento(siniestroId){
