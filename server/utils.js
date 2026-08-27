@@ -156,6 +156,22 @@ function prepararCorreoPedidoNuevo(db, { pedido, siniestro }){
 // —igual que el backfill de hitos del módulo de Alejandra— cada vez que se consulta la bandeja de correos
 // o el resumen diario, así no se necesita infraestructura de tareas programadas (cron) para operar.
 const ESTATUS_TERMINALES_CORREO = ['Recibido completo','Cancelado','Cerrado'];
+const DISPARADORES_AUTOMATICOS = ['pedido_nuevo','vencimiento_dia1','seguimiento_2dias'];
+
+// Hallazgo de Daniela (26-ago-2026): se acumulaban varios avisos automaticos "pendiente_aprobacion"
+// para el mismo pedido (uno por cada ciclo de vencimiento/seguimiento que pasaba sin que ella lo
+// aprobara o descartara a tiempo), en vez de reemplazar al anterior. Antes de insertar un nuevo aviso
+// automatico para un pedido, se descarta cualquier otro aviso automatico que siga pendiente -- asi solo
+// queda vivo el que corresponde al estado actual. No se borra nada: queda con estado='descartado' y
+// auditado, visible en el historial.
+function descartarPendientesAutomaticosPrevios(db, pedidoId){
+  const previos = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND estado='pendiente_aprobacion' AND disparador IN (${DISPARADORES_AUTOMATICOS.map(()=>'?').join(',')})`).all(pedidoId, ...DISPARADORES_AUTOMATICOS);
+  for(const p of previos){
+    db.prepare(`UPDATE comunicaciones SET estado='descartado' WHERE id=?`).run(p.id);
+    registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id:p.id, accion:'correo_descartado', usuario:null, valor_nuevo:'Sustituido automaticamente por un aviso mas reciente del mismo pedido (correccion de duplicados, 26-ago-2026).' });
+  }
+}
+
 function verificarCorreosPendientes(db){
   const hoy = new Date().toISOString().slice(0,10);
   const pedidos = db.prepare(`SELECT * FROM pedidos WHERE estatus_operativo NOT IN (${ESTATUS_TERMINALES_CORREO.map(()=>'?').join(',')})`).all(...ESTATUS_TERMINALES_CORREO);
@@ -164,13 +180,14 @@ function verificarCorreosPendientes(db){
     const siniestro = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(pedido.siniestro_id);
     if(!siniestro) continue;
 
-    // Por si el pedido se creó antes de esta fase (o el hook no corrió), aseguramos el correo de "pedido nuevo".
+    // Por si el pedido se creo antes de esta fase (o el hook no corrio), aseguramos el correo de "pedido nuevo".
     prepararCorreoPedidoNuevo(db, { pedido, siniestro });
 
-    // Primer día de vencimiento (solo una vez por pedido).
+    // Primer dia de vencimiento (solo una vez por pedido).
     if(pedido.fecha_prevista && pedido.fecha_prevista < hoy){
       const yaVencimiento = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND disparador='vencimiento_dia1'`).get(pedido.id);
       if(!yaVencimiento){
+        descartarPendientesAutomaticosPrevios(db, pedido.id);
         db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
           .run(pedido.id, siniestro.id, null, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, '',
@@ -180,8 +197,11 @@ function verificarCorreosPendientes(db){
       }
     }
 
-    // Seguimiento cada 2 días hábiles mientras no haya respuesta del proveedor.
-    const ultima = db.prepare(`SELECT * FROM comunicaciones WHERE pedido_id=? AND respuesta_texto IS NULL ORDER BY fecha_envio DESC LIMIT 1`).get(pedido.id);
+    // Seguimiento cada 2 dias habiles mientras no haya respuesta del proveedor.
+    // Se calcula sobre el ultimo aviso realmente aprobado/enviado (con respuesta pendiente), no sobre
+    // borradores que Daniela nunca llego a aprobar -- de lo contrario cada visita a la bandeja podia
+    // generar un seguimiento adicional sobre un borrador que ni siquiera se habia mandado.
+    const ultima = db.prepare(`SELECT * FROM comunicaciones WHERE pedido_id=? AND estado IN ('aprobado','enviado') AND respuesta_texto IS NULL ORDER BY fecha_envio DESC LIMIT 1`).get(pedido.id);
     if(ultima){
       const fechaBase = (ultima.fecha_envio || '').slice(0,10);
       if(fechaBase){
@@ -189,6 +209,7 @@ function verificarCorreosPendientes(db){
         if(hoy >= limite){
           const yaSeguimiento = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND disparador='seguimiento_2dias' AND fecha_envio > ?`).get(pedido.id, ultima.fecha_envio);
           if(!yaSeguimiento){
+            descartarPendientesAutomaticosPrevios(db, pedido.id);
             db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
               .run(pedido.id, siniestro.id, ultima.proveedor_id, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, ultima.destinatarios || '',
@@ -200,6 +221,24 @@ function verificarCorreosPendientes(db){
       }
     }
   }
+}
+
+// Limpieza unica, idempotente, de los duplicados ya acumulados en produccion antes de esta correccion
+// (26-ago-2026). Para cada pedido, si hay mas de un aviso automatico pendiente_aprobacion, conserva solo
+// el mas reciente y descarta (no borra) los demas. Se corre una vez al arrancar el servidor, igual que
+// los otros backfills perezosos del proyecto.
+function limpiarDuplicadosCorreosPendientesExistentes(db){
+  const pedidosConVarios = db.prepare(`SELECT pedido_id, COUNT(*) as n FROM comunicaciones WHERE estado='pendiente_aprobacion' AND disparador IN (${DISPARADORES_AUTOMATICOS.map(()=>'?').join(',')}) GROUP BY pedido_id HAVING n > 1`).all(...DISPARADORES_AUTOMATICOS);
+  let total = 0;
+  for(const { pedido_id } of pedidosConVarios){
+    const avisos = db.prepare(`SELECT id FROM comunicaciones WHERE pedido_id=? AND estado='pendiente_aprobacion' AND disparador IN (${DISPARADORES_AUTOMATICOS.map(()=>'?').join(',')}) ORDER BY fecha_envio DESC`).all(pedido_id, ...DISPARADORES_AUTOMATICOS);
+    for(let i=1;i<avisos.length;i++){
+      db.prepare(`UPDATE comunicaciones SET estado='descartado' WHERE id=?`).run(avisos[i].id);
+      registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id:avisos[i].id, accion:'correo_descartado', usuario:null, valor_nuevo:'Limpieza unica de duplicados acumulados antes de la correccion del 26-ago-2026 (se conserva solo el aviso mas reciente por pedido).' });
+      total++;
+    }
+  }
+  if(total > 0) console.log(`Limpieza de correos duplicados: se descartaron ${total} avisos redundantes, conservando el mas reciente por pedido.`);
 }
 
 
@@ -271,5 +310,5 @@ function calcularSemaforo(s){
 
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
-  copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, esDiaHabil, sumarDiasHabiles,
+  copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo };

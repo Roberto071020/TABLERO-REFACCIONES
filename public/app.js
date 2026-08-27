@@ -162,7 +162,7 @@ const TABS = [
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
   {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
   {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
-  {k:'reglas', label:'Reglas', roles:['operativo','admin','jefe']},
+  {k:'reglas', label:'Reglas', roles:['admin','jefe']},
   {k:'respaldos', label:'Respaldos', roles:['admin']}
 ];
 function renderTabs(){
@@ -172,6 +172,13 @@ function renderTabs(){
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
 function goTo(view){ state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
+// Hallazgo de Daniela (26-ago-2026): el menu ocupaba casi toda la pantalla en movil. Se colapsa
+// detras de un boton "Menu" (ver CSS .nav-toggle / nav.tabs.open) y se cierra solo al navegar, porque
+// renderTabs() reconstruye el <nav> desde cero sin la clase "open" en cada render().
+function toggleMenuMovil(){
+  const nav = document.getElementById('mainTabs');
+  if(nav) nav.classList.toggle('open');
+}
 function goSiniestro(id){ state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render(); }
 function goProveedor(id){ state.view='proveedor'; state.proveedorId=id; render(); }
 function setSubtabSiniestro(tab){ state.subtabSiniestro = tab; render(); }
@@ -217,7 +224,7 @@ async function render(){
     else if(state.view==='proveedores') app.innerHTML = await viewProveedores();
     else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
     else if(state.view==='correos') app.innerHTML = await viewCorreos();
-    else if(state.view==='carga') app.innerHTML = viewCargaMasiva();
+    else if(state.view==='carga') app.innerHTML = await viewCargaMasiva();
     else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
     else if(state.view==='expediente') app.innerHTML = await viewExpediente();
     else if(state.view==='valuacion') app.innerHTML = await viewValuacion();

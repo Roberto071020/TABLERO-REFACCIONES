@@ -1920,3 +1920,60 @@ test('GMAIL-2: solo operativo/admin pueden intentar el envío automático; no se
   const descartado = await req('POST', '/api/comunicaciones/' + com.id + '/enviar');
   assert.equal(descartado.status, 400, 'no se puede enviar un correo descartado');
 });
+
+/* ===================== Hallazgo de Daniela en producción (26-ago-2026) =====================
+   Item 1: viewCargaMasiva() es async pero se llamaba sin await -> [object Promise] en pantalla.
+   No es un caso de prueba de API (es puramente de frontend), se corrigió directo en public/app.js.
+
+   Item 6: se acumulaban varios avisos automáticos "pendiente_aprobacion" para el mismo pedido
+   (uno por cada ciclo de vencimiento/seguimiento que pasaba sin aprobarse), llegando a 552 correos
+   para 205 pedidos en producción. Las pruebas de abajo reproducen el escenario exacto que causaba
+   la acumulación y comprueban que ahora solo queda vivo un aviso automático por pedido. */
+
+test('TRIAGE-CORREO-DEDUP-1: un pedido vencido nunca aprobado no genera seguimientos adicionales (antes se acumulaban)', async () => {
+  const db = require('../server/db');
+  const s = (await req('POST', '/api/siniestros', { numero: 'DEDUP-1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'DEDUP-1-PED', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+
+  await req('GET', '/api/comunicaciones/pendientes');
+  let coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
+  assert.equal(coms.length, 1, 'debe crear exactamente un aviso (vencimiento_dia1)');
+  assert.equal(coms[0].disparador, 'vencimiento_dia1');
+  assert.equal(coms[0].estado, 'pendiente_aprobacion');
+
+  // Simula que pasaron 10 días sin que Daniela lo aprobara ni respondiera, y se vuelve a consultar
+  // la bandeja varias veces (como pasaría al abrir la pantalla de Correos pendientes cada día).
+  db.prepare(`UPDATE comunicaciones SET fecha_envio = datetime('now','-10 days') WHERE id = ?`).run(coms[0].id);
+  await req('GET', '/api/comunicaciones/pendientes');
+  await req('GET', '/api/comunicaciones/pendientes');
+  await req('GET', '/api/comunicaciones/pendientes');
+
+  coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
+  assert.equal(coms.length, 1, 'un borrador nunca aprobado no debe disparar seguimientos adicionales (antes generaba uno nuevo por cada ciclo de 2 días)');
+});
+
+test('TRIAGE-CORREO-DEDUP-2: al generarse un nuevo seguimiento automático, el aviso pendiente anterior del mismo pedido queda descartado (no duplicado)', async () => {
+  const db = require('../server/db');
+  const s = (await req('POST', '/api/siniestros', { numero: 'DEDUP-2', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'DEDUP-2-PED', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+
+  await req('GET', '/api/comunicaciones/pendientes');
+  let coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
+  const vencimiento = coms.find(c => c.disparador === 'vencimiento_dia1');
+  assert.ok(vencimiento, 'debe existir el aviso de vencimiento');
+
+  // Esta vez sí se aprueba (como haría Daniela) y se responde el correo, pero el proveedor no contesta
+  // y pasan más de 2 días hábiles: debe generarse el seguimiento y el vencimiento anterior debe quedar
+  // descartado en vez de convivir ambos como "pendiente_aprobacion".
+  await req('PATCH', '/api/comunicaciones/' + vencimiento.id + '/aprobar', { destinatarios: 'proveedor-dedup@ejemplo.mx' });
+  db.prepare(`UPDATE comunicaciones SET fecha_envio = datetime('now','-10 days') WHERE id = ?`).run(vencimiento.id);
+
+  await req('GET', '/api/comunicaciones/pendientes');
+  coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
+  const pendientes = coms.filter(c => c.estado === 'pendiente_aprobacion');
+  assert.equal(pendientes.length, 1, 'solo debe quedar un aviso pendiente_aprobacion por pedido, el más reciente');
+  assert.equal(pendientes[0].disparador, 'seguimiento_2dias');
+
+  const vencimientoActualizado = coms.find(c => c.id === vencimiento.id);
+  assert.equal(vencimientoActualizado.estado, 'aprobado', 'el aviso ya aprobado no se toca, solo se descartan los que seguían pendiente_aprobacion');
+});
