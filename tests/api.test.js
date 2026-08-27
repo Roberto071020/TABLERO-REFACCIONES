@@ -716,7 +716,13 @@ test('REQ-DANIELA-6: dar de alta la primera pieza con proveedor prepara automát
   const propio = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
   assert.ok(propio, 'debe existir un correo automático de pedido nuevo pendiente de aprobación');
   assert.equal(propio.estado, 'pendiente_aprobacion');
-  assert.match(propio.copia, /Jorge Contreras/, 'debe sugerir la copia conocida de Mapfre');
+  // Corrección del 27-ago-2026: ya no se guarda texto de instrucción en copia (antes decía "Copiar a
+  // Jorge Contreras y Edgar..."); Mapfre no tiene direcciones reales configuradas, así que queda vacío.
+  assert.equal(propio.copia, '', 'no debe haber texto de instrucción en copia; sin direcciones reales, queda vacío');
+  assert.equal(propio.destinatarios, 'contacto@proveedorreq6.mx', 'el destinatario debe ser el correo real del proveedor de la pieza pendiente');
+  assert.equal(propio.incompleto, 0);
+  assert.match(propio.cuerpo, /estatus actualizado del pedido REQ6-PED/, 'debe usar la plantilla corregida que pide el estatus con claridad');
+  assert.match(propio.cuerpo, /Defensa delantera/, 'debe listar la pieza pendiente');
 
   // No debe duplicarse si se vuelve a consultar la bandeja.
   const pendientes2 = (await req('GET', '/api/comunicaciones/pendientes')).data;
@@ -726,11 +732,17 @@ test('REQ-DANIELA-6: dar de alta la primera pieza con proveedor prepara automát
 test('REQ-DANIELA-7: un pedido con fecha promesa vencida genera correo automático de vencimiento (día 1)', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'REQ7-SIN', aseguradora: 'Afirme' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'REQ7-PED', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+  const provReq7 = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor REQ7', correo: 'contacto@proveedorreq7.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Salpicadera', proveedor_id: provReq7.id });
 
   const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
   const vencido = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'vencimiento_dia1');
   assert.ok(vencido, 'debe prepararse el correo de vencimiento');
-  assert.match(vencido.copia, /Nancy Monserrat/, 'debe sugerir la copia conocida de Afirme');
+  // Afirme no tiene una dirección real configurada para copia (antes decía "Copiar a Nancy Monserrat...",
+  // texto de instrucción que se quitó el 27-ago-2026); debe quedar vacío, no inventar ni dejar la nota.
+  assert.equal(vencido.copia, '');
+  assert.equal(vencido.destinatarios, 'contacto@proveedorreq7.mx');
+  assert.equal(vencido.incompleto, 0);
 });
 
 test('REQ-DANIELA-8: solo Daniela/admin pueden aprobar o descartar un correo de la bandeja; aprobar exige destinatario', async () => {
@@ -1934,28 +1946,36 @@ test('TRIAGE-CORREO-DEDUP-1: un pedido vencido nunca aprobado no genera seguimie
   const db = require('../server/db');
   const s = (await req('POST', '/api/siniestros', { numero: 'DEDUP-1', aseguradora: 'GNP' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'DEDUP-1-PED', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+  const provDedup1 = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor DEDUP1', correo: 'contacto@proveedordedup1.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro derecho', proveedor_id: provDedup1.id });
 
   await req('GET', '/api/comunicaciones/pendientes');
+  // El "pedido nuevo" y el "vencimiento día 1" se generan en la misma pasada (la fecha ya está vencida);
+  // el segundo descarta al primero por la corrección de duplicados, así que solo debe quedar UNO pendiente.
   let coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
-  assert.equal(coms.length, 1, 'debe crear exactamente un aviso (vencimiento_dia1)');
-  assert.equal(coms[0].disparador, 'vencimiento_dia1');
-  assert.equal(coms[0].estado, 'pendiente_aprobacion');
+  let pendientes = coms.filter(c => c.estado === 'pendiente_aprobacion');
+  assert.equal(pendientes.length, 1, 'debe quedar exactamente un aviso pendiente_aprobacion (vencimiento_dia1)');
+  assert.equal(pendientes[0].disparador, 'vencimiento_dia1');
+  assert.equal(pendientes[0].destinatarios, 'contacto@proveedordedup1.mx');
 
   // Simula que pasaron 10 días sin que Daniela lo aprobara ni respondiera, y se vuelve a consultar
   // la bandeja varias veces (como pasaría al abrir la pantalla de Correos pendientes cada día).
-  db.prepare(`UPDATE comunicaciones SET fecha_envio = datetime('now','-10 days') WHERE id = ?`).run(coms[0].id);
+  db.prepare(`UPDATE comunicaciones SET fecha_envio = datetime('now','-10 days') WHERE id = ?`).run(pendientes[0].id);
   await req('GET', '/api/comunicaciones/pendientes');
   await req('GET', '/api/comunicaciones/pendientes');
   await req('GET', '/api/comunicaciones/pendientes');
 
   coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
-  assert.equal(coms.length, 1, 'un borrador nunca aprobado no debe disparar seguimientos adicionales (antes generaba uno nuevo por cada ciclo de 2 días)');
+  pendientes = coms.filter(c => c.estado === 'pendiente_aprobacion');
+  assert.equal(pendientes.length, 1, 'un borrador nunca aprobado no debe disparar seguimientos adicionales (antes generaba uno nuevo por cada ciclo de 2 días)');
 });
 
 test('TRIAGE-CORREO-DEDUP-2: al generarse un nuevo seguimiento automático, el aviso pendiente anterior del mismo pedido queda descartado (no duplicado)', async () => {
   const db = require('../server/db');
   const s = (await req('POST', '/api/siniestros', { numero: 'DEDUP-2', aseguradora: 'GNP' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'DEDUP-2-PED', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+  const provDedup2 = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor DEDUP2', correo: 'contacto@proveedordedup2.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro izquierdo', proveedor_id: provDedup2.id });
 
   await req('GET', '/api/comunicaciones/pendientes');
   let coms = (await req('GET', '/api/comunicaciones?pedido_id=' + p.id)).data;
@@ -1976,4 +1996,120 @@ test('TRIAGE-CORREO-DEDUP-2: al generarse un nuevo seguimiento automático, el a
 
   const vencimientoActualizado = coms.find(c => c.id === vencimiento.id);
   assert.equal(vencimientoActualizado.estado, 'aprobado', 'el aviso ya aprobado no se toca, solo se descartan los que seguían pendiente_aprobacion');
+});
+
+/* ===================== Corrección de plantilla de correos automáticos (27-ago-2026) =====================
+   Hallazgo de Daniela sobre los 212 borradores en producción: destinatario "correo@proveedor.mx" o vacío,
+   copia con texto de instrucción en vez de direcciones reales, y cuerpo que no pedía la información
+   necesaria con claridad. Las pruebas de abajo cubren la plantilla nueva, la resolución de destinatario,
+   el bloqueo cuando no hay proveedor válido, la exclusión de piezas recibidas/canceladas, y la migración
+   de los borradores ya existentes. */
+
+test('CORREO-PLANTILLA-1: el cuerpo automático usa el texto exacto pedido, con siniestro/pedido/piezas pendientes', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PLANT-1', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PLANT-1-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor PLANT1', correo: 'contacto@proveedorplant1.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre delantero', proveedor_id: prov.id });
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Salpicadera izquierda', proveedor_id: prov.id });
+
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const com = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
+  assert.ok(com);
+  assert.match(com.cuerpo, /¿Nos podrían apoyar confirmando el estatus actualizado del pedido PLANT-1-PED, correspondiente al siniestro PLANT-1,/);
+  assert.match(com.cuerpo, /disponibilidad y fecha estimada de entrega/);
+  assert.match(com.cuerpo, /- Cofre delantero/);
+  assert.match(com.cuerpo, /- Salpicadera izquierda/);
+  assert.match(com.cuerpo, /retraso, faltante o incidencia/);
+  assert.match(com.cuerpo, /nueva fecha compromiso/);
+  assert.match(com.cuerpo, /Daniela Sosa\nRefacciones/);
+  assert.equal(com.destinatarios, 'contacto@proveedorplant1.mx');
+  assert.equal(com.incompleto, 0);
+});
+
+test('CORREO-PLANTILLA-2: sin proveedor con correo válido, el borrador queda incompleto y bloqueado para aprobar', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PLANT-2', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PLANT-2-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const provSinCorreo = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor sin correo PLANT2' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Puerta trasera', proveedor_id: provSinCorreo.id });
+
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const com = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
+  assert.ok(com);
+  assert.equal(com.destinatarios, '', 'nunca debe usarse un correo de ejemplo; queda vacío');
+  assert.equal(com.incompleto, 1);
+
+  const bloqueado = await req('PATCH', `/api/comunicaciones/${com.id}/aprobar`, {});
+  assert.equal(bloqueado.status, 400, 'no debe poder aprobarse mientras no tenga destinatario');
+
+  const conDestinatario = await req('PATCH', `/api/comunicaciones/${com.id}/aprobar`, { destinatarios: 'completado-a-mano@ejemplo.mx' });
+  assert.equal(conDestinatario.status, 200);
+  assert.equal(conDestinatario.data.incompleto, 0, 'al completarlo y aprobarlo, deja de estar marcado como incompleto');
+});
+
+test('CORREO-PLANTILLA-3: las piezas recibidas o canceladas no aparecen en el listado del correo', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PLANT-3', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PLANT-3-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor PLANT3', correo: 'contacto@proveedorplant3.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza pendiente', proveedor_id: prov.id });
+  const recibida = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza ya recibida', proveedor_id: prov.id })).data;
+  await req('PATCH', `/api/piezas/${recibida.id}`, { estatus: 'Recibida físicamente' });
+
+  const pendientes = (await req('GET', '/api/comunicaciones/pendientes')).data;
+  const com = pendientes.find(c => c.pedido_id === p.id && c.disparador === 'pedido_nuevo');
+  assert.ok(com);
+  assert.match(com.cuerpo, /Pieza pendiente/);
+  assert.ok(!com.cuerpo.includes('Pieza ya recibida'), 'no debe listar piezas ya recibidas');
+});
+
+test('CORREO-PLANTILLA-4: la migración corrige un borrador con datos "viejos" (placeholder) sin aprobarlo ni enviarlo', async () => {
+  const db = require('../server/db');
+  const { corregirBorradoresAutomaticosExistentes } = require('../server/utils');
+  const s = (await req('POST', '/api/siniestros', { numero: 'PLANT-4', aseguradora: 'Mapfre' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PLANT-4-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor PLANT4', correo: 'contacto@proveedorplant4.mx' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Facia trasera', proveedor_id: prov.id });
+
+  // Simula un borrador "viejo" tal como estaban los 212 en producción: destinatario placeholder, copia
+  // con texto de instrucción, cuerpo genérico.
+  const info = db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
+    .run(p.id, s.id, null, 'Correo', `SINIESTRO ${s.numero} - PEDIDO ${p.numero}`, '',
+      'Copiar a Jorge Contreras y Edgar (completar sus correos antes de aprobar).',
+      'Damos seguimiento. No hemos recibido respuesta a nuestro mensaje anterior.',
+      'seguimiento_2dias', 'pendiente_aprobacion', 'seguimiento_2dias', null);
+  const idViejo = info.lastInsertRowid;
+
+  corregirBorradoresAutomaticosExistentes(db);
+
+  const corregido = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(idViejo);
+  assert.equal(corregido.estado, 'pendiente_aprobacion', 'sigue pendiente de aprobación, no se aprobó ni se envió');
+  assert.equal(corregido.destinatarios, 'contacto@proveedorplant4.mx');
+  assert.equal(corregido.copia, '', 'Mapfre no tiene direcciones reales; ya no debe llevar texto de instrucción');
+  assert.match(corregido.cuerpo, /Facia trasera/);
+  assert.match(corregido.cuerpo, /estatus actualizado del pedido PLANT-4-PED/);
+  assert.equal(corregido.incompleto, 0);
+
+  // Correr la migración de nuevo no debe duplicar ni romper nada (idempotente).
+  corregirBorradoresAutomaticosExistentes(db);
+  const total = db.prepare('SELECT COUNT(*) n FROM comunicaciones WHERE pedido_id = ?').get(p.id).n;
+  assert.equal(total, 1);
+});
+
+test('CORREO-PLANTILLA-5: la migración descarta (no borra) borradores de pedidos que ya no tienen piezas pendientes', async () => {
+  const db = require('../server/db');
+  const { corregirBorradoresAutomaticosExistentes } = require('../server/utils');
+  const s = (await req('POST', '/api/siniestros', { numero: 'PLANT-5', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PLANT-5-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const prov = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor PLANT5', correo: 'contacto@proveedorplant5.mx' })).data;
+  const pieza = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Ya recibida', proveedor_id: prov.id })).data;
+  await req('PATCH', `/api/piezas/${pieza.id}`, { estatus: 'Recibida físicamente' });
+
+  const info = db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`)
+    .run(p.id, s.id, null, 'Correo', 'x', '', '', 'y', 'vencimiento_dia1', 'pendiente_aprobacion', 'vencimiento_dia1', null);
+  const idViejo = info.lastInsertRowid;
+
+  corregirBorradoresAutomaticosExistentes(db);
+  const corregido = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(idViejo);
+  assert.equal(corregido.estado, 'descartado', 'el pedido ya no tiene piezas pendientes; no debe seguir pidiendo nada (R-05)');
 });

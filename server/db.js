@@ -354,6 +354,13 @@ if(!tieneColumna('comunicaciones', 'enviado_automaticamente_en')){
   db.exec("ALTER TABLE comunicaciones ADD COLUMN enviado_automaticamente_en TEXT;");
 }
 
+// Hallazgo de Daniela (27-ago-2026): marca explicita para los borradores automaticos cuyo destinatario
+// no se pudo resolver a un correo real de proveedor (proveedor sin correo valido, o piezas pendientes
+// con mas de un proveedor distinto). Bloquea la aprobacion hasta que alguien lo complete a mano.
+if(!tieneColumna('comunicaciones', 'incompleto')){
+  db.exec("ALTER TABLE comunicaciones ADD COLUMN incompleto INTEGER NOT NULL DEFAULT 0;");
+}
+
 // 3) Archivo de siniestros a 3 meses de la entrega: no se borra nada, solo se marca y se oculta de vistas diarias.
 if(!tieneColumna('siniestros', 'archivado')){
   db.exec("ALTER TABLE siniestros ADD COLUMN archivado INTEGER NOT NULL DEFAULT 0;");

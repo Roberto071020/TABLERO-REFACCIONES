@@ -146,7 +146,7 @@ router.patch('/:id/aprobar', requireAuth, requireRole('operativo','admin'), (req
   const copia = req.body.copia !== undefined ? req.body.copia : com.copia;
   const asunto = req.body.asunto !== undefined ? req.body.asunto : com.asunto;
   const cuerpo = req.body.cuerpo !== undefined ? req.body.cuerpo : com.cuerpo;
-  db.prepare(`UPDATE comunicaciones SET destinatarios=?, copia=?, asunto=?, cuerpo=?, estado='aprobado', aprobado_por=?, aprobado_en=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE comunicaciones SET destinatarios=?, copia=?, asunto=?, cuerpo=?, estado='aprobado', aprobado_por=?, aprobado_en=datetime('now'), incompleto=0 WHERE id=?`)
     .run(destinatarios, copia, asunto, cuerpo, req.session.user.id, com.id);
   registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id: com.id, accion:'correo_aprobado', usuario:req.session.user,
     valor_nuevo:`Asunto: ${asunto} (disparador: ${com.disparador}, modo borrador/sandbox, no se envía automáticamente)` });
