@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, corregirBorradoresAutomaticosExistentes } = require('../utils');
+const { registrarAuditoria, corregirBorradoresAutomaticosExistentes, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes } = require('../utils');
 const router = express.Router();
 
 /* ===================== Documento de Daniela (25-ago-2026), items 3/4/6 =====================
@@ -232,7 +232,9 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
         : (estatusMapeadoPedido && estatusMapeadoPedido.estatus_pedido) || 'Nuevo';
       const infoPed = db.prepare(`INSERT INTO pedidos (numero,siniestro_id,aseguradora,fecha_creacion,fecha_prevista,estatus_inpart,estatus_operativo,creado_por,creado_por_lote_id)
         VALUES (?,?,?,?,?,?,?,?,?)`)
-        .run(dato.numero_pedido, siniestro.id, dato.aseguradora, dato.fecha_creacion_pedido || new Date().toISOString().slice(0,10),
+        // Hallazgo real (27-ago-2026): Inpart entrega fecha_creacion_pedido en DD/MM/AAAA; se normaliza
+        // a ISO aquí mismo para que la ventana operativa (1-jun-2026) la lea correctamente.
+        .run(dato.numero_pedido, siniestro.id, dato.aseguradora, normalizarFechaISO(dato.fecha_creacion_pedido) || new Date().toISOString().slice(0,10),
              dato.fecha_prevista, dato.estatus_inpart || 'Aguardando confirmación', estatusOp, req.session.user.id, loteId);
       pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(infoPed.lastInsertRowid);
       pedidosCreados++;
@@ -319,6 +321,7 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
   // carga masiva acaba de traer el proveedor/correo real de un pedido con un borrador pendiente,
   // lo recalculamos aqui mismo para no dejarlo obsoleto hasta el proximo despliegue.
   corregirBorradoresAutomaticosExistentes(db);
+  normalizarFechasCreacionPedidosExistentes(db);
 
   res.json({ loteId, ...resumen, omitidos, conflictos_detalle: conflictos });
 });

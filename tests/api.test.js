@@ -2215,3 +2215,53 @@ test('VENTANA-3: la ventana operativa no toca las bandejas de otros roles (Orlan
   const incGeneralesTodas = (await req('GET', '/api/incidencias?estado=abierta&ventana=todas')).data;
   assert.ok(incGeneralesTodas.some(i => i.pedido_numero === 'VENT-3-PED'), 'con ?ventana=todas la pantalla general de incidencias lo sigue mostrando');
 });
+
+/* ===================== Corrección de formato de fecha en carga masiva (27-ago-2026) =====================
+   Hallazgo real durante la verificación de la ventana operativa: 192 de 213 pedidos reales en
+   producción tenían fecha_creacion guardada como "DD/MM/AAAA" (formato tal cual venía del CSV de
+   Inpart) en vez de ISO, y la comparación de texto de la ventana operativa los descartaba por error
+   aunque su fecha real sí estuviera dentro del 1-jun-2026 en adelante. */
+
+test('FECHA-1: normalizarFechaISO convierte DD/MM/AAAA a ISO y deja el ISO y los formatos desconocidos intactos', () => {
+  const { normalizarFechaISO } = require('../server/utils');
+  assert.equal(normalizarFechaISO('02/06/2026'), '2026-06-02');
+  assert.equal(normalizarFechaISO('16/07/2026'), '2026-07-16');
+  assert.equal(normalizarFechaISO('2026-06-01'), '2026-06-01', 'ya viene en ISO, no se toca');
+  assert.equal(normalizarFechaISO(''), '');
+  assert.equal(normalizarFechaISO('no es una fecha'), 'no es una fecha', 'formato desconocido: se deja igual, nunca se inventa una fecha');
+});
+
+test('FECHA-2: la carga masiva guarda fecha_creacion en ISO aunque el CSV traiga DD/MM/AAAA, y ese pedido sí aparece dentro de la ventana operativa', async () => {
+  const csv = [
+    'numero_siniestro,aseguradora,numero_pedido,fecha_creacion_pedido,fecha_prevista',
+    'FECHA2-SIN,GNP,FECHA2-PED,02/06/2026,2026-06-10',
+  ].join('\n');
+  const validado = (await req('POST', '/api/carga-masiva/validar', { csv })).data;
+  await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado.pedidos });
+
+  const siniestro = (await req('GET', '/api/siniestros?q=FECHA2-SIN')).data[0];
+  const pedido = (await req('GET', '/api/pedidos?siniestro_id=' + siniestro.id)).data[0];
+  assert.equal(pedido.fecha_creacion, '2026-06-02', 'se guardó en ISO, no como vino el CSV');
+
+  const listaDefault = (await req('GET', '/api/reportes/lista-maestra')).data;
+  assert.ok(listaDefault.some(f => f.pedido_numero === 'FECHA2-PED'), 'con la fecha ya en ISO, sí aparece dentro de la ventana operativa por default');
+});
+
+test('FECHA-3: la corrección de fechas existentes reescribe en su lugar los pedidos ya guardados en DD/MM/AAAA (sin inventar fechas) y es idempotente', async () => {
+  const db = require('../server/db');
+  const { normalizarFechasCreacionPedidosExistentes } = require('../server/utils');
+  const s = (await req('POST', '/api/siniestros', { numero: 'FECHA3-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'FECHA3-PED', siniestro_id: s.id, fecha_prevista: '2026-06-10' })).data;
+  // Simula un pedido tal como quedaron los 192 reales: fecha_creacion cruda del CSV, sin normalizar.
+  db.prepare('UPDATE pedidos SET fecha_creacion = ? WHERE id = ?').run('03/06/2026', p.id);
+
+  const corregidos = normalizarFechasCreacionPedidosExistentes(db);
+  assert.ok(corregidos >= 1);
+  const pedidoCorregido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(p.id);
+  assert.equal(pedidoCorregido.fecha_creacion, '2026-06-03');
+
+  // Correr de nuevo no debe volver a tocarlo (ya está en ISO) ni romper nada.
+  const segundaVez = normalizarFechasCreacionPedidosExistentes(db);
+  const pedidoTrasSegundaVez = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(p.id);
+  assert.equal(pedidoTrasSegundaVez.fecha_creacion, '2026-06-03', 'idempotente: no cambia lo que ya está bien');
+});

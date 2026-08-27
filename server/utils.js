@@ -130,6 +130,44 @@ const ESTATUS_PIEZA_CERRADOS_CORREO = ['Recibida físicamente','Cancelada'];
 // producción, calidad, entrega) NO se tocan: siguen viendo el expediente completo sin este corte, porque
 // ahí sí importa el historial real del vehículo sin importar cuándo se creó su pedido de refacciones.
 const VENTANA_OPERATIVA_DESDE = '2026-06-01';
+
+// Hallazgo real durante la verificación de la ventana operativa (27-ago-2026): la carga masiva
+// guardaba "fecha_creacion_pedido" TAL CUAL venía del CSV de Inpart, sin normalizar a ISO. La
+// mayoría de los pedidos reales llegaron en formato DD/MM/AAAA (ej. "02/06/2026"), y una comparación
+// de texto contra '2026-06-01' los descartaba por error aunque su fecha real SÍ estuviera dentro de
+// la ventana (192 de 213 pedidos en producción tenían este problema). fecha_prevista nunca tuvo este
+// problema porque la carga masiva ya la validaba en formato ISO antes de aceptar el archivo (ISO_FECHA
+// en cargaMasiva.js); fecha_creacion_pedido no tenía esa misma validación.
+function normalizarFechaISO(valor){
+  const v = String(valor||'').trim();
+  if(!v) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; // ya viene en ISO
+  const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); // DD/MM/AAAA (formato real observado en producción)
+  if(m){
+    const [, d, mo, y] = m;
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  return v; // formato desconocido: se deja igual en vez de inventar una fecha
+}
+
+// Corrección de los datos ya importados con el problema de arriba: recorre los pedidos cuya
+// fecha_creacion NO está en formato ISO y la reescribe (nunca inventa una fecha nueva, solo
+// reordena/normaliza el mismo valor). Idempotente -- correr de nuevo no cambia nada ya corregido.
+function normalizarFechasCreacionPedidosExistentes(db){
+  const pedidos = db.prepare(`SELECT id, numero, fecha_creacion FROM pedidos WHERE fecha_creacion IS NOT NULL AND fecha_creacion != '' AND fecha_creacion NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`).all();
+  let corregidos = 0;
+  for(const p of pedidos){
+    const nueva = normalizarFechaISO(p.fecha_creacion);
+    if(nueva && nueva !== p.fecha_creacion && /^\d{4}-\d{2}-\d{2}$/.test(nueva)){
+      db.prepare('UPDATE pedidos SET fecha_creacion = ? WHERE id = ?').run(nueva, p.id);
+      registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id:p.id, accion:'fecha_creacion_normalizada', campo:'fecha_creacion',
+        valor_anterior:p.fecha_creacion, valor_nuevo:nueva, usuario:null });
+      corregidos++;
+    }
+  }
+  if(corregidos > 0) console.log(`Normalización de fechas de creación de pedido: ${corregidos} corregida(s) a formato ISO.`);
+  return corregidos;
+}
 // ?ventana=todas en cualquiera de esos endpoints regresa al comportamiento sin corte (para auditoría /
 // soporte), igual que ya existe ?archivado=all para lo archivado.
 function aplicaVentanaOperativa(query){
@@ -390,4 +428,4 @@ module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditar
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
-  VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa };
+  VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes };
