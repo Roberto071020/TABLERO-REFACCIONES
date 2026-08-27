@@ -5,7 +5,12 @@ const { requireAuth } = require('../auth');
 const { registrarAuditoria } = require('../utils');
 const router = express.Router();
 
-const ESTADOS = ['pendiente','generado','revisado','enviado','no_aplica'];
+// Propuesta de Alejandra (27-ago-2026, "SEGUIMIENTO TABLERO ALE.docx"): estados más específicos que
+// distinguen "no se ha hecho" de "está detenido esperando algo puntual". Se agregan sin quitar los
+// que ya usaba el flujo de mensajes al cliente (generado/revisado/enviado).
+const ESTADOS = ['pendiente','en_complemento','esperando_autorizacion','en_proceso','generado','revisado','autorizado','completado','enviado','bloqueado','no_aplica'];
+// Estos dos requieren explicar "qué se está esperando" o "por qué está detenido" (queda en el campo detalle).
+const ESTADOS_CON_DETALLE = ['en_complemento','bloqueado'];
 
 // Aprovisiona (una sola vez) las filas de siniestro_hitos para un expediente, a partir del catálogo activo.
 // Así, expedientes creados antes de esta fase quedan cubiertos automáticamente la primera vez que se consultan.
@@ -49,10 +54,15 @@ router.get('/:id', requireAuth, (req, res)=>{
 router.patch('/:id', requireAuth, (req, res)=>{
   const anterior = db.prepare('SELECT * FROM siniestro_hitos WHERE id = ?').get(req.params.id);
   if(!anterior) return res.status(404).json({ error:'Hito no encontrado.' });
-  const { estado, motivo_no_aplica, mensaje } = req.body;
+  const { estado, motivo_no_aplica, mensaje, detalle, cubre_deducible } = req.body;
   if(!estado || !ESTADOS.includes(estado)) return res.status(400).json({ error:'Estado de hito inválido.' });
   if(estado === 'no_aplica' && (!motivo_no_aplica || !String(motivo_no_aplica).trim())){
     return res.status(400).json({ error:'Para marcar un hito como "no aplica" debes indicar el motivo.' });
+  }
+  if(ESTADOS_CON_DETALLE.includes(estado) && (!detalle || !String(detalle).trim())){
+    return res.status(400).json({ error: estado === 'en_complemento'
+      ? 'Para marcar el hito "en complemento" debes indicar qué documento o refacción falta.'
+      : 'Para marcar el hito "bloqueado" debes indicar el motivo específico.' });
   }
   if(estado === 'enviado' && (!mensaje || !String(mensaje).trim())){
     return res.status(400).json({ error:'Para marcar un hito como "enviado" debes registrar el mensaje que se envió al cliente (queda en la bitácora).' });
@@ -67,8 +77,22 @@ router.patch('/:id', requireAuth, (req, res)=>{
     eventoClienteId = evento.lastInsertRowid;
   }
 
-  db.prepare(`UPDATE siniestro_hitos SET estado=?, motivo_no_aplica=?, fecha_estado=datetime('now'), responsable_id=?, evento_cliente_id=?, actualizado_en=datetime('now') WHERE id=?`)
-    .run(estado, estado==='no_aplica' ? String(motivo_no_aplica).trim() : null, req.session.user.id, eventoClienteId, req.params.id);
+  db.prepare(`UPDATE siniestro_hitos SET estado=?, motivo_no_aplica=?, detalle=?, fecha_estado=datetime('now'), responsable_id=?, evento_cliente_id=?, actualizado_en=datetime('now') WHERE id=?`)
+    .run(estado, estado==='no_aplica' ? String(motivo_no_aplica).trim() : null,
+      ESTADOS_CON_DETALLE.includes(estado) ? String(detalle).trim() : null, req.session.user.id, eventoClienteId, req.params.id);
+
+  // Propuesta de Alejandra: en el hito de "Entrega" se pregunta si el siniestro cubre deducible. Es un
+  // flag de cobertura (Sí/No), distinto del monto de siniestros.deducible que ya existía. Solo se
+  // guarda si mandan una respuesta explícita (true/false); no se pisa lo ya contestado con "no vino en el body".
+  if(cubre_deducible !== undefined){
+    const catalogoDelHito = db.prepare('SELECT clave FROM catalogo_hitos WHERE id=?').get(anterior.hito_id);
+    if(catalogoDelHito && catalogoDelHito.clave === 'entrega'){
+      db.prepare("UPDATE siniestros SET cubre_deducible=?, actualizado_en=datetime('now') WHERE id=?")
+        .run(cubre_deducible ? 1 : 0, anterior.siniestro_id);
+      registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: anterior.siniestro_id, accion:'edicion', campo:'cubre_deducible',
+        valor_nuevo: cubre_deducible ? 'Sí' : 'No', usuario: req.session.user });
+    }
+  }
 
   registrarAuditoria(db, { entidad_tipo:'siniestro_hito', entidad_id: req.params.id, accion:'edicion', campo:'estado',
     valor_anterior: anterior.estado, valor_nuevo: estado, usuario: req.session.user });

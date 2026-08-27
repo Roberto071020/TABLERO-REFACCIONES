@@ -2317,3 +2317,109 @@ test('GNP-1: un pedido GNP importado por carga masiva (formato de fecha real DD/
   assert.match(com.cuerpo, /estatus actualizado del pedido 1139278-CTRL, correspondiente al siniestro 0185278777A-CTRL/);
   assert.match(com.cuerpo, /- Facia delantera/);
 });
+
+/* ===================== Propuesta de Alejandra: nuevos estados de hitos + "Pendientes de hoy" (27-ago-2026) =====================
+   Documento "SEGUIMIENTO TABLERO ALE.docx": estados más específicos por hito (en_complemento,
+   esperando_autorizacion, en_proceso, autorizado, completado, bloqueado), pregunta de cobertura de
+   deducible en el hito de entrega, y la pantalla "Pendientes de hoy" (rojo/ámbar/verde) sobre datos
+   reales ya existentes en el sistema. */
+
+test('ALE-1: los nuevos estados de hito funcionan; "en_complemento" y "bloqueado" exigen detalle y se guarda tal cual', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALE1-SIN', aseguradora: 'GNP', cliente_nombre: 'X', cliente_telefono: '1', cliente_correo: 'x@x.com' })).data;
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const revision = hitos.find(h => h.clave === 'revision');
+
+  const sinDetalle = await req('PATCH', '/api/hitos/' + revision.id, { estado: 'en_complemento' });
+  assert.equal(sinDetalle.status, 400);
+  const conDetalle = await req('PATCH', '/api/hitos/' + revision.id, { estado: 'en_complemento', detalle: 'Falta la factura del cristal delantero.' });
+  assert.equal(conDetalle.status, 200);
+  assert.equal(conDetalle.data.estado, 'en_complemento');
+  assert.equal(conDetalle.data.detalle, 'Falta la factura del cristal delantero.');
+
+  const sinDetalleBloqueo = await req('PATCH', '/api/hitos/' + revision.id, { estado: 'bloqueado' });
+  assert.equal(sinDetalleBloqueo.status, 400);
+  const conDetalleBloqueo = await req('PATCH', '/api/hitos/' + revision.id, { estado: 'bloqueado', detalle: 'El cliente no ha entregado la tarjeta de circulación.' });
+  assert.equal(conDetalleBloqueo.status, 200);
+  assert.equal(conDetalleBloqueo.data.detalle, 'El cliente no ha entregado la tarjeta de circulación.');
+
+  // Los estados nuevos "simples" (sin exigir nada extra) también deben aceptarse.
+  for(const estado of ['esperando_autorizacion','en_proceso','autorizado','completado']){
+    const r = await req('PATCH', '/api/hitos/' + revision.id, { estado });
+    assert.equal(r.status, 200, `el estado "${estado}" debe aceptarse`);
+    assert.equal(r.data.estado, estado);
+  }
+});
+
+test('ALE-2: el hito de "Entrega" pregunta si cubre deducible (Sí/No), se guarda en el siniestro y no se sobrescribe si no se manda respuesta', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALE2-SIN', aseguradora: 'GNP', cliente_nombre: 'Y', cliente_telefono: '2', cliente_correo: 'y@y.com' })).data;
+  assert.equal(s.cubre_deducible, null, 'todavía no se ha preguntado');
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const entrega = hitos.find(h => h.clave === 'entrega');
+
+  await req('PATCH', '/api/hitos/' + entrega.id, { estado: 'en_proceso', cubre_deducible: true });
+  const siniestroConSi = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(siniestroConSi.cubre_deducible, 1);
+
+  // Un PATCH posterior de otro hito distinto (sin mandar cubre_deducible) no debe tocar la respuesta ya dada.
+  const recepcion = hitos.find(h => h.clave === 'recepcion');
+  await req('PATCH', '/api/hitos/' + recepcion.id, { estado: 'en_proceso' });
+  const siniestroDespues = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(siniestroDespues.cubre_deducible, 1, 'no se borra por actualizar un hito distinto');
+
+  // Marcar "cubre_deducible" en un hito que NO es "entrega" no debe tocar el campo del siniestro.
+  const s2 = (await req('POST', '/api/siniestros', { numero: 'ALE2-SIN-2', aseguradora: 'GNP', cliente_nombre: 'Z', cliente_telefono: '3', cliente_correo: 'z@z.com' })).data;
+  const hitos2 = (await req('GET', '/api/hitos?siniestro_id=' + s2.id)).data;
+  const recepcion2 = hitos2.find(h => h.clave === 'recepcion');
+  await req('PATCH', '/api/hitos/' + recepcion2.id, { estado: 'en_proceso', cubre_deducible: true });
+  const s2Despues = (await req('GET', '/api/siniestros/' + s2.id)).data;
+  assert.equal(s2Despues.cubre_deducible, null, 'la pregunta solo aplica al hito de entrega');
+});
+
+test('ALE-3: "Pendientes de hoy" clasifica correctamente en rojo/ámbar/verde usando los campos reales ya existentes', async () => {
+  // ROJO: complemento pendiente de decisión.
+  const sRojo1 = (await req('POST', '/api/siniestros', { numero: 'ALE3-ROJO-COMP', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/complementos', { siniestro_id: sRojo1.id, causa: 'Pieza oculta dañada detectada al desarmar.' });
+
+  // ROJO: expediente listo para valuación pero autorización aún sin enviar.
+  const sRojo2 = (await req('POST', '/api/siniestros', { numero: 'ALE3-ROJO-AUT', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sRojo2.id, { estado_expediente: 'listo_para_valuacion' });
+
+  // ROJO: cita de entrega lista, requiere confirmarse con el cliente.
+  const sRojo3 = (await req('POST', '/api/siniestros', { numero: 'ALE3-ROJO-CITA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sRojo3.id, { estado_entrega: 'listo' });
+
+  // AMARILLO: esperando respuesta de la aseguradora.
+  const sAmb1 = (await req('POST', '/api/siniestros', { numero: 'ALE3-AMB-ASEG', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sAmb1.id, { estado_autorizacion: 'en_autorizacion' });
+
+  // AMARILLO: esperando respuesta del cliente (último evento fue saliente).
+  const sAmb2 = (await req('POST', '/api/siniestros', { numero: 'ALE3-AMB-CLIENTE', aseguradora: 'GNP', cliente_nombre: 'C', cliente_telefono: '9', cliente_correo: 'c@c.com' })).data;
+  await req('POST', '/api/eventos-cliente', { siniestro_id: sAmb2.id, direccion: 'saliente', canal: 'WhatsApp', mensaje: 'Le confirmamos el avance.' });
+
+  // VERDE: en pintura.
+  const sVerde1 = (await req('POST', '/api/siniestros', { numero: 'ALE3-VERDE-PINTURA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sVerde1.id, { estado_produccion: 'pintura' });
+
+  // VERDE: cita de entrega ya confirmada (etapa siguiente a "listo").
+  const sVerde2 = (await req('POST', '/api/siniestros', { numero: 'ALE3-VERDE-CITA', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sVerde2.id, { estado_entrega: 'cita_confirmada' });
+
+  const p = (await req('GET', '/api/reportes/pendientes-hoy')).data;
+
+  assert.ok(p.rojo.complementosPendientes.some(c => c.siniestro_numero === 'ALE3-ROJO-COMP'));
+  assert.ok(p.rojo.autorizacionesPendientes.some(x => x.numero === 'ALE3-ROJO-AUT'));
+  assert.ok(p.rojo.citasQueRequierenConfirmacion.some(x => x.numero === 'ALE3-ROJO-CITA'));
+  assert.ok(!p.verde.listoParaEntrega.some(x => x.numero === 'ALE3-ROJO-CITA'), '"listo" (rojo, falta confirmar) no debe aparecer también como "listo para entrega" (verde)');
+
+  assert.ok(p.amarillo.esperandoAseguradora.some(x => x.numero === 'ALE3-AMB-ASEG'));
+  assert.ok(p.amarillo.esperandoRespuestaCliente.some(x => x.numero === 'ALE3-AMB-CLIENTE'));
+
+  assert.ok(p.verde.enPintura.some(x => x.numero === 'ALE3-VERDE-PINTURA'));
+  assert.ok(p.verde.listoParaEntrega.some(x => x.numero === 'ALE3-VERDE-CITA'));
+
+  assert.equal(typeof p.rojo.total, 'number');
+  assert.equal(typeof p.amarillo.total, 'number');
+  assert.equal(typeof p.verde.total, 'number');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

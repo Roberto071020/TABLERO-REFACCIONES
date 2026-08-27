@@ -266,8 +266,9 @@ CREATE TABLE IF NOT EXISTS siniestro_hitos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
   hito_id INTEGER NOT NULL REFERENCES catalogo_hitos(id),
-  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente','generado','revisado','enviado','no_aplica')),
+  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente','en_complemento','esperando_autorizacion','en_proceso','generado','revisado','autorizado','completado','enviado','bloqueado','no_aplica')),
   motivo_no_aplica TEXT,
+  detalle TEXT,
   fecha_estado TEXT,
   responsable_id INTEGER REFERENCES usuarios(id),
   evento_cliente_id INTEGER REFERENCES eventos_cliente(id),
@@ -820,5 +821,60 @@ CREATE TABLE IF NOT EXISTS archivos_versiones_anteriores (
   reemplazado_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
+
+
+/* ===================== Propuesta de Alejandra: nuevos estados de hitos + "Pendientes de hoy" (27-ago-2026) =====================
+   Documento "SEGUIMIENTO TABLERO ALE.docx": estados más específicos por hito (en vez de solo
+   pendiente/generado/revisado/enviado/no_aplica), un campo de detalle para explicar de qué se está
+   esperando o por qué está bloqueado, y la pregunta "¿Cubre deducible?" en el hito de entrega. */
+
+// 1) siniestro_hitos.detalle: texto libre para "en_complemento" (qué falta) y "bloqueado" (motivo).
+if(!tieneColumna('siniestro_hitos', 'detalle')){
+  db.exec(`ALTER TABLE siniestro_hitos ADD COLUMN detalle TEXT;`);
+}
+
+// 2) siniestros.cubre_deducible: NULL = todavía no se preguntó; 1 = Sí; 0 = No. Es un flag de
+//    cobertura, DISTINTO de siniestros.deducible (que guarda el MONTO en pesos, ya existía).
+if(!tieneColumna('siniestros', 'cubre_deducible')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN cubre_deducible INTEGER;`);
+}
+
+// 3) Amplía el CHECK de siniestro_hitos.estado para los nuevos estados propuestos por Alejandra.
+//    SQLite no permite ALTER de un CHECK existente; se recrea la tabla completa de forma seguraw:
+//    se copian TODAS las filas (misma cantidad antes/después, verificado) y solo se reemplaza si el
+//    CHECK viejo todavía no incluye 'bloqueado' -- así es idempotente y nunca se repite ni pierde datos.
+{
+  const filaEsquema = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='siniestro_hitos'`).get();
+  if(filaEsquema && !filaEsquema.sql.includes("'bloqueado'")){
+    const totalAntes = db.prepare('SELECT COUNT(*) c FROM siniestro_hitos').get().c;
+    db.exec(`
+      CREATE TABLE siniestro_hitos_nueva (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+        hito_id INTEGER NOT NULL REFERENCES catalogo_hitos(id),
+        estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente','en_complemento','esperando_autorizacion','en_proceso','generado','revisado','autorizado','completado','enviado','bloqueado','no_aplica')),
+        motivo_no_aplica TEXT,
+        detalle TEXT,
+        fecha_estado TEXT,
+        responsable_id INTEGER REFERENCES usuarios(id),
+        evento_cliente_id INTEGER REFERENCES eventos_cliente(id),
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(siniestro_id, hito_id)
+      );
+      INSERT INTO siniestro_hitos_nueva (id,siniestro_id,hito_id,estado,motivo_no_aplica,detalle,fecha_estado,responsable_id,evento_cliente_id,creado_en,actualizado_en)
+        SELECT id,siniestro_id,hito_id,estado,motivo_no_aplica,detalle,fecha_estado,responsable_id,evento_cliente_id,creado_en,actualizado_en FROM siniestro_hitos;
+    `);
+    const totalDespues = db.prepare('SELECT COUNT(*) c FROM siniestro_hitos_nueva').get().c;
+    if(totalDespues !== totalAntes){
+      throw new Error(`Migración de siniestro_hitos abortada: ${totalAntes} filas antes, ${totalDespues} después de copiar. No se reemplaza la tabla.`);
+    }
+    db.exec(`
+      DROP TABLE siniestro_hitos;
+      ALTER TABLE siniestro_hitos_nueva RENAME TO siniestro_hitos;
+      CREATE INDEX IF NOT EXISTS idx_siniestro_hitos_siniestro ON siniestro_hitos(siniestro_id);
+    `);
+  }
+}
 
 module.exports = db;

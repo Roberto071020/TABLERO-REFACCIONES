@@ -357,4 +357,74 @@ router.get('/panorama-beto', requireAuth, (req, res)=>{
   res.json(out);
 });
 
+/* ===================== Propuesta de Alejandra: pantalla "Pendientes de hoy" (27-ago-2026) =====================
+   Documento "SEGUIMIENTO TABLERO ALE.docx". Tres secciones sobre datos YA existentes (nada se
+   inventa): rojo = necesita una acción hoy, amarillo = en espera de un tercero (informativo), verde
+   = avanzando por su etapa de producción real (estado_produccion / estado_entrega, los mismos campos
+   que ya usa Beto). No aplica la ventana operativa del 1-jun-2026 de refacciones: este panorama cubre
+   TODO el expediente (admisión a entrega), no solo pedidos de InPart. */
+router.get('/pendientes-hoy', requireAuth, (req, res)=>{
+  archivarSiniestrosVencidos(db);
+
+  // ROJO — requieren atención hoy.
+  const complementosPendientes = db.prepare(`
+    SELECT c.id, c.causa, c.fecha, s.id as siniestro_id, s.numero as siniestro_numero, s.vehiculo, s.placas
+    FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
+    WHERE c.decision = 'pendiente' ORDER BY c.creado_en ASC`).all();
+  const autorizacionesPendientes = db.prepare(`
+    SELECT id, numero, vehiculo, placas, aseguradora FROM siniestros
+    WHERE archivado = 0 AND estado_expediente = 'listo_para_valuacion' AND (estado_autorizacion IS NULL OR estado_autorizacion = '')
+    ORDER BY actualizado_en ASC`).all();
+  const refaccionesRecibidas = db.prepare(`
+    SELECT t.id, t.descripcion, t.fecha_limite, s.id as siniestro_id, s.numero as siniestro_numero, s.vehiculo, s.placas
+    FROM tareas t JOIN siniestros s ON s.id = t.siniestro_id
+    WHERE t.disparador = 'refacciones_completas' AND t.estado IN ('pendiente','en_proceso') ORDER BY t.creado_en ASC`).all();
+  const clientesQueNecesitanAviso = db.prepare(`
+    SELECT sh.id, ch.titulo as hito_titulo, s.id as siniestro_id, s.numero as siniestro_numero, s.vehiculo, s.placas
+    FROM siniestro_hitos sh JOIN catalogo_hitos ch ON ch.id = sh.hito_id JOIN siniestros s ON s.id = sh.siniestro_id
+    WHERE sh.estado = 'generado' AND s.archivado = 0 ORDER BY sh.actualizado_en ASC`).all();
+  const citasQueRequierenConfirmacion = db.prepare(`
+    SELECT id, numero, vehiculo, placas, fecha_entrega_prevista FROM siniestros
+    WHERE archivado = 0 AND estado_entrega = 'listo' ORDER BY fecha_entrega_prevista ASC`).all();
+
+  // AMARILLO — en espera de un tercero (informativo, no requiere acción todavía).
+  const esperandoAseguradora = db.prepare(`
+    SELECT id, numero, vehiculo, placas, aseguradora, estado_autorizacion FROM siniestros
+    WHERE archivado = 0 AND estado_autorizacion IN ('en_autorizacion','por_aclarar') ORDER BY actualizado_en ASC`).all();
+  const esperandoRefacciones = db.prepare(`
+    SELECT DISTINCT s.id, s.numero, s.vehiculo, s.placas FROM siniestros s JOIN pedidos p ON p.siniestro_id = s.id
+    WHERE s.archivado = 0 AND s.requiere_refacciones = 'si' AND p.estatus_operativo NOT IN ('Recibido completo','Cancelado','Cerrado')
+    ORDER BY s.numero`).all();
+  const esperandoAutorizacionComplemento = db.prepare(`
+    SELECT c.id, c.causa, s.id as siniestro_id, s.numero as siniestro_numero, s.vehiculo, s.placas
+    FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
+    WHERE c.estado = 'en_autorizacion' ORDER BY c.actualizado_en ASC`).all();
+  const esperandoRespuestaCliente = db.prepare(`
+    SELECT s.id, s.numero, s.vehiculo, s.placas FROM siniestros s
+    WHERE s.archivado = 0 AND s.estatus_general != 'Cerrado'
+      AND (SELECT ec.direccion FROM eventos_cliente ec WHERE ec.siniestro_id = s.id ORDER BY ec.creado_en DESC LIMIT 1) = 'saliente'
+    ORDER BY s.numero`).all();
+
+  // VERDE — avanzando (misma etapa real de producción/entrega que ya usa Beto).
+  const enHojalateria = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'en_laminado' ORDER BY numero`).all();
+  const enPintura = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'pintura' ORDER BY numero`).all();
+  const enArmado = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'armado' ORDER BY numero`).all();
+  const listoParaEntrega = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_entrega = 'cita_confirmada' ORDER BY numero`).all();
+
+  res.json({
+    rojo: {
+      complementosPendientes, autorizacionesPendientes, refaccionesRecibidas, clientesQueNecesitanAviso, citasQueRequierenConfirmacion,
+      total: complementosPendientes.length + autorizacionesPendientes.length + refaccionesRecibidas.length + clientesQueNecesitanAviso.length + citasQueRequierenConfirmacion.length
+    },
+    amarillo: {
+      esperandoAseguradora, esperandoRefacciones, esperandoAutorizacionComplemento, esperandoRespuestaCliente,
+      total: esperandoAseguradora.length + esperandoRefacciones.length + esperandoAutorizacionComplemento.length + esperandoRespuestaCliente.length
+    },
+    verde: {
+      enHojalateria, enPintura, enArmado, listoParaEntrega,
+      total: enHojalateria.length + enPintura.length + enArmado.length + listoParaEntrega.length
+    }
+  });
+});
+
 module.exports = router;

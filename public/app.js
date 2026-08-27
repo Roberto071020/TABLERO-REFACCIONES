@@ -151,6 +151,7 @@ function renderSemaforo(sem){
 const TABS = [
   {k:'inicio', label:'Inicio'},
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
+  {k:'pendientes-hoy', label:'Pendientes de hoy', roles:['atencion_cliente','admin','jefe']},
   {k:'kanban', label:'Kanban'},
   {k:'incidencias', label:'Incidencias'},
   {k:'correos', label:'Correos pendientes', roles:['operativo','admin']},
@@ -218,6 +219,7 @@ async function render(){
   try{
     if(state.view==='inicio') app.innerHTML = await viewInicio();
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
+    else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
     else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
     else if(state.view==='lista') app.innerHTML = await viewLista();
@@ -693,8 +695,13 @@ async function viewSiniestro(id){
     const hitos = await api('GET','/api/hitos?siniestro_id='+id);
     const mensajesIa = await api('GET','/api/mensajes-ia?siniestro_id='+id);
     const ESTADOS_TAREA = {pendiente:'ambar', en_proceso:'azul', completada:'verde', cancelada:'gris'};
-    const ESTADOS_HITO = {pendiente:'gris', generado:'ambar', revisado:'azul', enviado:'verde', no_aplica:'gris'};
-    const LABEL_HITO = {pendiente:'Pendiente', generado:'Generado', revisado:'Revisado', enviado:'Enviado', no_aplica:'No aplica'};
+    // Propuesta de Alejandra (27-ago-2026): estados más específicos para distinguir "no se ha hecho"
+    // de "está detenido esperando algo puntual".
+    const ESTADOS_HITO = {pendiente:'gris', en_complemento:'rojo', esperando_autorizacion:'ambar', en_proceso:'azul',
+      generado:'ambar', revisado:'azul', autorizado:'azul', completado:'verde', enviado:'verde', bloqueado:'rojo', no_aplica:'gris'};
+    const LABEL_HITO = {pendiente:'Pendiente', en_complemento:'En complemento', esperando_autorizacion:'Esperando autorización',
+      en_proceso:'En proceso', generado:'Generado', revisado:'Revisado', autorizado:'Autorizado', completado:'Completado',
+      enviado:'Enviado', bloqueado:'Bloqueado', no_aplica:'No aplica'};
     const ESTADOS_IA = {generado:'ambar', aprobado:'azul', enviado:'verde'};
     body = `
     <h3>Hitos del expediente</h3>
@@ -704,7 +711,7 @@ async function viewSiniestro(id){
       <td>${h.orden}</td>
       <td>${esc(h.titulo)}${h.condicional?' <span class="badge gris">condicional</span>':''}</td>
       <td><span class="badge ${ESTADOS_HITO[h.estado]||'gris'}">${LABEL_HITO[h.estado]||h.estado}</span></td>
-      <td class="subtle">${h.estado==='no_aplica'?esc(h.motivo_no_aplica||''):(h.fecha_estado?esc(h.fecha_estado):'')}</td>
+      <td class="subtle">${h.estado==='no_aplica'?esc(h.motivo_no_aplica||''):(['en_complemento','bloqueado'].includes(h.estado)?esc(h.detalle||''):(h.fecha_estado?esc(h.fecha_estado):''))}</td>
       <td>
         ${!['enviado'].includes(h.estado) || h.condicional ? `<button class="btn small secondary" onclick="abrirFormHito(${h.id})">Actualizar</button>` : ''}
         <button class="btn small ghost" onclick="abrirFormIA(${id}, ${h.hito_id})">Preparar con IA</button>
@@ -2336,6 +2343,49 @@ async function viewClientes(){
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
+/* ===================== VISTA: PENDIENTES DE HOY (propuesta de Alejandra, 27-ago-2026) ===================== */
+async function viewPendientesHoy(){
+  const p = await api('GET','/api/reportes/pendientes-hoy');
+  const fila = (numero, vehiculo, placas, extra) => `
+    <div class="ph-item"><span class="link" onclick="goSiniestro(FILA_ID)">${esc(numero)}</span> · ${esc(vehiculo||'')} ${esc(placas||'')}${extra?` · ${extra}`:''}</div>`;
+  const seccionRojo = `
+    <h4>Complementos pendientes (${p.rojo.complementosPendientes.length})</h4>
+    ${p.rojo.complementosPendientes.length===0?'<div class="empty">Ninguno.</div>':p.rojo.complementosPendientes.map(c=>fila(c.siniestro_numero, c.vehiculo, c.placas, esc(c.causa)).replace('FILA_ID', c.siniestro_id)).join('')}
+    <h4>Autorizaciones pendientes de enviar (${p.rojo.autorizacionesPendientes.length})</h4>
+    ${p.rojo.autorizacionesPendientes.length===0?'<div class="empty">Ninguna.</div>':p.rojo.autorizacionesPendientes.map(s=>fila(s.numero, s.vehiculo, s.placas, esc(s.aseguradora)).replace('FILA_ID', s.id)).join('')}
+    <h4>Refacciones recibidas, avisar al cliente (${p.rojo.refaccionesRecibidas.length})</h4>
+    ${p.rojo.refaccionesRecibidas.length===0?'<div class="empty">Ninguna.</div>':p.rojo.refaccionesRecibidas.map(t=>fila(t.siniestro_numero, t.vehiculo, t.placas).replace('FILA_ID', t.siniestro_id)).join('')}
+    <h4>Clientes que necesitan aviso (${p.rojo.clientesQueNecesitanAviso.length})</h4>
+    ${p.rojo.clientesQueNecesitanAviso.length===0?'<div class="empty">Ninguno.</div>':p.rojo.clientesQueNecesitanAviso.map(h=>fila(h.siniestro_numero, h.vehiculo, h.placas, esc(h.hito_titulo)).replace('FILA_ID', h.siniestro_id)).join('')}
+    <h4>Citas que requieren confirmación (${p.rojo.citasQueRequierenConfirmacion.length})</h4>
+    ${p.rojo.citasQueRequierenConfirmacion.length===0?'<div class="empty">Ninguna.</div>':p.rojo.citasQueRequierenConfirmacion.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}`;
+  const seccionAmarillo = `
+    <h4>Esperando aseguradora (${p.amarillo.esperandoAseguradora.length})</h4>
+    ${p.amarillo.esperandoAseguradora.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoAseguradora.map(s=>fila(s.numero, s.vehiculo, s.placas, esc(s.aseguradora)).replace('FILA_ID', s.id)).join('')}
+    <h4>Esperando refacciones (${p.amarillo.esperandoRefacciones.length})</h4>
+    ${p.amarillo.esperandoRefacciones.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoRefacciones.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>Esperando autorización de complemento (${p.amarillo.esperandoAutorizacionComplemento.length})</h4>
+    ${p.amarillo.esperandoAutorizacionComplemento.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoAutorizacionComplemento.map(c=>fila(c.siniestro_numero, c.vehiculo, c.placas, esc(c.causa)).replace('FILA_ID', c.siniestro_id)).join('')}
+    <h4>Esperando respuesta del cliente (${p.amarillo.esperandoRespuestaCliente.length})</h4>
+    ${p.amarillo.esperandoRespuestaCliente.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoRespuestaCliente.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}`;
+  const seccionVerde = `
+    <h4>En hojalatería (${p.verde.enHojalateria.length})</h4>
+    ${p.verde.enHojalateria.length===0?'<div class="empty">Ninguno.</div>':p.verde.enHojalateria.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>En pintura (${p.verde.enPintura.length})</h4>
+    ${p.verde.enPintura.length===0?'<div class="empty">Ninguno.</div>':p.verde.enPintura.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>En armado (${p.verde.enArmado.length})</h4>
+    ${p.verde.enArmado.length===0?'<div class="empty">Ninguno.</div>':p.verde.enArmado.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>Listo para entrega (${p.verde.listoParaEntrega.length})</h4>
+    ${p.verde.listoParaEntrega.length===0?'<div class="empty">Ninguno.</div>':p.verde.listoParaEntrega.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}`;
+  return `
+  <h2>Pendientes de hoy</h2>
+  <p class="subtle">Panorama diario para no tener que revisar siniestro por siniestro. Rojo = necesita una acción hoy. Ámbar = en espera de un tercero. Verde = avanzando en producción.</p>
+  <div class="ph-grid">
+    <div class="ph-col ph-rojo"><h3>Requieren atención (${p.rojo.total})</h3>${seccionRojo}</div>
+    <div class="ph-col ph-ambar"><h3>En espera (${p.amarillo.total})</h3>${seccionAmarillo}</div>
+    <div class="ph-col ph-verde"><h3>Avanzando (${p.verde.total})</h3>${seccionVerde}</div>
+  </div>`;
+}
 /* ===================== VISTA: CALIDAD / ENTREGA ===================== */
 async function viewCalidad(){
   const expedientes = await api('GET','/api/reportes/bandeja-calidad');
@@ -2496,28 +2546,52 @@ async function marcarTareaCompletada(id){
 }
 async function abrirFormHito(id){
   const h = await api('GET','/api/hitos/'+id);
+  const s = h.clave==='entrega' ? await api('GET','/api/siniestros/'+h.siniestro_id) : null;
+  const CON_DETALLE = ['en_complemento','bloqueado'];
   showModal(`
     <h3>Actualizar hito: ${esc(h.titulo)}</h3>
     <p class="subtle">${esc(h.hito_descripcion||'')}</p>
-    <div class="field"><label>Nuevo estado</label><select id="fh_estado" onchange="document.getElementById('fh_motivo_wrap').style.display=this.value==='no_aplica'?'block':'none';document.getElementById('fh_mensaje_wrap').style.display=this.value==='enviado'?'block':'none';">
+    <div class="field"><label>Nuevo estado</label><select id="fh_estado" onchange="
+      document.getElementById('fh_motivo_wrap').style.display=this.value==='no_aplica'?'block':'none';
+      document.getElementById('fh_mensaje_wrap').style.display=this.value==='enviado'?'block':'none';
+      document.getElementById('fh_detalle_wrap').style.display=${JSON.stringify(CON_DETALLE)}.includes(this.value)?'block':'none';
+      document.getElementById('fh_detalle_label').textContent=this.value==='en_complemento'?'¿Qué documento o refacción falta?':'¿Cuál es el motivo específico del bloqueo?';
+    ">
       <option value="pendiente" ${h.estado==='pendiente'?'selected':''}>Pendiente</option>
+      <option value="en_complemento" ${h.estado==='en_complemento'?'selected':''}>En complemento (falta documento/refacción)</option>
+      <option value="esperando_autorizacion" ${h.estado==='esperando_autorizacion'?'selected':''}>Esperando autorización</option>
+      <option value="en_proceso" ${h.estado==='en_proceso'?'selected':''}>En proceso</option>
       <option value="generado" ${h.estado==='generado'?'selected':''}>Generado (borrador listo)</option>
       <option value="revisado" ${h.estado==='revisado'?'selected':''}>Revisado</option>
+      <option value="autorizado" ${h.estado==='autorizado'?'selected':''}>Autorizado</option>
+      <option value="completado" ${h.estado==='completado'?'selected':''}>Completado</option>
       <option value="enviado" ${h.estado==='enviado'?'selected':''}>Enviado al cliente</option>
+      <option value="bloqueado" ${h.estado==='bloqueado'?'selected':''}>Bloqueado</option>
       ${h.condicional?`<option value="no_aplica" ${h.estado==='no_aplica'?'selected':''}>No aplica</option>`:''}
     </select></div>
     <div class="field" id="fh_motivo_wrap" style="display:${h.estado==='no_aplica'?'block':'none'}"><label>Motivo de "no aplica"</label><input id="fh_motivo" value="${esc(h.motivo_no_aplica||'')}"></div>
+    <div class="field" id="fh_detalle_wrap" style="display:${CON_DETALLE.includes(h.estado)?'block':'none'}"><label id="fh_detalle_label">${h.estado==='bloqueado'?'¿Cuál es el motivo específico del bloqueo?':'¿Qué documento o refacción falta?'}</label><input id="fh_detalle" value="${esc(h.detalle||'')}"></div>
     <div class="field" id="fh_mensaje_wrap" style="display:none"><label>Mensaje enviado al cliente (queda registrado en la bitácora)</label><textarea id="fh_mensaje"></textarea></div>
+    ${h.clave==='entrega' && s && s.cubre_deducible==null ? `
+    <div class="field"><label>¿El siniestro cubre deducible?</label><select id="fh_deducible">
+      <option value="">Sin responder todavía</option>
+      <option value="1">Sí</option>
+      <option value="0">No</option>
+    </select></div>` : ''}
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarHito(${id})">Guardar</button></div>
   `);
 }
 async function guardarHito(id){
   const estado = document.getElementById('fh_estado').value;
+  const fhDeducible = document.getElementById('fh_deducible');
+  const payload = {
+    estado, motivo_no_aplica: document.getElementById('fh_motivo').value,
+    detalle: document.getElementById('fh_detalle') ? document.getElementById('fh_detalle').value : '',
+    mensaje: document.getElementById('fh_mensaje') ? document.getElementById('fh_mensaje').value : ''
+  };
+  if(fhDeducible && fhDeducible.value !== '') payload.cubre_deducible = fhDeducible.value === '1';
   try{
-    await api('PATCH','/api/hitos/'+id, {
-      estado, motivo_no_aplica: document.getElementById('fh_motivo').value,
-      mensaje: document.getElementById('fh_mensaje') ? document.getElementById('fh_mensaje').value : ''
-    });
+    await api('PATCH','/api/hitos/'+id, payload);
     toast('Hito actualizado.', 'success');
     closeModal(); render();
   }catch(e){}

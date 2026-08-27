@@ -119,3 +119,18 @@ footer.note{font-size:11.5px;color:var(--gris-500);text-align:center;padding:20p
   nav.tabs.open{display:flex;}
   nav.tabs button{width:100%;text-align:left;}
 }
+
+/* Propuesta de Alejandra: pantalla "Pendientes de hoy" (27-ago-2026), 3 columnas de color. */
+.ph-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px;}
+.ph-col{border-radius:10px;padding:12px 14px;border:1px solid var(--border);}
+.ph-col h3{margin:0 0 8px;font-size:15px;}
+.ph-col h4{margin:12px 0 4px;font-size:12px;text-transform:uppercase;color:var(--gris-500);}
+.ph-col h4:first-of-type{margin-top:4px;}
+.ph-rojo{background:#fef2f2;border-color:#fecaca;}
+.ph-ambar{background:#fffbeb;border-color:#fde68a;}
+.ph-verde{background:#f0fdf4;border-color:#bbf7d0;}
+.ph-item{font-size:13px;padding:4px 0;border-bottom:1px dashed var(--border);}
+.ph-item:last-child{border-bottom:none;}
+@media (max-width:900px){
+  .ph-grid{grid-template-columns:1fr;}
+}
