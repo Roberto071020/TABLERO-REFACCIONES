@@ -1041,6 +1041,17 @@ if(!tieneColumna('complementos', 'decision_en')){
   db.exec(`ALTER TABLE complementos ADD COLUMN decision_en TEXT;`);
 }
 
+// MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): tipo de reparación lo captura Orlando durante su
+// revisión técnica (no Alejandra en el alta), con 6 valores fijos del taller.
+if(!tieneColumna('siniestros', 'tipo_reparacion')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN tipo_reparacion TEXT CHECK(tipo_reparacion IS NULL OR tipo_reparacion IN ('TRADICIONAL','EXPRES','AUTO_SURTIDO','BDEO','PDD','CE'));`);
+}
+// Cliente particular (sin aseguradora): al marcarlo, el frontend fija aseguradora='Particular' y
+// deshabilita número de siniestro / orden de admisión (no aplican sin aseguradora de por medio).
+if(!tieneColumna('siniestros', 'es_particular')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN es_particular INTEGER DEFAULT 0;`);
+}
+
 module.exports = db;
 
 

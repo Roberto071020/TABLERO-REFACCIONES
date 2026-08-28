@@ -3064,3 +3064,96 @@ test('ROBERTO-5: el resumen incluye el panorama de valuación de Roberto', async
   ['rbListosParaValuar','rbEnEsperaEvaluacion','rbComplementosAbiertos','rbFaltaAvisoProveedores','rbListosExpedienteCompleto','rbTiempoPromedioValuarDias','rbTiempoPromedioComplementoOrlandoDias']
     .forEach(k => assert.ok(k in r.data, 'falta el campo ' + k + ' en el resumen'));
 });
+
+// ===================== MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026) =====================
+
+test('ALEJ-1: tipo_reparacion solo lo captura el grupo de revisión técnica (Orlando/admin/jefe), no atencion_cliente, y se normaliza "" a NULL', async () => {
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALEJ1-SIN', aseguradora: 'GNP' })).data;
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { tipo_reparacion: 'AUTO_SURTIDO' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.tipo_reparacion, 'AUTO_SURTIDO');
+  // "Sin definir" desde el select manda '' -- debe guardarse como NULL, no romper el CHECK de la columna.
+  const r2 = await req('PATCH', '/api/siniestros/' + s.id, { tipo_reparacion: '' });
+  assert.equal(r2.status, 200);
+  assert.equal(r2.data.tipo_reparacion, null);
+
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba ALEJ1', 'atencion.alej1.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.alej1.test@serviciocristian.mx', password: 'x' });
+  const noPermitido = await req('PATCH', '/api/siniestros/' + s.id, { tipo_reparacion: 'BDEO' });
+  assert.equal(noPermitido.status, 403, 'atencion_cliente no debe poder tocar tipo_reparacion (es de revisión técnica)');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ALEJ-2: es_particular se puede fijar al crear el expediente y solo el grupo de admisión lo edita después', async () => {
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba ALEJ2', 'atencion.alej2.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.alej2.test@serviciocristian.mx', password: 'x' });
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'ALEJ2-SIN', aseguradora: 'Particular', es_particular: 1,
+    cliente_nombre: 'Cliente Particular', cliente_telefono: '555-0002', cliente_correo: 'particular@cliente.com'
+  })).data;
+  assert.equal(s.es_particular, 1);
+  assert.equal(s.aseguradora, 'Particular');
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const noPermitido = await req('PATCH', '/api/siniestros/' + s.id, { es_particular: 0 });
+  assert.equal(noPermitido.status, 403, 'orlando no pertenece al grupo de admisión');
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { es_particular: 0 });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.es_particular, 0);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ALEJ-3: ingreso por grúa -- admision_faltantes va bajando conforme se suben orden de admisión e inventario como archivo', async () => {
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba ALEJ3', 'atencion.alej3.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.alej3.test@serviciocristian.mx', password: 'x' });
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'ALEJ3-SIN', aseguradora: 'GNP', ingreso_tipo: 'grua', llaves_entregadas: 1,
+    cliente_nombre: 'Cliente Grúa', cliente_telefono: '555-0003', cliente_correo: 'grua@cliente.com'
+  })).data;
+  const antes = await req('GET', '/api/siniestros/' + s.id);
+  assert.deepEqual(antes.data.admision_faltantes.sort(), ['Inventario físico/fotográfico','Orden de admisión'].sort());
+
+  const fd1 = new FormData();
+  fd1.append('archivo', new Blob(['pdf'], { type: 'application/pdf' }), 'orden.pdf');
+  fd1.append('entidad_tipo', 'siniestro'); fd1.append('entidad_id', String(s.id)); fd1.append('tipo', 'orden_admision');
+  const res1 = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd1 });
+  assert.equal(res1.status, 201);
+
+  const medio = await req('GET', '/api/siniestros/' + s.id);
+  assert.deepEqual(medio.data.admision_faltantes, ['Inventario físico/fotográfico']);
+
+  const fd2 = new FormData();
+  fd2.append('archivo', new Blob(['pdf'], { type: 'application/pdf' }), 'inventario.pdf');
+  fd2.append('entidad_tipo', 'siniestro'); fd2.append('entidad_id', String(s.id)); fd2.append('tipo', 'inventario_fisico');
+  const res2 = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd2 });
+  assert.equal(res2.status, 201);
+
+  const despues = await req('GET', '/api/siniestros/' + s.id);
+  assert.deepEqual(despues.data.admision_faltantes, [], 'con llaves, orden de admisión e inventario ya subidos, no debe faltar nada');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ALEJ-4: bandeja-clientes expone tipo_reparacion y estado_entrega para los filtros y el ocultamiento de entregados de la vista Clientes', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALEJ4-SIN', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { tipo_reparacion: 'PDD' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const lista = (await req('GET', '/api/reportes/bandeja-clientes')).data;
+  const fila = lista.find(x => x.numero === 'ALEJ4-SIN');
+  assert.ok(fila, 'el expediente debe aparecer en bandeja-clientes');
+  assert.equal(fila.tipo_reparacion, 'PDD');
+  assert.ok('estado_entrega' in fila);
+});
+

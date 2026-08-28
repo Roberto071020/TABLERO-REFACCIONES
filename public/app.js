@@ -1504,6 +1504,15 @@ function abrirFormRevisionTecnica(siniestroId){
         <option value="1" ${s.riesgo_seguridad?'selected':''}>Sí</option>
       </select></div>
       <div id="frt_riesgo_motivo_wrap" class="field" style="display:${s.riesgo_seguridad?'block':'none'}"><label>Motivo técnico del riesgo</label><textarea id="frt_riesgo_motivo">${esc(s.riesgo_seguridad_motivo||'')}</textarea></div>
+      <div class="field"><label>Tipo reparación</label><select id="frt_tipo_reparacion">
+        <option value="" ${!s.tipo_reparacion?'selected':''}>Sin definir</option>
+        <option value="TRADICIONAL" ${s.tipo_reparacion==='TRADICIONAL'?'selected':''}>Tradicional</option>
+        <option value="EXPRES" ${s.tipo_reparacion==='EXPRES'?'selected':''}>Exprés</option>
+        <option value="AUTO_SURTIDO" ${s.tipo_reparacion==='AUTO_SURTIDO'?'selected':''}>Auto surtido</option>
+        <option value="BDEO" ${s.tipo_reparacion==='BDEO'?'selected':''}>BDEO</option>
+        <option value="PDD" ${s.tipo_reparacion==='PDD'?'selected':''}>PDD</option>
+        <option value="CE" ${s.tipo_reparacion==='CE'?'selected':''}>CE</option>
+      </select></div>
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarRevisionTecnica(${siniestroId})">Guardar</button></div>
     `);
   });
@@ -1513,7 +1522,8 @@ async function guardarRevisionTecnica(siniestroId){
     estado_revision_tecnica: document.getElementById('frt_estado').value,
     estado_evidencia: document.getElementById('frt_evidencia').value,
     riesgo_seguridad: Number(document.getElementById('frt_riesgo').value),
-    riesgo_seguridad_motivo: document.getElementById('frt_riesgo_motivo').value
+    riesgo_seguridad_motivo: document.getElementById('frt_riesgo_motivo').value,
+    tipo_reparacion: document.getElementById('frt_tipo_reparacion').value
   };
   try{
     await api('PATCH','/api/siniestros/'+siniestroId, payload);
@@ -2734,19 +2744,26 @@ async function aprobarCorreo(pedidoId, idx, proveedorId){
 /* ===================== ALTA / EDICIÓN CON VALIDACIÓN DE DUPLICADOS ===================== */
 function openNuevoMenu(){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
+  // MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): a Alejandra (atencion_cliente, no admin) solo le
+  // corresponde dar de alta expedientes desde recepción -- Siniestro/Pedido/Proveedor son de otros roles.
+  const soloExpediente = currentUser && currentUser.rol==='atencion_cliente';
   showModal(`
     <h3>¿Qué deseas registrar?</h3>
     <div style="display:flex;flex-direction:column;gap:8px;">
       ${esAtencionCliente?`<button class="btn secondary" onclick="closeModal();formNuevoExpediente()">Expediente (recepción de cliente)</button>`:''}
+      ${soloExpediente?'':`
       <button class="btn secondary" onclick="closeModal();formNuevoSiniestro()">Siniestro</button>
       <button class="btn secondary" onclick="closeModal();formNuevoPedido()">Pedido (ligado a un siniestro)</button>
-      <button class="btn secondary" onclick="closeModal();formNuevoProveedor()">Proveedor</button>
+      <button class="btn secondary" onclick="closeModal();formNuevoProveedor()">Proveedor</button>`}
     </div>
     <div class="modal-actions"><button class="btn ghost" onclick="closeModal()">Cancelar</button></div>
   `);
 }
 
 /* ===================== MÓDULO ALEJANDRA: expediente desde recepción ===================== */
+/* MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): particular sin aseguradora, deducible/llaves/dado
+   de seguridad capturados desde el alta, orden de admisión e inventario como archivo (ya no texto), y
+   validación de los 4 requisitos de grúa antes de permitir guardar (mismos 4 que exige la revisión de Orlando). */
 function formNuevoExpediente(){
   showModal(`
     <h3>Nuevo expediente (recepción de cliente)</h3>
@@ -2756,26 +2773,49 @@ function formNuevoExpediente(){
     </div>
     <div class="field"><label>Correo *</label><input id="fx_cliente_correo" type="email"></div>
     <div class="field"><label>Notas de contacto (opcional, libre)</label><textarea id="fx_cliente_notas"></textarea></div>
+    <div class="field"><label><input type="checkbox" id="fx_particular" onchange="toggleFxParticular()"> Cliente particular (sin aseguradora)</label></div>
     <div class="row-flex">
       <div class="field"><label>Número de siniestro</label><input id="fx_numero" placeholder="Si aún no lo tienes, usa un folio propio"></div>
-      <div class="field"><label>Orden de admisión</label><input id="fx_orden_admision"></div>
+      <div class="field"><label>Aseguradora</label><select id="fx_aseguradora">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
     </div>
     <div class="row-flex">
-      <div class="field"><label>Aseguradora</label><select id="fx_aseguradora">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
-      <div class="field"><label>Canal de origen</label><select id="fx_canal"><option>WhatsApp</option><option>Teléfono</option><option>Presencial</option><option>Otro</option></select></div>
+      <div class="field"><label>Tipo comunicación</label><select id="fx_canal"><option>WhatsApp</option><option>Teléfono</option></select></div>
+      <div class="field"><label>Ubicación</label><select id="fx_ubicacion"><option value="Piso">Piso</option><option value="Tránsito">Tránsito</option></select></div>
     </div>
     <div class="row-flex">
       <div class="field"><label>Vehículo</label><input id="fx_vehiculo" placeholder="Marca / modelo (si ya se sabe)"></div>
       <div class="field"><label>Placas</label><input id="fx_placas"></div>
     </div>
-    <div class="field"><label>¿Requiere cambio de refacciones?</label><select id="fx_requiere_refacciones">
-      <option value="por_definir">Por definir (aún no se sabe)</option>
-      <option value="si">Sí</option>
-      <option value="no">No</option>
-    </select></div>
+    <div class="row-flex">
+      <div class="field"><label>Tipo de ingreso</label><select id="fx_ingreso_tipo" onchange="toggleFxGrua()">
+        <option value="">Sin definir</option>
+        <option value="circulando">Circulando</option>
+        <option value="grua">Grúa</option>
+      </select></div>
+      <div class="field" style="display:flex;flex-direction:column;gap:6px;justify-content:center;">
+        <label><input type="checkbox" id="fx_deducible"> Cubre deducible</label>
+        <label><input type="checkbox" id="fx_llaves"> Llaves entregadas</label>
+        <label><input type="checkbox" id="fx_dado"> Dado de seguridad colocado</label>
+      </div>
+    </div>
+    <div class="row-flex">
+      <div class="field" id="fx_orden_admision_wrap"><label>Orden de admisión (archivo)</label><input type="file" id="fx_orden_admision_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
+      <div class="field"><label>Inventario físico/fotográfico (archivo)</label><input type="file" id="fx_inventario_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
+    </div>
+    <p class="subtle" id="fx_grua_hint" style="display:none;">Para ingreso por grúa se requiere antes de guardar: llaves entregadas, inventario y, si no es particular, orden de admisión.</p>
     <p class="subtle">* Campos obligatorios. El resto se puede completar después conforme avance el caso.</p>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarExpediente()">Guardar</button></div>
   `);
+}
+function toggleFxParticular(){
+  const p = document.getElementById('fx_particular').checked;
+  document.getElementById('fx_numero').disabled = p;
+  document.getElementById('fx_aseguradora').disabled = p;
+  document.getElementById('fx_orden_admision_file').disabled = p;
+}
+function toggleFxGrua(){
+  const esGrua = document.getElementById('fx_ingreso_tipo').value === 'grua';
+  document.getElementById('fx_grua_hint').style.display = esGrua ? 'block' : 'none';
 }
 async function guardarExpediente(){
   const cliente_nombre = document.getElementById('fx_cliente_nombre').value.trim();
@@ -2784,45 +2824,121 @@ async function guardarExpediente(){
   if(!cliente_nombre || !cliente_telefono || !cliente_correo){
     toast('Nombre, teléfono y correo del cliente son obligatorios.', 'error'); return;
   }
-  let numero = document.getElementById('fx_numero').value.trim();
+  const particular = document.getElementById('fx_particular').checked;
+  const ingresoTipo = document.getElementById('fx_ingreso_tipo').value;
+  const llaves = document.getElementById('fx_llaves').checked;
+  const ordenFile = document.getElementById('fx_orden_admision_file').files[0];
+  const inventarioFile = document.getElementById('fx_inventario_file').files[0];
+  if(ingresoTipo === 'grua'){
+    const faltan = [];
+    if(!llaves) faltan.push('Llaves entregadas');
+    if(!inventarioFile) faltan.push('Inventario físico/fotográfico');
+    if(!particular && !ordenFile) faltan.push('Orden de admisión');
+    if(faltan.length){
+      toast('Para ingreso por grúa falta: ' + faltan.join(', ') + '.', 'error');
+      return;
+    }
+  }
+  let numero = particular ? '' : document.getElementById('fx_numero').value.trim();
   if(!numero) numero = 'EXP-' + Date.now().toString(36).toUpperCase();
+  let s;
   try{
-    const s = await api('POST','/api/siniestros', {
+    s = await api('POST','/api/siniestros', {
       numero, cliente_nombre, cliente_telefono, cliente_correo,
       cliente_notas: document.getElementById('fx_cliente_notas').value,
-      orden_admision: document.getElementById('fx_orden_admision').value,
-      aseguradora: document.getElementById('fx_aseguradora').value,
+      aseguradora: particular ? 'Particular' : document.getElementById('fx_aseguradora').value,
       canal_origen: document.getElementById('fx_canal').value,
+      ubicacion: document.getElementById('fx_ubicacion').value,
       vehiculo: document.getElementById('fx_vehiculo').value,
       placas: document.getElementById('fx_placas').value,
-      requiere_refacciones: document.getElementById('fx_requiere_refacciones').value
+      ingreso_tipo: ingresoTipo,
+      cubre_deducible: document.getElementById('fx_deducible').checked ? 1 : 0,
+      llaves_entregadas: llaves ? 1 : 0,
+      dado_seguridad_colocado: document.getElementById('fx_dado').checked ? 1 : 0,
+      es_particular: particular ? 1 : 0
     });
-    toast('Expediente registrado.', 'success');
-    closeModal(); goSiniestro(s.id);
   }catch(e){
     if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.id); }
+    return;
+  }
+  if(ordenFile && !particular) await subirArchivoDirecto(ordenFile, s.id, 'orden_admision');
+  if(inventarioFile) await subirArchivoDirecto(inventarioFile, s.id, 'inventario_fisico');
+  toast('Expediente registrado.', 'success');
+  closeModal(); goSiniestro(s.id);
+}
+async function subirArchivoDirecto(file, siniestroId, tipo){
+  const fd = new FormData();
+  fd.append('archivo', file);
+  fd.append('entidad_tipo','siniestro');
+  fd.append('entidad_id', siniestroId);
+  fd.append('tipo', tipo);
+  const res = await fetch('/api/archivos', { method:'POST', body: fd });
+  if(!res.ok){
+    const data = await res.json().catch(()=>({}));
+    toast(data.error || 'El expediente se creó, pero un archivo no se pudo subir. Súbelo desde su ficha.', 'error');
   }
 }
-async function viewClientes(){
-  const expedientes = await api('GET','/api/reportes/bandeja-clientes');
-  const REQ_LABEL = { si:'Sí', no:'No', por_definir:'Por definir' };
-  return `
-  <h2>Clientes — expedientes</h2>
-  <p class="subtle">Todos los expedientes desde recepción, tengan o no cambio de refacciones. Da clic en un renglón para abrir su ficha completa.</p>
-  <table><thead><tr><th>Siniestro</th><th>Cliente</th><th>Teléfono</th><th>Aseguradora</th><th>Etapa</th><th>¿Refacciones?</th><th>Sin actualizar</th><th>Tareas</th></tr></thead><tbody>
-  ${expedientes.length===0?'<tr><td colspan="8" class="empty">Sin expedientes registrados todavía.</td></tr>':expedientes.map(s=>`
-    <tr>
+/* MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): columnas renombradas (Nombre/Proceso/Tipo reparación),
+   filtros por columna, entregados ocultos por default (se pueden mostrar con la casilla), y la columna
+   de Tareas ahora es clickable (lleva a la ficha del expediente, igual que el resto del renglón). */
+const TIPO_REP_LABEL_CLIENTES = { TRADICIONAL:'Tradicional', EXPRES:'Exprés', AUTO_SURTIDO:'Auto surtido', BDEO:'BDEO', PDD:'PDD', CE:'CE' };
+const ENTREGADOS_ESTADOS = ['entregado','entregado_con_observacion'];
+let _clientesCache = [];
+function clientesFiltrados(){
+  const texto = (document.getElementById('cf_texto')?.value || '').trim().toLowerCase();
+  const aseguradora = document.getElementById('cf_aseguradora')?.value || '';
+  const tipoRep = document.getElementById('cf_tipo_reparacion')?.value || '';
+  const mostrarEntregados = document.getElementById('cf_mostrar_entregados')?.checked || false;
+  return _clientesCache.filter(s=>{
+    if(!mostrarEntregados && ENTREGADOS_ESTADOS.includes(s.estado_entrega)) return false;
+    if(aseguradora && s.aseguradora !== aseguradora) return false;
+    if(tipoRep && s.tipo_reparacion !== tipoRep) return false;
+    if(texto && !((s.numero||'')+' '+(s.cliente_nombre||'')).toLowerCase().includes(texto)) return false;
+    return true;
+  });
+}
+function filaClienteHtml(s){
+  return `<tr>
       <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
       <td>${esc(s.cliente_nombre||'—')}</td>
       <td>${esc(s.cliente_telefono||'—')}</td>
       <td>${esc(s.aseguradora)}</td>
       <td>${esc(s.etapa_actual||'—')}</td>
-      <td><span class="badge ${s.requiere_refacciones==='si'?'azul':s.requiere_refacciones==='no'?'gris':'ambar'}">${REQ_LABEL[s.requiere_refacciones]||'Por definir'}</span></td>
+      <td>${s.tipo_reparacion?`<span class="badge azul">${TIPO_REP_LABEL_CLIENTES[s.tipo_reparacion]||esc(s.tipo_reparacion)}</span>`:'<span class="badge gris">Sin definir</span>'}</td>
       <td>${s.dias_sin_actualizacion!=null ? `<span class="badge ${s.dias_sin_actualizacion>=2?'rojo':'gris'}">${s.dias_sin_actualizacion} día(s)</span>` : '—'}</td>
-      <td>${s.tareas_pendientes>0 ? `<span class="badge ${s.tareas_vencidas>0?'rojo':'azul'}">${s.tareas_pendientes} pend.${s.tareas_vencidas>0?` (${s.tareas_vencidas} vencida${s.tareas_vencidas>1?'s':''})`:''}</span>` : '—'}</td>
-    </tr>`).join('')}
-  </tbody></table>
-  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
+      <td>${s.tareas_pendientes>0 ? `<span class="badge link ${s.tareas_vencidas>0?'rojo':'azul'}" onclick="goSiniestro(${s.id})" style="cursor:pointer;">${s.tareas_pendientes} pend.${s.tareas_vencidas>0?` (${s.tareas_vencidas} vencida${s.tareas_vencidas>1?'s':''})`:''}</span>` : '—'}</td>
+    </tr>`;
+}
+function renderTablaClientes(){
+  const filtrados = clientesFiltrados();
+  const tbody = document.getElementById('clientesTbody');
+  if(tbody) tbody.innerHTML = filtrados.length===0?'<tr><td colspan="8" class="empty">Sin expedientes que coincidan.</td></tr>':filtrados.map(filaClienteHtml).join('');
+  const resumen = document.getElementById('clientesResumen');
+  if(resumen) resumen.textContent = filtrados.length + ' expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.';
+}
+async function viewClientes(){
+  _clientesCache = await api('GET','/api/reportes/bandeja-clientes');
+  const filtrados = _clientesCache.filter(s=>!ENTREGADOS_ESTADOS.includes(s.estado_entrega));
+  return `
+  <h2>Clientes — expedientes</h2>
+  <p class="subtle">Todos los expedientes desde recepción. Da clic en un renglón para abrir su ficha completa.</p>
+  <div class="row-flex" style="flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+    <input id="cf_texto" placeholder="Buscar nombre o siniestro..." oninput="renderTablaClientes()" style="min-width:200px;">
+    <select id="cf_aseguradora" onchange="renderTablaClientes()"><option value="">Todas las aseguradoras</option>${ASEGURADORAS.concat(['Particular']).map(a=>`<option>${esc(a)}</option>`).join('')}</select>
+    <select id="cf_tipo_reparacion" onchange="renderTablaClientes()">
+      <option value="">Todo tipo reparación</option>
+      <option value="TRADICIONAL">Tradicional</option>
+      <option value="EXPRES">Exprés</option>
+      <option value="AUTO_SURTIDO">Auto surtido</option>
+      <option value="BDEO">BDEO</option>
+      <option value="PDD">PDD</option>
+      <option value="CE">CE</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="cf_mostrar_entregados" onchange="renderTablaClientes()"> Mostrar entregados</label>
+  </div>
+  <table><thead><tr><th>Siniestro</th><th>Nombre</th><th>Teléfono</th><th>Aseguradora</th><th>Proceso</th><th>Tipo reparación</th><th>Sin actualizar</th><th>Tareas</th></tr></thead>
+  <tbody id="clientesTbody">${filtrados.length===0?'<tr><td colspan="8" class="empty">Sin expedientes registrados todavía.</td></tr>':filtrados.map(filaClienteHtml).join('')}</tbody></table>
+  <p class="subtle" style="margin-top:8px;" id="clientesResumen">${filtrados.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
 }
 /* ===================== VISTA: PENDIENTES DE HOY (propuesta de Alejandra, 27-ago-2026) ===================== */
 async function viewPendientesHoy(){

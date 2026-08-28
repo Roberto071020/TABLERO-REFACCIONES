@@ -18,9 +18,9 @@ function calcularCompleto(row){
 // que "solo lectura" sea real y no solo una convención de la interfaz. Los campos generales del expediente
 // (vehículo, placas, cliente, notas, etc.) siguen abiertos a cualquier usuario autenticado, como siempre.
 const GRUPOS_CAMPOS_RESTRINGIDOS = [
-  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro','requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado'],
+  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro','requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado','es_particular'],
     roles:['atencion_cliente','vanessa','admin','jefe'], nombre:'admisión' },
-  { campos:['estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia'],
+  { campos:['estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia','tipo_reparacion'],
     roles:['orlando','admin','jefe'], nombre:'revisión técnica' },
   { campos:['fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'],
     roles:['orlando','vanessa','admin','jefe'], nombre:'captura y envío' },
@@ -92,16 +92,21 @@ router.post('/', requireAuth, (req, res)=>{
   const piezasIniciales = b.piezas_autorizadas_cambio!==undefined && b.piezas_autorizadas_cambio!=='' ? Number(b.piezas_autorizadas_cambio) : null;
   const rutaInicial = calcularRutaAseguradora(b.aseguradora, piezasIniciales);
   const sistemaValuacionInicial = (b.sistema_valuacion && String(b.sistema_valuacion).trim()) || sistemaValuacionSugerido(b.aseguradora);
+  const esParticular = (b.es_particular===1||b.es_particular===true||b.es_particular==='1') ? 1 : 0;
+  const llavesEntregadasIni = (b.llaves_entregadas===1||b.llaves_entregadas===true||b.llaves_entregadas==='1') ? 1 : 0;
+  const dadoSeguridadIni = (b.dado_seguridad_colocado===1||b.dado_seguridad_colocado===true||b.dado_seguridad_colocado==='1') ? 1 : 0;
   const info = db.prepare(`INSERT INTO siniestros (numero,aseguradora,vehiculo,anio_modelo,placas,vin,fecha_ingreso,ubicacion,responsable,estatus_general,notas,completo,creado_por,
       cliente_nombre,cliente_telefono,cliente_correo,cliente_notas,orden_admision,canal_origen,etapa_actual,prioridad,requiere_refacciones,
-      ingreso_tipo,ingreso_seguro,piezas_autorizadas_cambio,aseguradora_ruta_refacciones,aseguradora_regla_aplicada,sistema_valuacion)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?)`)
+      ingreso_tipo,ingreso_seguro,piezas_autorizadas_cambio,aseguradora_ruta_refacciones,aseguradora_regla_aplicada,sistema_valuacion,
+      es_particular,llaves_entregadas,dado_seguridad_colocado)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?)`)
     .run(String(b.numero).trim(), b.aseguradora, b.vehiculo||'', b.anio_modelo||'', b.placas||'', b.vin||'',
          b.fecha_ingreso || new Date().toISOString().slice(0,10), b.ubicacion||'Piso', b.responsable||req.session.user.nombre,
          b.estatus_general||'Abierto', b.notas||'', completo, req.session.user.id,
          b.cliente_nombre||'', b.cliente_telefono||'', b.cliente_correo||'', b.cliente_notas||'', b.orden_admision||'',
          b.canal_origen||'', b.etapa_actual||'Preingreso', b.prioridad||'', requiereRefacciones,
-         b.ingreso_tipo||'', b.ingreso_seguro!==undefined?(b.ingreso_seguro?1:0):null, piezasIniciales, rutaInicial.ruta, rutaInicial.regla, sistemaValuacionInicial);
+         b.ingreso_tipo||'', b.ingreso_seguro!==undefined?(b.ingreso_seguro?1:0):null, piezasIniciales, rutaInicial.ruta, rutaInicial.regla, sistemaValuacionInicial,
+         esParticular, llavesEntregadasIni, dadoSeguridadIni);
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user,
     valor_nuevo: `Siniestro ${b.numero} (${b.aseguradora})` });
 
@@ -129,7 +134,9 @@ router.patch('/:id', requireAuth, (req, res)=>{
     // Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando)
     'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
     'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
-    'requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado',
+    'requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado','es_particular',
+    // MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): tipo de reparación, lo captura Orlando en revisión técnica
+    'tipo_reparacion',
     // Documento Maestro / Fase C: captura y armado de expediente (Vanessa)
     'estado_expediente','sistema_valuacion','expediente_folio','expediente_listo_fecha',
     // Documento Maestro / Fase D: valuación y autorización
@@ -174,6 +181,9 @@ router.patch('/:id', requireAuth, (req, res)=>{
   }
   nuevo.riesgo_seguridad = riesgoActivo ? 1 : (nuevo.riesgo_seguridad ? 1 : 0);
   nuevo.llaves_entregadas = (nuevo.llaves_entregadas===1||nuevo.llaves_entregadas===true||nuevo.llaves_entregadas==='1') ? 1 : (nuevo.llaves_entregadas ? 1 : 0);
+  nuevo.es_particular = (nuevo.es_particular===1||nuevo.es_particular===true||nuevo.es_particular==='1') ? 1 : (nuevo.es_particular ? 1 : 0);
+  // tipo_reparacion tiene CHECK(NULL o uno de los 6 valores) -- '' (Sin definir) se normaliza a NULL.
+  if(nuevo.tipo_reparacion === '') nuevo.tipo_reparacion = null;
 
   // Propuesta de Orlando (sección 3.1): si el vehículo tiene daño de suspensión, se exige el dado de
   // seguridad como cuarto requisito antes de aparecer disponible para su revisión.
@@ -241,7 +251,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
       cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
       estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
-      requiere_dado_seguridad=?,dado_seguridad_colocado=?,grupo_whatsapp_creado=?,
+      requiere_dado_seguridad=?,dado_seguridad_colocado=?,grupo_whatsapp_creado=?,es_particular=?,tipo_reparacion=?,
       estado_expediente=?,sistema_valuacion=?,expediente_folio=?,expediente_listo_fecha=?,
       valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_fecha_respuesta=?,valuacion_observaciones=?,
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
@@ -256,7 +266,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
       nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
       nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
-      nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado, nuevo.grupo_whatsapp_creado,
+      nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado, nuevo.grupo_whatsapp_creado, nuevo.es_particular, nuevo.tipo_reparacion,
       nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio, nuevo.expediente_listo_fecha,
       nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_fecha_respuesta, nuevo.valuacion_observaciones,
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
