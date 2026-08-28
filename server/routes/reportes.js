@@ -7,7 +7,7 @@ const router = express.Router();
 const CERRADAS = ['Recibida físicamente','Cancelada'];
 
 // F-05: la lista maestra parte de PEDIDOS (no de piezas), así un pedido sin piezas capturadas sigue siendo visible.
-function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, incluir_archivados, ventana }){
+function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, incluir_archivados, ventana, orden }){
   let sql = `SELECT p.id as pedido_id, p.numero as pedido_numero, p.estatus_operativo, p.fecha_prevista as pedido_fecha_prevista,
                     s.id as siniestro_id, s.numero as siniestro_numero, s.aseguradora, s.vehiculo, s.placas, s.archivado,
                     s.aseguradora_ruta_refacciones,
@@ -32,7 +32,11 @@ function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, inclu
   // Requerimiento de Daniela: por default no satura la vista diaria con lo ya archivado (3+ meses entregado);
   // ?incluir_archivados=1 lo trae de vuelta para consultas de historial.
   if(incluir_archivados !== '1'){ sql += ' AND s.archivado = 0'; }
-  sql += ' ORDER BY z.fecha_prometida IS NULL, z.fecha_prometida ASC';
+  // Hallazgo A-01 (Informe_funcional_tablero_refacciones_para_Claude.docx): por default, lo más reciente
+  // arriba (fecha de creación del pedido descendente) -- antes ordenaba por fecha prometida y dejaba los
+  // pedidos recién creados hasta el final. ?orden=prometida conserva el criterio anterior para quien lo
+  // prefiera, sin cambiar el orden predeterminado del resto del equipo.
+  sql += orden === 'prometida' ? ' ORDER BY z.fecha_prometida IS NULL, z.fecha_prometida ASC' : ' ORDER BY p.fecha_creacion DESC, p.id DESC';
   // Modificación (Modificaciones_Tablero_SC_Control.docx, sección 2): "Esquema de surtido" visible en la
   // lista maestra de Daniela, para que el seguimiento correcto se aplique según la aseguradora en vez de
   // asumir Impart para todos. Traduce la ruta ya calculada (aseguradora_ruta_refacciones) a texto claro.
@@ -41,7 +45,13 @@ function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, inclu
 
 router.get('/lista-maestra', requireAuth, (req, res)=>{
   archivarSiniestrosVencidos(db);
-  res.json(obtenerFilasListaMaestra(req.query));
+  // Hallazgo M-03 (Informe Daniela): la lista maestra puede tener cientos/miles de filas -- se pagina en
+  // el JSON de pantalla, pero el .csv sigue exportando TODO lo filtrado (sin paginar), como siempre.
+  const todas = obtenerFilasListaMaestra(req.query);
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(500, Math.max(1, parseInt(req.query.pageSize, 10) || 50));
+  const inicio = (page - 1) * pageSize;
+  res.json({ total: todas.length, page, pageSize, filas: todas.slice(inicio, inicio + pageSize) });
 });
 
 // F-16 + F-17: exporta EXACTAMENTE lo que se ve filtrado (incluida la búsqueda de texto) y neutraliza fórmulas/inyección CSV.
@@ -174,13 +184,18 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const discrepanciasAbiertas = db.prepare(`SELECT COUNT(*) n FROM discrepancias_proveedor WHERE estado='abierta'`).get().n;
   const valesPendientesSinSurtir = db.prepare(`SELECT COUNT(*) n FROM vales_pendientes WHERE estado='pendiente'`).get().n;
 
+  // Hallazgo M-04 (Informe Daniela): cuántos borradores automáticos quedaron sin destinatario válido y
+  // necesitan que alguien los complete a mano antes de poder aprobarse -- antes esto se perdía entre los
+  // demás correos pendientes; ahora tiene su propio contador con acceso directo a la cola ya filtrada.
+  const correosIncompletos = db.prepare(`SELECT COUNT(*) n FROM comunicaciones c JOIN pedidos p ON p.id=c.pedido_id WHERE c.estado='pendiente_aprobacion' AND c.incompleto=1 AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
+
   res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
     piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
     citasHoy, entregasProgramadas, porAvisarAutorizacion, refaccionesPorAvisar,
-    discrepanciasAbiertas, valesPendientesSinSurtir });
+    discrepanciasAbiertas, valesPendientesSinSurtir, correosIncompletos });
 });
 
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.
@@ -206,6 +221,53 @@ router.get('/buscar', requireAuth, (req, res)=>{
   res.json({ siniestros, pedidos, proveedores, piezas, tipoDetectado: /^018.*A$/i.test(q) ? 'siniestro (regla R-02)' : 'pedido/otro' });
 });
 
+
+// Hallazgo A-04 (Informe_funcional_tablero_refacciones_para_Claude.docx): las tarjetas de "Sin
+// proveedor" en Inicio deben abrir exactamente lo que cuentan. Dos listas separadas porque son dos
+// causas distintas: piezas ya capturadas sin proveedor asignado, y pedidos que todavía no tienen
+// NINGUNA pieza capturada (ninguna de las dos aparecía completa en Kanban como "Prov.: -").
+router.get('/piezas-sin-proveedor', requireAuth, (req, res)=>{
+  const conVentana = aplicaVentanaOperativa(req.query);
+  const filas = db.prepare(`SELECT z.id, z.descripcion, p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero
+    FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE z.estatus='Sin proveedor'${conVentana ? ' AND p.fecha_creacion >= ?' : ''} ORDER BY p.creado_en DESC`).all(...(conVentana ? [VENTANA_OPERATIVA_DESDE] : []));
+  res.json(filas);
+});
+router.get('/pedidos-sin-piezas', requireAuth, (req, res)=>{
+  const conVentana = aplicaVentanaOperativa(req.query);
+  const filas = db.prepare(`SELECT p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero
+    FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND NOT EXISTS (SELECT 1 FROM piezas z WHERE z.pedido_id = p.id)
+    ${conVentana ? ' AND p.fecha_creacion >= ?' : ''} ORDER BY p.creado_en DESC`).all(...(conVentana ? [VENTANA_OPERATIVA_DESDE] : []));
+  res.json(filas);
+});
+
+// Hallazgo A-06 (Informe Daniela): vista dedicada de piezas ya recibidas físicamente, con quién y cuándo
+// las recibió y a qué proveedor/pedido/siniestro pertenecen -- antes esta información existía en la BD
+// (fecha_recepcion, recibido_por) pero no había ninguna pantalla que la expusiera junta.
+router.get('/piezas-recibidas', requireAuth, (req, res)=>{
+  const { desde, hasta, proveedor_id, q } = req.query;
+  const conVentana = aplicaVentanaOperativa(req.query);
+  let sql = `SELECT z.id, z.descripcion, z.numero_parte, z.fecha_recepcion,
+                    u.nombre as recibido_por_nombre,
+                    pr.id as proveedor_id, pr.razon_social as proveedor_nombre,
+                    p.id as pedido_id, p.numero as pedido_numero,
+                    s.id as siniestro_id, s.numero as siniestro_numero
+             FROM piezas z
+             JOIN pedidos p ON p.id = z.pedido_id
+             JOIN siniestros s ON s.id = p.siniestro_id
+             LEFT JOIN usuarios u ON u.id = z.recibido_por
+             LEFT JOIN proveedores pr ON pr.id = z.proveedor_id
+             WHERE z.estatus = 'Recibida físicamente' AND z.fecha_recepcion IS NOT NULL AND z.fecha_recepcion != ''`;
+  const params = [];
+  if(desde){ sql += ' AND z.fecha_recepcion >= ?'; params.push(desde); }
+  if(hasta){ sql += ' AND z.fecha_recepcion <= ?'; params.push(hasta + ' 23:59:59'); }
+  if(proveedor_id){ sql += ' AND z.proveedor_id = ?'; params.push(proveedor_id); }
+  if(q){ sql += ' AND (s.numero LIKE ? OR p.numero LIKE ? OR z.descripcion LIKE ?)'; const like = `%${q}%`; params.push(like, like, like); }
+  if(conVentana){ sql += ' AND p.fecha_creacion >= ?'; params.push(VENTANA_OPERATIVA_DESDE); }
+  sql += ' ORDER BY z.fecha_recepcion DESC';
+  res.json(db.prepare(sql).all(...params));
+});
 
 // Vista enriquecida para el Kanban: todos los pedidos (F-03: ningún estatus se excluye) con resumen de piezas.
 router.get('/kanban', requireAuth, (req, res)=>{

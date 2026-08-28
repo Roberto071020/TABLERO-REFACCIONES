@@ -12,6 +12,7 @@ require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: re
 if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendientesExistentes(db); } // hallazgo de Daniela 26-ago-2026: limpieza unica de correos automaticos duplicados ya acumulados
 if(!process.env.TEST_DB_PATH){ require('./utils').corregirBorradoresAutomaticosExistentes(db); } // hallazgo de Daniela 27-ago-2026: corrige destinatario/copia/cuerpo de los borradores automaticos ya existentes
 if(!process.env.TEST_DB_PATH){ require('./utils').normalizarFechasCreacionPedidosExistentes(db); } // hallazgo real 27-ago-2026: normaliza fecha_creacion de pedidos importados en DD/MM/AAAA a ISO (la ventana operativa del 1-jun-2026 los ocultaba por error de formato)
+if(!process.env.TEST_DB_PATH){ require('./utils').normalizarAseguradorasExistentes(db); } // hallazgo A-03 de Daniela 28-ago-2026: unifica variantes de nombre de aseguradora ya importadas
 const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword } = require('./auth');
 const bcrypt = require('bcryptjs');
 

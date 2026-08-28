@@ -968,5 +968,36 @@ CREATE INDEX IF NOT EXISTS idx_vales_siniestro ON vales_pendientes(siniestro_id)
 db.prepare("UPDATE catalogo_hitos SET orden = 9 WHERE clave = 'mecanica'").run();
 db.prepare("UPDATE catalogo_hitos SET orden = 10 WHERE clave = 'hojalateria'").run();
 
+/* ===================== Informe_funcional_tablero_refacciones_para_Claude.docx (28-ago-2026) =====================
+   Auditoría de Daniela sobre el área de Refacciones: 4 críticos, 7 altos, 5 medios. Aditivo, nada se borra. */
+
+const NUEVAS_COLUMNAS_INFORME_DANIELA = [
+  // A-03: normalizar aseguradoras duplicadas por variantes de nombre sin perder el texto original importado.
+  ['aseguradora_texto_importado', 'TEXT'],
+  // A-05: motivo/confirmación explícita cuando la fecha prevista de un pedido no es estrictamente futura.
+  ['fecha_prevista_confirmada_por', 'TEXT']
+];
+for(const [col, def] of NUEVAS_COLUMNAS_INFORME_DANIELA){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+if(!tieneColumna('pedidos', 'fecha_prevista_confirmada_por')){
+  db.exec(`ALTER TABLE pedidos ADD COLUMN fecha_prevista_confirmada_por TEXT;`);
+}
+// C-03: registrar el id de mensaje real que regresa Gmail al enviar, para trazabilidad (ya existía
+// enviado_automaticamente_en; esto guarda el identificador que Gmail asigna a ese envío concreto).
+if(!tieneColumna('comunicaciones', 'enviado_id_mensaje')){
+  db.exec(`ALTER TABLE comunicaciones ADD COLUMN enviado_id_mensaje TEXT;`);
+}
+// C-04 (parcial, sin credenciales reales de InPart): "actualizado_en" del pedido cambia con CUALQUIER
+// edición (precio, cotización, etc.), no solo cuando cambia el estatus de Inpart -- así que no servía
+// para responder "¿cuándo se actualizó por última vez el estatus de Inpart?". Esta columna solo se
+// toca cuando estatus_inpart específicamente cambia.
+if(!tieneColumna('pedidos', 'estatus_inpart_actualizado_en')){
+  db.exec(`ALTER TABLE pedidos ADD COLUMN estatus_inpart_actualizado_en TEXT;`);
+}
+
 module.exports = db;
+
 

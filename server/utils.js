@@ -287,7 +287,7 @@ function prepararCorreoPedidoNuevo(db, { pedido, siniestro }){
 // —igual que el backfill de hitos del módulo de Alejandra— cada vez que se consulta la bandeja de correos
 // o el resumen diario, así no se necesita infraestructura de tareas programadas (cron) para operar.
 const ESTATUS_TERMINALES_CORREO = ['Recibido completo','Cancelado','Cerrado'];
-const DISPARADORES_AUTOMATICOS = ['pedido_nuevo','vencimiento_dia1','seguimiento_2dias'];
+const DISPARADORES_AUTOMATICOS = ['pedido_nuevo','vencimiento_dia1','seguimiento_2dias','pieza_actualizada'];
 
 // Hallazgo de Daniela (26-ago-2026): se acumulaban varios avisos automaticos "pendiente_aprobacion"
 // para el mismo pedido (uno por cada ciclo de vencimiento/seguimiento que pasaba sin que ella lo
@@ -301,6 +301,39 @@ function descartarPendientesAutomaticosPrevios(db, pedidoId){
     db.prepare(`UPDATE comunicaciones SET estado='descartado' WHERE id=?`).run(p.id);
     registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id:p.id, accion:'correo_descartado', usuario:null, valor_nuevo:'Sustituido automaticamente por un aviso mas reciente del mismo pedido (correccion de duplicados, 26-ago-2026).' });
   }
+}
+
+// Informe_funcional_tablero_refacciones_para_Claude.docx (28-ago-2026), hallazgo C-01: cuando una pieza
+// pasa a un estatus cerrado (recibida físicamente o cancelada -- misma regla R-04/R-05 de qué piezas
+// cuentan como pendientes), cualquier borrador automático todavía sin enviar (pendiente de aprobar, o ya
+// aprobado por Daniela pero sin mandar) que la mencionaba queda desactualizado. Se descarta y, si el
+// pedido sigue teniendo piezas pendientes, se regenera de inmediato uno nuevo con la lista correcta --
+// nunca se deja un borrador viejo pidiendo disponibilidad de una pieza que ya llegó.
+function recalcularCorreosPorPiezaCerrada(db, pedidoId, usuario){
+  const pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(pedidoId);
+  if(!pedido) return;
+  const siniestro = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(pedido.siniestro_id);
+  if(!siniestro) return;
+
+  const abiertos = db.prepare(`SELECT * FROM comunicaciones WHERE pedido_id=? AND estado IN ('pendiente_aprobacion','aprobado') AND disparador IN (${DISPARADORES_AUTOMATICOS.map(()=>'?').join(',')})`).all(pedidoId, ...DISPARADORES_AUTOMATICOS);
+  if(abiertos.length === 0) return; // no había ningún borrador automático abierto que recalcular
+
+  for(const c of abiertos){
+    db.prepare(`UPDATE comunicaciones SET estado='descartado' WHERE id=?`).run(c.id);
+    registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id:c.id, accion:'correo_descartado', usuario: usuario||null,
+      valor_nuevo:'Descartado automáticamente: una de sus piezas cambió a recibida/cancelada y el borrador quedó desactualizado (corrección C-01, 28-ago-2026).' });
+  }
+
+  const piezasPendientes = piezasPendientesDePedido(db, pedidoId);
+  if(piezasPendientes.length === 0) return; // R-05: ya no hace falta ningún correo para este pedido
+
+  const { destinatario, proveedorId, incompleto } = resolverDestinatarioAutomatico(piezasPendientes);
+  db.prepare(`INSERT INTO comunicaciones (pedido_id,siniestro_id,proveedor_id,canal,asunto,destinatarios,copia,cuerpo,tipo_plantilla,estado,disparador,enviado_por,fecha_envio,incompleto)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)`)
+    .run(pedido.id, siniestro.id, proveedorId, 'Correo', `SINIESTRO ${siniestro.numero} - PEDIDO ${pedido.numero}`, destinatario,
+      copiaSugeridaPorAseguradora(siniestro.aseguradora),
+      construirCuerpoAutomatico(pedido.numero, siniestro.numero, piezasPendientes.map(z => z.descripcion)),
+      'pieza_actualizada', 'pendiente_aprobacion', 'pieza_actualizada', null, incompleto);
 }
 
 function verificarCorreosPendientes(db){
@@ -431,6 +464,50 @@ function archivarSiniestrosVencidos(db){
 }
 
 
+// Hallazgo A-03 (Informe_funcional_tablero_refacciones_para_Claude.docx): las cargas masivas de InPart
+// traen el nombre de la aseguradora tal cual viene en el CSV/Excel ("MAPFRE TEPEYAC, S.A.", "LA
+// LATINOAMERICANA SEGUROS S.A. DE C.V.", etc.), lo que separa en los indicadores lo que en realidad es
+// la misma aseguradora. normalizarAseguradora() la hace coincidir con el catálogo de 8 que ya usa el
+// resto del sistema (ASEGURADORAS en el frontend); si no reconoce el texto, lo deja tal cual -- nunca
+// inventa una aseguradora nueva ni la descarta.
+const ASEGURADORAS_CANONICAS = ['GNP','ANA','Inbursa','Allianz','La Latinoamericana','Mapfre','Afirme','Zurich'];
+const ALIAS_ASEGURADORA = [
+  [/GRUPO NACIONAL PROVINCIAL|^GNP\b/i, 'GNP'],
+  [/^ANA\b/i, 'ANA'],
+  [/^INBURSA\b/i, 'Inbursa'],
+  [/^ALLIANZ\b/i, 'Allianz'],
+  [/LATINOAMERICANA/i, 'La Latinoamericana'],
+  [/^MAPFRE\b/i, 'Mapfre'],
+  [/^AFIRME\b/i, 'Afirme'],
+  [/^ZURICH\b/i, 'Zurich']
+];
+function normalizarAseguradora(nombre){
+  if(!nombre) return nombre;
+  const limpio = String(nombre).trim();
+  const exacto = ASEGURADORAS_CANONICAS.find(c => c.toLowerCase() === limpio.toLowerCase());
+  if(exacto) return exacto;
+  for(const [patron, canon] of ALIAS_ASEGURADORA){
+    if(patron.test(limpio)) return canon;
+  }
+  return limpio; // no reconocida: se deja tal cual, no se inventa ni se descarta
+}
+
+// Backfill único e idempotente (se corre una vez al arrancar, igual que el resto de correcciones de
+// producción): normaliza lo ya importado, guardando el texto original en aseguradora_texto_importado
+// SOLO cuando de verdad cambia, para no tocar filas que ya estaban bien.
+function normalizarAseguradorasExistentes(db){
+  const siniestros = db.prepare(`SELECT id, aseguradora FROM siniestros WHERE aseguradora_texto_importado IS NULL`).all();
+  let corregidos = 0;
+  for(const s of siniestros){
+    const normalizada = normalizarAseguradora(s.aseguradora);
+    if(normalizada !== s.aseguradora){
+      db.prepare(`UPDATE siniestros SET aseguradora=?, aseguradora_texto_importado=? WHERE id=?`).run(normalizada, s.aseguradora, s.id);
+      corregidos++;
+    }
+  }
+  if(corregidos > 0) console.log(`Normalizadas ${corregidos} aseguradora(s) con variantes de nombre (A-03, texto original conservado).`);
+}
+
 // ===================== Documento Maestro / Fase D: motor de reglas por aseguradora =====================
 // Árbol de decisión de la sección 12.2 del documento. Nunca migra silenciosamente: siempre regresa
 // también el texto de la regla aplicada, para trazabilidad (sección 17: "guardar la regla utilizada").
@@ -515,8 +592,8 @@ function porcentajePiezasRecibidas(db, siniestroId){
 
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
-  copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
+  copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, recalcularCorreosPorPiezaCerrada, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
   VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
   requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua,
-  esquemaSurtidoLabel, porcentajePiezasRecibidas };
+  esquemaSurtidoLabel, porcentajePiezasRecibidas, normalizarAseguradora, normalizarAseguradorasExistentes, ASEGURADORAS_CANONICAS };

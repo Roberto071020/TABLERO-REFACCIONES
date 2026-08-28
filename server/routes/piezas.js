@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { registrarAuditoria, auditarCambios, nowUTC, verificarRefaccionesCompletas } = require('../utils');
+const { registrarAuditoria, auditarCambios, nowUTC, verificarRefaccionesCompletas, recalcularCorreosPorPiezaCerrada } = require('../utils');
 const router = express.Router();
 
 const ESTATUS_PIEZA = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
@@ -50,6 +50,12 @@ router.patch('/:id', requireAuth, (req, res)=>{
   db.prepare(`UPDATE piezas SET proveedor_id=?,descripcion=?,numero_parte=?,tipo=?,cantidad=?,precio=?,fecha_prometida=?,estatus=?,observaciones=?,actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.proveedor_id, nuevo.descripcion, nuevo.numero_parte, nuevo.tipo, nuevo.cantidad, nuevo.precio, nuevo.fecha_prometida, nuevo.estatus, nuevo.observaciones, req.params.id);
   auditarCambios(db, { entidad_tipo:'pieza', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  // Hallazgo C-01 (Informe_funcional_tablero_refacciones_para_Claude.docx): si por edición manual la
+  // pieza quedó Recibida físicamente o Cancelada (y antes no lo estaba), cualquier borrador automático
+  // abierto que la mencionaba se recalcula/descarta -- misma corrección que en /recibir.
+  if(CERRADAS.includes(nuevo.estatus) && !CERRADAS.includes(anterior.estatus)){
+    recalcularCorreosPorPiezaCerrada(db, anterior.pedido_id, req.session.user);
+  }
   res.json(db.prepare('SELECT * FROM piezas WHERE id = ?').get(req.params.id));
 });
 
@@ -88,6 +94,10 @@ router.post('/:id/recibir', requireAuth, (req, res)=>{
   }
   // Módulo Alejandra (Fase 5): si con esto TODO el expediente queda con sus refacciones resueltas, avisarle.
   verificarRefaccionesCompletas(db, pedidoAnterior.siniestro_id, req.session.user);
+  // Hallazgo C-01 (Informe_funcional_tablero_refacciones_para_Claude.docx, 28-ago-2026): la pieza que se
+  // acaba de recibir puede estar mencionada en un borrador de correo automático todavía sin enviar --
+  // se recalcula/descarta para que nunca pida disponibilidad de algo que ya llegó.
+  recalcularCorreosPorPiezaCerrada(db, pieza.pedido_id, req.session.user);
   res.json(db.prepare('SELECT * FROM piezas WHERE id = ?').get(req.params.id));
 });
 

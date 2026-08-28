@@ -38,4 +38,11 @@ async function enviarCorreo({ to, cc, subject, text }){
   return t.sendMail({ from: process.env.GMAIL_USER, to, cc: cc || undefined, subject, text });
 }
 
-module.exports = { configurado, enviarCorreo };
+// Hallazgo C-03 (Informe Daniela, parcial sin credenciales reales): expone si el envío por Gmail está
+// listo para usarse -- SIN revelar el usuario ni la contraseña de aplicación -- para que la pantalla
+// pueda avisar con claridad en vez de que el usuario descubra el 503 hasta que intenta enviar.
+function estadoConexion(){
+  return { configurado: configurado() };
+}
+
+module.exports = { configurado, enviarCorreo, estadoConexion };

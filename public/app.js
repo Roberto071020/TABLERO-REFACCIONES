@@ -148,14 +148,18 @@ function renderSemaforo(sem){
   const LABEL = { admision:'Admisión', expediente:'Expediente', valuacion:'Valuación', produccion:'Producción', calidad:'Calidad' };
   return Object.entries(sem).map(([k,v])=>`<span class="badge ${COLOR[v]||'gris'}" title="${LABEL[k]}: ${v.replace('_',' ')}">${LABEL[k]}</span>`).join(' ');
 }
+// Hallazgo M-05 (Informe Daniela): las bandejas propias de refacciones (Kanban, Incidencias, Lista
+// maestra, Piezas recibidas) se veían en el menú de TODOS los roles, aunque Orlando/Vanessa/Beto/Alejandra
+// tienen sus propias pestañas dedicadas y nunca las usan -- se acotan a quien realmente las opera.
 const TABS = [
   {k:'inicio', label:'Inicio'},
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
   {k:'pendientes-hoy', label:'Pendientes de hoy', roles:['atencion_cliente','admin','jefe']},
-  {k:'kanban', label:'Kanban'},
-  {k:'incidencias', label:'Incidencias'},
+  {k:'kanban', label:'Kanban', roles:['operativo','admin','jefe']},
+  {k:'incidencias', label:'Incidencias', roles:['operativo','admin','jefe']},
   {k:'correos', label:'Correos pendientes', roles:['operativo','admin']},
-  {k:'lista', label:'Lista maestra'},
+  {k:'lista', label:'Lista maestra', roles:['operativo','admin','jefe']},
+  {k:'recibidas', label:'Piezas recibidas', roles:['operativo','admin','jefe']},
   {k:'proveedores', label:'Proveedores'},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
   {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
@@ -183,7 +187,7 @@ function toggleMenuMovil(){
 function goSiniestro(id){ state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render(); }
 function goProveedor(id){ state.view='proveedor'; state.proveedorId=id; render(); }
 function setSubtabSiniestro(tab){ state.subtabSiniestro = tab; render(); }
-function setFiltroListaMaestra(campo, valor){ state.filtros[campo] = valor; render(); }
+function setFiltroListaMaestra(campo, valor){ state.filtros[campo] = valor; state.filtros.page = 1; render(); }
 function setFiltroQLive(valor){ state.filtros.q = valor; }
 
 
@@ -223,6 +227,7 @@ async function render(){
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
     else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
     else if(state.view==='lista') app.innerHTML = await viewLista();
+    else if(state.view==='recibidas') app.innerHTML = await viewPiezasRecibidas();
     else if(state.view==='proveedores') app.innerHTML = await viewProveedores();
     else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
     else if(state.view==='correos') app.innerHTML = await viewCorreos();
@@ -255,7 +260,8 @@ async function viewInicio(){
   <div class="grid-cards">
     <div class="card azul"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
     <div class="card rojo"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
-    <div class="card ambar"><div class="num">${r.sinProveedor}</div><div class="label">Sin proveedor</div></div>
+    <div class="card ambar" onclick="abrirListaSinProveedor()"><div class="num">${r.sinProveedor}</div><div class="label">Piezas sin proveedor</div></div>
+    <div class="card ambar" onclick="abrirListaPedidosSinPiezas()"><div class="num">${r.pedidosSinPiezas}</div><div class="label">Pedidos sin piezas capturadas</div></div>
     <div class="card ambar"><div class="num">${r.piezasPorConfirmar}</div><div class="label">Por confirmar</div></div>
     <div class="card azul"><div class="num">${r.recibidosParciales}</div><div class="label">Recibidos parciales</div></div>
     <div class="card rojo"><div class="num">${r.piezasMalSurtidas}</div><div class="label">Mal surtidas</div></div>
@@ -264,6 +270,7 @@ async function viewInicio(){
     <div class="card verde"><div class="num">${r.cierresHoy}</div><div class="label">Recibidas hoy</div></div>
     <div class="card ${r.discrepanciasAbiertas>0?'rojo':'verde'}"><div class="num">${r.discrepanciasAbiertas}</div><div class="label">Discrepancias con proveedor</div></div>
     <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
+    <div class="card ${r.correosIncompletos>0?'rojo':'verde'}" onclick="abrirCorreosIncompletos()"><div class="num">${r.correosIncompletos}</div><div class="label">Correos incompletos por completar</div></div>
   </div>
   ${verOrlandoVanessa ? `
   <div class="section">
@@ -331,6 +338,35 @@ async function viewInicio(){
   </div>`;
 }
 
+/* ===================== Hallazgo A-04: indicadores que abren exactamente lo que cuentan ===================== */
+// Hallazgo M-04: acceso directo desde Inicio a la cola de correos incompletos, ya filtrada.
+function abrirCorreosIncompletos(){
+  state.filtrosCorreos = { incompleto:'1', page:1 };
+  goTo('correos');
+}
+async function abrirListaSinProveedor(){
+  const filas = await api('GET','/api/reportes/piezas-sin-proveedor');
+  showModal(`
+    <h3>Piezas sin proveedor asignado (${filas.length})</h3>
+    ${filas.length===0?'<div class="empty">Ninguna.</div>':`
+    <table><thead><tr><th>Siniestro</th><th>Pedido</th><th>Pieza</th></tr></thead><tbody>
+    ${filas.map(f=>`<tr><td><span class="link" onclick="closeModal();goSiniestro(${f.siniestro_id})">${esc(f.siniestro_numero)}</span></td><td>${esc(f.pedido_numero)}</td><td>${esc(f.descripcion)}</td></tr>`).join('')}
+    </tbody></table>`}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `, true);
+}
+async function abrirListaPedidosSinPiezas(){
+  const filas = await api('GET','/api/reportes/pedidos-sin-piezas');
+  showModal(`
+    <h3>Pedidos sin ninguna pieza capturada (${filas.length})</h3>
+    ${filas.length===0?'<div class="empty">Ninguno.</div>':`
+    <table><thead><tr><th>Siniestro</th><th>Pedido</th></tr></thead><tbody>
+    ${filas.map(f=>`<tr><td><span class="link" onclick="closeModal();goSiniestro(${f.siniestro_id})">${esc(f.siniestro_numero)}</span></td><td>${esc(f.pedido_numero)}</td></tr>`).join('')}
+    </tbody></table>`}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `, true);
+}
+
 /* ===================== VISTA: KANBAN ===================== */
 const KANBAN_COLS = ['Nuevo','Por revisar','Esperando proveedor','En tránsito','Entrega vencida','Recibido parcial','Recibido completo','Con incidencia','Cancelado','Cerrado'];
 async function viewKanban(){
@@ -358,11 +394,48 @@ async function viewKanban(){
 
 /* ===================== VISTA: CORREOS PENDIENTES DE APROBACION (requerimiento de Daniela) ===================== */
 async function viewCorreos(){
-  const pendientes = await api('GET','/api/comunicaciones/pendientes');
+  const f = state.filtrosCorreos || (state.filtrosCorreos = { page:1 });
+  const params = new URLSearchParams();
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
+  if(f.incompleto) params.set('incompleto', f.incompleto);
+  if(f.orden) params.set('orden', f.orden);
+  params.set('page', f.page||1);
+  params.set('pageSize', 25);
+  const [r, proveedores, estadoGmail] = await Promise.all([
+    api('GET','/api/comunicaciones/pendientes?'+params.toString()),
+    api('GET','/api/proveedores'),
+    api('GET','/api/comunicaciones/estado-gmail', null, { silent:true }).catch(()=>({ configurado:false }))
+  ]);
+  const pendientes = r.filas;
+  const totalPaginas = Math.max(1, Math.ceil(r.total / r.pageSize));
   const LABEL_DISPARADOR = { pedido_nuevo:'Pedido nuevo', vencimiento_dia1:'Vencimiento (día 1)', seguimiento_2dias:'Seguimiento (2 días hábiles)', manual:'Manual' };
-  let html = `<h2>Correos pendientes de aprobación</h2>
-  <p class="subtle">El sistema los prepara solo (pedido nuevo, primer día de vencimiento, seguimiento a 2 días hábiles). Nada se envía sin que lo apruebes aquí.</p>`;
-  if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación por ahora.</div>'; return html; }
+  // Hallazgo C-03 (parcial, sin credenciales reales): estado de conexión visible de entrada, para no
+  // enterarse hasta que un envío individual rebota con 503.
+  let html = `<h2>Correos pendientes de aprobación (${r.total})</h2>
+  <p class="subtle">${estadoGmail.configurado?'<span class="badge verde">Gmail conectado</span> el envío automático está disponible.':'<span class="badge gris">Gmail no configurado</span> el envío automático todavía no está disponible — aprueba y copia/pega el correo manualmente como siempre.'}</p>
+  <p class="subtle">El sistema los prepara solo (pedido nuevo, primer día de vencimiento, seguimiento a 2 días hábiles). Nada se envía sin que lo apruebes aquí.</p>
+  <div class="filters no-print">
+    <select onchange="state.filtrosCorreos.aseguradora=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Todas las aseguradoras</option>
+      ${ASEGURADORAS.map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+    <select onchange="state.filtrosCorreos.proveedor_id=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Todos los proveedores</option>
+      ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
+    </select>
+    <select onchange="state.filtrosCorreos.incompleto=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Completos e incompletos</option>
+      <option value="1" ${f.incompleto==='1'?'selected':''}>Solo incompletos</option>
+      <option value="0" ${f.incompleto==='0'?'selected':''}>Solo completos</option>
+    </select>
+    <select onchange="state.filtrosCorreos.orden=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Más reciente primero</option>
+      <option value="antiguo" ${f.orden==='antiguo'?'selected':''}>Más antiguo primero</option>
+    </select>
+    <button class="btn secondary small" onclick="state.filtrosCorreos={page:1};render()">Limpiar filtros</button>
+  </div>`;
+  if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación con estos filtros.</div>'; return html; }
   html += `<table><thead><tr><th>Motivo</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Asunto</th><th></th></tr></thead><tbody>
   ${pendientes.map(c=>`<tr>
     <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span>${c.incompleto?' <span class="badge rojo" title="Sin proveedor con correo valido asignado a las piezas pendientes; hay que completarlo a mano antes de aprobar">Incompleto</span>':''}</td>
@@ -372,13 +445,18 @@ async function viewCorreos(){
     <td>${esc(c.asunto)}</td>
     <td><button class="btn small" onclick="abrirRevisarCorreo(${c.id})">Revisar</button></td>
   </tr>`).join('')}
-  </tbody></table>`;
+  </tbody></table>
+  <div class="paginacion no-print">
+    <button class="btn small secondary" ${f.page<=1?'disabled':''} onclick="state.filtrosCorreos.page=${(f.page||1)-1};render()">« Anterior</button>
+    <span class="subtle">Página ${f.page||1} de ${totalPaginas}</span>
+    <button class="btn small secondary" ${(f.page||1)>=totalPaginas?'disabled':''} onclick="state.filtrosCorreos.page=${(f.page||1)+1};render()">Siguiente »</button>
+  </div>`;
   return html;
 }
 async function abrirRevisarCorreo(id){
-  const pendientes = await api('GET','/api/comunicaciones/pendientes');
-  const c = pendientes.find(x=>x.id===id);
-  if(!c){ toast('Este correo ya no está pendiente (alguien más lo revisó).', 'warn'); render(); return; }
+  let c;
+  try{ c = await api('GET','/api/comunicaciones/'+id, null, { silent:true }); }catch(e){}
+  if(!c || c.estado !== 'pendiente_aprobacion'){ toast('Este correo ya no está pendiente (alguien más lo revisó).', 'warn'); render(); return; }
   showModal(`
     <h3>Revisar correo — ${esc(c.siniestro_numero)} / Pedido ${esc(c.pedido_numero)}</h3>
     <p class="subtle">Ajusta lo que haga falta antes de aprobar. Sigue en modo borrador: no se envía nada de verdad.</p>
@@ -420,10 +498,13 @@ async function aprobarYEnviarCorreoPendiente(id){
     await api('POST', `/api/comunicaciones/${id}/enviar`, {}, { silent:true });
     toast('Correo aprobado y enviado por Gmail.', 'success');
   }catch(e){
-    // El backend responde 503 con un mensaje claro cuando el envío por Gmail todavía no está
-    // configurado (Roberto no ha entregado GMAIL_USER/GMAIL_APP_PASSWORD): el correo queda
-    // aprobado igual, solo falta enviarlo a mano como hasta ahora.
-    toast('Correo aprobado. El envío automático por Gmail no está configurado todavía — cópialo y envíalo tú.', 'warn');
+    // Hallazgo C-03: distingue "ya se había enviado" (reintento/doble clic, nunca se duplica) de
+    // "Gmail no está configurado todavía" (Roberto no ha entregado GMAIL_USER/GMAIL_APP_PASSWORD).
+    if(e.status === 409){
+      toast('Este correo ya se había enviado por Gmail — no se vuelve a mandar.', 'warn');
+    }else{
+      toast('Correo aprobado. El envío automático por Gmail no está configurado todavía — cópialo y envíalo tú.', 'warn');
+    }
   }
   closeModal(); render();
 }
@@ -556,6 +637,44 @@ async function viewIncidencias(){
 }
 
 /* ===================== VISTA: LISTA MAESTRA ===================== */
+/* ===================== Hallazgo A-06: vista "Piezas recibidas" ===================== */
+async function viewPiezasRecibidas(){
+  const f = state.filtrosRecibidas || (state.filtrosRecibidas = {});
+  const params = new URLSearchParams();
+  if(f.desde) params.set('desde', f.desde);
+  if(f.hasta) params.set('hasta', f.hasta);
+  if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
+  if(f.q) params.set('q', f.q);
+  const filas = await api('GET','/api/reportes/piezas-recibidas?'+params.toString());
+  const proveedores = await api('GET','/api/proveedores');
+  return `
+  <h2>Piezas recibidas</h2>
+  <p class="subtle">Qué pieza llegó, cuándo, quién la recibió y de qué proveedor/pedido/siniestro es — más reciente arriba.</p>
+  <div class="filters no-print">
+    <input placeholder="Buscar siniestro, pedido o pieza" value="${esc(f.q||'')}" oninput="state.filtrosRecibidas.q=this.value" onkeydown="if(event.key==='Enter')render()" style="min-width:180px">
+    <label class="subtle">Desde <input type="date" value="${esc(f.desde||'')}" onchange="state.filtrosRecibidas.desde=this.value;render()"></label>
+    <label class="subtle">Hasta <input type="date" value="${esc(f.hasta||'')}" onchange="state.filtrosRecibidas.hasta=this.value;render()"></label>
+    <select onchange="state.filtrosRecibidas.proveedor_id=this.value;render()">
+      <option value="">Todos los proveedores</option>
+      ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
+    </select>
+    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosRecibidas={};render()">Limpiar filtros</button>
+  </div>
+  <table><thead><tr><th>Fecha y hora</th><th>Recibido por</th><th>Proveedor</th><th>Pedido</th><th>Siniestro</th><th>Pieza</th></tr></thead>
+  <tbody>
+  ${filas.length===0?'<tr><td colspan="6" class="empty">Sin piezas recibidas con los filtros actuales.</td></tr>':filas.map(z=>`
+    <tr>
+      <td>${esc(z.fecha_recepcion||'')}</td>
+      <td>${esc(z.recibido_por_nombre||'—')}</td>
+      <td>${esc(z.proveedor_nombre||'—')}</td>
+      <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.pedido_numero)}</span></td>
+      <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.siniestro_numero)}</span></td>
+      <td>${esc(z.descripcion)}${z.numero_parte?' · N.P. '+esc(z.numero_parte):''}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  `;
+}
 async function viewLista(){
   const f = state.filtros;
   const params = new URLSearchParams();
@@ -563,7 +682,11 @@ async function viewLista(){
   if(f.estatus) params.set('estatus', f.estatus);
   if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
   if(f.q) params.set('q', f.q);
-  const filas = await api('GET','/api/reportes/lista-maestra?'+params.toString());
+  params.set('page', f.page||1);
+  params.set('pageSize', 50);
+  const r = await api('GET','/api/reportes/lista-maestra?'+params.toString());
+  const filas = r.filas;
+  const totalPaginas = Math.max(1, Math.ceil(r.total / r.pageSize));
   const proveedores = await api('GET','/api/proveedores');
   const ESTATUS_PIEZA = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
   const hoy = todayISO();
@@ -591,7 +714,7 @@ async function viewLista(){
       <option value="">Todos los proveedores</option>
       ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
     </select>
-    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn small" onclick="state.filtros.page=1;render()">Buscar</button>
     <button class="btn secondary small" onclick="state.filtros={};render()">Limpiar filtros</button>
     <button class="btn small" onclick="exportarCSV()">Exportar CSV</button>
     <button class="btn small secondary" onclick="exportarExpedientesCSV()">Exportar expedientes (CSV)</button>
@@ -612,7 +735,12 @@ async function viewLista(){
       <td><span class="badge ${alertaColor(f)}">&nbsp;</span></td>
     </tr>`).join('')}
   </tbody></table>
-  <p class="subtle" style="margin-top:8px;">${filas.length} fila(s). Los pedidos sin piezas capturadas también se muestran (corrección F-05).</p>`;
+  <p class="subtle" style="margin-top:8px;">${r.total} fila(s) en total (${filas.length} en esta página). Los pedidos sin piezas capturadas también se muestran (corrección F-05).</p>
+  <div class="paginacion no-print">
+    <button class="btn small secondary" ${(f.page||1)<=1?'disabled':''} onclick="state.filtros.page=${(f.page||1)-1};render()">« Anterior</button>
+    <span class="subtle">Página ${f.page||1} de ${totalPaginas}</span>
+    <button class="btn small secondary" ${(f.page||1)>=totalPaginas?'disabled':''} onclick="state.filtros.page=${(f.page||1)+1};render()">Siguiente »</button>
+  </div>`;
 }
 function exportarCSV(){
   const f = state.filtros;
@@ -634,18 +762,39 @@ function exportarExpedientesCSV(){
 }
 
 /* ===================== VISTA: PROVEEDORES ===================== */
+// Hallazgo M-02 (Informe Daniela): la lista de proveedores no tenía forma de acotarse -- se agrega
+// búsqueda (razón social/contacto/correo) y filtro de activo/inactivo (el catálogo es chico, se filtra en pantalla).
 async function viewProveedores(){
-  const proveedores = await api('GET','/api/proveedores');
+  const todos = await api('GET','/api/proveedores');
+  const f = state.filtrosProveedores || (state.filtrosProveedores = {});
+  const qNorm = (f.q||'').trim().toLowerCase();
+  const proveedores = todos.filter(pv=>{
+    if(f.activo === '1' && !pv.activo) return false;
+    if(f.activo === '0' && pv.activo) return false;
+    if(!qNorm) return true;
+    return [pv.razon_social, pv.contacto, pv.correo].some(v=>String(v||'').toLowerCase().includes(qNorm));
+  });
   return `
   <h2>Proveedores</h2>
+  <div class="filters no-print">
+    <input placeholder="Buscar por razón social, contacto o correo" value="${esc(f.q||'')}" oninput="state.filtrosProveedores.q=this.value" onkeydown="if(event.key==='Enter')render()" style="min-width:220px">
+    <select onchange="state.filtrosProveedores.activo=this.value;render()">
+      <option value="">Activos e inactivos</option>
+      <option value="1" ${f.activo==='1'?'selected':''}>Solo activos</option>
+      <option value="0" ${f.activo==='0'?'selected':''}>Solo inactivos</option>
+    </select>
+    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosProveedores={};render()">Limpiar filtros</button>
+  </div>
   <table><thead><tr><th>Razón social</th><th>Contacto</th><th>Correo</th><th>Activo</th><th></th></tr></thead><tbody>
-  ${proveedores.map(pv=>`<tr>
+  ${proveedores.length===0?'<tr><td colspan="5" class="empty">Sin proveedores con estos filtros.</td></tr>':proveedores.map(pv=>`<tr>
     <td><span class="link" onclick="goProveedor(${pv.id})">${esc(pv.razon_social)}</span></td>
     <td>${esc(pv.contacto||'')}</td><td>${esc(pv.correo||'')}</td>
     <td>${pv.activo?'<span class="badge verde">Activo</span>':'<span class="badge gris">Inactivo</span>'}</td>
     <td><button class="btn small secondary" onclick="goProveedor(${pv.id})">Ver ficha</button></td>
   </tr>`).join('')}
-  </tbody></table>`;
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${proveedores.length} de ${todos.length} proveedor(es).</p>`;
 }
 async function viewProveedorDetalle(id){
   const pv = await api('GET','/api/proveedores/'+id);
@@ -1037,8 +1186,8 @@ async function viewSiniestro(id){
     <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoVale(${id})">+ Registrar vale pendiente</button></div>`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th></th></tr></thead><tbody>
-    ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
-      <select onchange="cambiarEstatusOperativo(${p.id}, this.value)">${ESTATUS_OPERATIVO.map(e=>`<option ${e===p.estatus_operativo?'selected':''}>${e}</option>`).join('')}</select>
+    ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}<div class="subtle" style="font-size:11px;">${p.estatus_inpart_actualizado_en?'Actualizado: '+esc(p.estatus_inpart_actualizado_en):'Sin fecha de última actualización de Inpart'}</div></td><td>
+      <select onchange="cambiarEstatusOperativo(${p.id}, this.value, '${esc(p.estatus_operativo)}', this)">${ESTATUS_OPERATIVO.map(e=>`<option ${e===p.estatus_operativo?'selected':''}>${e}</option>`).join('')}</select>
     </td>
     <td><button class="btn small" onclick="abrirGenerador(${p.id})">Generar correo</button></td></tr>`).join('')}
     </tbody></table>
@@ -2180,7 +2329,11 @@ async function intentarCerrarSiniestro(siniestroId){
   }
 }
 
-async function cambiarEstatusOperativo(pedidoId, val){
+// Hallazgo A-07 (Informe Daniela): cambiar el estatus de un pedido ya no es un efecto secundario de tocar
+// el <select> por accidente -- ahora es una acción explícita con confirmación y motivo, para dejar rastro
+// de por qué cambió (visible después en la línea de tiempo/auditoría del expediente).
+async function cambiarEstatusOperativo(pedidoId, val, estatusActual, selEl){
+  if(val === estatusActual) return;
   if(val === 'Cancelado'){
     showModal(`
       <h3>Cancelar pedido</h3>
@@ -2195,9 +2348,20 @@ async function cambiarEstatusOperativo(pedidoId, val){
     `);
     return;
   }
-  await api('PATCH','/api/pedidos/'+pedidoId, { estatus_operativo: val });
+  showModal(`
+    <h3>Cambiar estatus</h3>
+    <p class="subtle">De <b>${esc(estatusActual)}</b> a <b>${esc(val)}</b>. Confirma para aplicar el cambio.</p>
+    <div class="field"><label>Motivo (opcional, queda registrado en la línea de tiempo)</label>
+      <textarea id="fce_motivo" placeholder="Ej. proveedor confirmó factura, cliente autorizó, etc."></textarea>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal();render()">Cancelar</button><button class="btn" onclick="confirmarCambioEstatusPedido(${pedidoId}, '${esc(val).replace(/'/g,"\\'")}')">Confirmar cambio</button></div>
+  `);
+}
+async function confirmarCambioEstatusPedido(pedidoId, val){
+  const motivo = document.getElementById('fce_motivo').value.trim();
+  await api('PATCH','/api/pedidos/'+pedidoId, { estatus_operativo: val, motivo_estatus: motivo });
   toast('Estatus actualizado.', 'success');
-  render();
+  closeModal(); render();
 }
 async function guardarCancelacionPedido(pedidoId){
   const sel = document.getElementById('fcanc_motivo_sel').value;
@@ -2923,11 +3087,17 @@ async function guardarEdicionSiniestro(id){
   toast('Siniestro actualizado.', 'success');
   closeModal(); render();
 }
+// Hallazgo M-01 (Informe Daniela): con cientos de siniestros, un <select> plano era imposible de usar
+// a ojo -- se cambia por un campo de texto con búsqueda nativa (datalist) por número o vehículo.
 function formNuevoPedido(){
   api('GET','/api/siniestros').then(siniestros=>{
+    window.__siniestrosParaPedido = siniestros;
     showModal(`
       <h3>Nuevo pedido</h3>
-      <div class="field"><label>Siniestro</label><select id="f_sin">${siniestros.map(s=>`<option value="${s.id}">${esc(s.numero)} — ${esc(s.vehiculo||'')}</option>`).join('')}</select></div>
+      <div class="field"><label>Siniestro</label>
+        <input id="f_sin_buscar" list="dl_siniestros" placeholder="Escribe para buscar por número o vehículo…" autocomplete="off">
+        <datalist id="dl_siniestros">${siniestros.map(s=>`<option value="${esc(s.numero)} — ${esc(s.vehiculo||'')}">`).join('')}</datalist>
+      </div>
       <div class="row-flex">
         <div class="field"><label>Número de pedido</label><input id="f_numped" placeholder="1137000"></div>
         <div class="field"><label>Fecha prevista</label><input id="f_fechaprev" type="date" value="${todayISO()}"></div>
@@ -2937,16 +3107,28 @@ function formNuevoPedido(){
     `);
   });
 }
-async function guardarPedido(){
+async function guardarPedido(confirmarFechaPrevista){
+  const textoSiniestro = document.getElementById('f_sin_buscar').value;
+  const numeroBuscado = textoSiniestro.split(' — ')[0].trim();
+  const siniestroElegido = (window.__siniestrosParaPedido||[]).find(s=>s.numero===numeroBuscado);
+  if(!siniestroElegido){ toast('Selecciona un siniestro de la lista (escribe y elige una de las sugerencias).', 'error'); return; }
+  const payload = {
+    numero: document.getElementById('f_numped').value.trim(), siniestro_id: siniestroElegido.id,
+    fecha_prevista: document.getElementById('f_fechaprev').value, estatus_inpart: document.getElementById('f_estinpart').value
+  };
+  if(confirmarFechaPrevista) payload.confirmar_fecha_prevista = true;
   try{
-    const p = await api('POST','/api/pedidos', {
-      numero: document.getElementById('f_numped').value.trim(), siniestro_id: +document.getElementById('f_sin').value,
-      fecha_prevista: document.getElementById('f_fechaprev').value, estatus_inpart: document.getElementById('f_estinpart').value
-    });
+    const p = await api('POST','/api/pedidos', payload, { silent: true });
     if(p.advertencias && p.advertencias.length) p.advertencias.forEach(a=>toast(a,'warn')); else toast('Pedido registrado.', 'success');
     closeModal(); goSiniestro(p.siniestro_id);
   }catch(e){
-    if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.siniestro_id); }
+    if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.siniestro_id); return; }
+    // Hallazgo A-05: fecha prevista hoy o anterior — pedir confirmación explícita en vez de bloquear en silencio.
+    if(e.data && e.data.error === 'FECHA_PREVISTA_INVALIDA'){
+      if(confirm(e.data.mensaje + ' ¿Confirmas que es correcta y quieres continuar?')) return guardarPedido(true);
+      return;
+    }
+    toast((e.data && e.data.error) || e.message || 'Error al guardar el pedido.', 'error');
   }
 }
 function formNuevoProveedor(){

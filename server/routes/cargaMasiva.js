@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, corregirBorradoresAutomaticosExistentes, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes } = require('../utils');
+const { registrarAuditoria, corregirBorradoresAutomaticosExistentes, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes, normalizarAseguradora } = require('../utils');
 const router = express.Router();
 
 /* ===================== Documento de Daniela (25-ago-2026), items 3/4/6 =====================
@@ -190,13 +190,18 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
     if(!dato.numero_siniestro || !dato.aseguradora || !dato.numero_pedido || !dato.fecha_prevista){
       omitidos.push({ dato, motivo:'Pedido incompleto, se omitió.' }); continue;
     }
+    // Hallazgo A-03: normaliza variantes de nombre de aseguradora ("MAPFRE TEPEYAC, S.A." -> "Mapfre")
+    // contra el catálogo de 8 que ya usa el resto del sistema, guardando el texto original importado.
+    const aseguradoraOriginal = dato.aseguradora;
+    const aseguradoraNormalizada = normalizarAseguradora(dato.aseguradora);
+    dato.aseguradora = aseguradoraNormalizada;
 
     // Siniestro: crear o actualizar (llenando solo lo que esté vacío; lo que ya tiene valor se reporta como conflicto).
     let siniestro = db.prepare('SELECT * FROM siniestros WHERE numero = ?').get(dato.numero_siniestro);
     if(!siniestro){
-      const info = db.prepare(`INSERT INTO siniestros (numero,aseguradora,vehiculo,placas,vin,fecha_ingreso,responsable,estatus_general,completo,creado_por,creado_por_lote_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(dato.numero_siniestro, dato.aseguradora, dato.vehiculo||'', dato.placas||'', dato.vin||'',
+      const info = db.prepare(`INSERT INTO siniestros (numero,aseguradora,aseguradora_texto_importado,vehiculo,placas,vin,fecha_ingreso,responsable,estatus_general,completo,creado_por,creado_por_lote_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(dato.numero_siniestro, aseguradoraNormalizada, aseguradoraNormalizada !== aseguradoraOriginal ? aseguradoraOriginal : null, dato.vehiculo||'', dato.placas||'', dato.vin||'',
              dato.fecha_ingreso || new Date().toISOString().slice(0,10), dato.responsable||req.session.user.nombre,
              'Abierto', (dato.vehiculo && dato.placas) ? 1 : 0, req.session.user.id, loteId);
       siniestro = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(info.lastInsertRowid);
@@ -230,12 +235,12 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
       const estatusOp = dato.estatus_operativo && ESTATUS_OPERATIVO_VALIDOS.includes(dato.estatus_operativo)
         ? dato.estatus_operativo
         : (estatusMapeadoPedido && estatusMapeadoPedido.estatus_pedido) || 'Nuevo';
-      const infoPed = db.prepare(`INSERT INTO pedidos (numero,siniestro_id,aseguradora,fecha_creacion,fecha_prevista,estatus_inpart,estatus_operativo,creado_por,creado_por_lote_id)
-        VALUES (?,?,?,?,?,?,?,?,?)`)
+      const infoPed = db.prepare(`INSERT INTO pedidos (numero,siniestro_id,aseguradora,fecha_creacion,fecha_prevista,estatus_inpart,estatus_operativo,creado_por,creado_por_lote_id,estatus_inpart_actualizado_en)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`)
         // Hallazgo real (27-ago-2026): Inpart entrega fecha_creacion_pedido en DD/MM/AAAA; se normaliza
         // a ISO aquí mismo para que la ventana operativa (1-jun-2026) la lea correctamente.
         .run(dato.numero_pedido, siniestro.id, dato.aseguradora, normalizarFechaISO(dato.fecha_creacion_pedido) || new Date().toISOString().slice(0,10),
-             dato.fecha_prevista, dato.estatus_inpart || 'Aguardando confirmación', estatusOp, req.session.user.id, loteId);
+             dato.fecha_prevista, dato.estatus_inpart || 'Aguardando confirmación', estatusOp, req.session.user.id, loteId, new Date().toISOString().replace('T',' ').slice(0,19));
       pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(infoPed.lastInsertRowid);
       pedidosCreados++;
       registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id: pedido.id, accion:'alta_carga_masiva', usuario:req.session.user, valor_nuevo:`Pedido ${dato.numero_pedido} (siniestro ${dato.numero_siniestro}), lote #${loteId}` });
@@ -247,8 +252,12 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
         if(dato.estatus_operativo && ESTATUS_OPERATIVO_VALIDOS.includes(dato.estatus_operativo)) nuevoEstatusOp = dato.estatus_operativo;
         else if(estatusMapeadoPedido && estatusMapeadoPedido.estatus_pedido) nuevoEstatusOp = estatusMapeadoPedido.estatus_pedido;
       }
-      db.prepare(`UPDATE pedidos SET fecha_prevista=?,estatus_inpart=?,estatus_operativo=?,actualizado_en=datetime('now') WHERE id=?`)
-        .run(dato.fecha_prevista || pedido.fecha_prevista, dato.estatus_inpart || pedido.estatus_inpart, nuevoEstatusOp, pedido.id);
+      // Hallazgo C-04 (parcial, sin credenciales reales de InPart): solo se toca la marca de "última
+      // actualización de Inpart" cuando el estatus de Inpart específicamente cambió en esta sincronización.
+      const nuevoEstatusInpart = dato.estatus_inpart || pedido.estatus_inpart;
+      const inpartActualizadoEn = (nuevoEstatusInpart !== pedido.estatus_inpart) ? new Date().toISOString().replace('T',' ').slice(0,19) : pedido.estatus_inpart_actualizado_en;
+      db.prepare(`UPDATE pedidos SET fecha_prevista=?,estatus_inpart=?,estatus_operativo=?,estatus_inpart_actualizado_en=?,actualizado_en=datetime('now') WHERE id=?`)
+        .run(dato.fecha_prevista || pedido.fecha_prevista, nuevoEstatusInpart, nuevoEstatusOp, inpartActualizadoEn, pedido.id);
       pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(pedido.id);
       pedidosActualizados++;
       registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id: pedido.id, accion:'actualizacion_carga_masiva', usuario:req.session.user, valor_nuevo:`Sincronizado desde Inpart (lote #${loteId})` });

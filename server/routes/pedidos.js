@@ -36,13 +36,20 @@ router.post('/', requireAuth, (req, res)=>{
   if(existente) return res.status(409).json({ error:'Ya existe un pedido con ese número (no se crean duplicados).', duplicado: existente });
 
   const fechaCreacion = b.fecha_creacion || new Date().toISOString().slice(0,10);
+  const hoy = new Date().toISOString().slice(0,10);
   const advertencias = [];
+  // Hallazgo A-05: una fecha prevista de hoy o anterior casi siempre es un error de captura (Inpart la reporta
+  // a futuro). Se bloquea y se pide confirmación explícita en vez de dejarla pasar silenciosamente.
+  if(b.fecha_prevista && b.fecha_prevista <= hoy && !b.confirmar_fecha_prevista){
+    return res.status(409).json({ error:'FECHA_PREVISTA_INVALIDA', mensaje:`La fecha prevista (${b.fecha_prevista}) es hoy o anterior. Confírmala si es correcta.` });
+  }
   if(b.fecha_prevista && b.fecha_prevista <= fechaCreacion) advertencias.push('La fecha prevista es igual o anterior a la fecha de alta; verifícala.');
+  const confirmadaPor = (b.fecha_prevista && b.fecha_prevista <= hoy && b.confirmar_fecha_prevista) ? req.session.user.nombre : null;
 
-  const info = db.prepare(`INSERT INTO pedidos (numero,cotizacion,siniestro_id,aseguradora,fecha_creacion,fecha_prevista,estatus_inpart,total,tipo_evaluacion,estatus_operativo,creado_por)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+  const info = db.prepare(`INSERT INTO pedidos (numero,cotizacion,siniestro_id,aseguradora,fecha_creacion,fecha_prevista,estatus_inpart,total,tipo_evaluacion,estatus_operativo,creado_por,fecha_prevista_confirmada_por,estatus_inpart_actualizado_en)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(String(b.numero).trim(), b.cotizacion||'', b.siniestro_id, b.aseguradora||siniestro.aseguradora, fechaCreacion, b.fecha_prevista||'',
-         b.estatus_inpart||'Aguardando confirmación', b.total||0, b.tipo_evaluacion||'Inicial', 'Nuevo', req.session.user.id);
+         b.estatus_inpart||'Aguardando confirmación', b.total||0, b.tipo_evaluacion||'Inicial', 'Nuevo', req.session.user.id, confirmadaPor, new Date().toISOString().replace('T',' ').slice(0,19));
   registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user, valor_nuevo:`Pedido ${b.numero} (siniestro ${siniestro.numero})` });
 
   // Módulo Alejandra (Fase 1): si el expediente maestro todavía no tenía definido si requiere refacciones,
@@ -73,9 +80,30 @@ router.patch('/:id', requireAuth, (req, res)=>{
   if(nuevo.estatus_operativo === 'Cancelado' && (!nuevo.motivo_cancelacion || !String(nuevo.motivo_cancelacion).trim())){
     return res.status(400).json({ error:'Para cancelar un pedido debes indicar el motivo (reasignación de proveedor, pérdida total, unidad que no repara u otro).' });
   }
-  db.prepare(`UPDATE pedidos SET cotizacion=?,aseguradora=?,fecha_creacion=?,fecha_prevista=?,estatus_inpart=?,total=?,tipo_evaluacion=?,estatus_operativo=?,motivo_cancelacion=?,actualizado_en=datetime('now') WHERE id=?`)
-    .run(nuevo.cotizacion, nuevo.aseguradora, nuevo.fecha_creacion, nuevo.fecha_prevista, nuevo.estatus_inpart, nuevo.total, nuevo.tipo_evaluacion, nuevo.estatus_operativo, nuevo.motivo_cancelacion, req.params.id);
+  // Hallazgo A-05: si cambian la fecha prevista a hoy o antes, exigir confirmación explícita.
+  const hoyPatch = new Date().toISOString().slice(0,10);
+  let confirmadaPorPatch = anterior.fecha_prevista_confirmada_por;
+  if(nuevo.fecha_prevista && nuevo.fecha_prevista !== anterior.fecha_prevista && nuevo.fecha_prevista <= hoyPatch){
+    if(!req.body.confirmar_fecha_prevista){
+      return res.status(409).json({ error:'FECHA_PREVISTA_INVALIDA', mensaje:`La fecha prevista (${nuevo.fecha_prevista}) es hoy o anterior. Confírmala si es correcta.` });
+    }
+    confirmadaPorPatch = req.session.user.nombre;
+  } else if(nuevo.fecha_prevista && nuevo.fecha_prevista !== anterior.fecha_prevista){
+    confirmadaPorPatch = null;
+  }
+  // C-04 (parcial): estatus_inpart_actualizado_en solo se toca cuando estatus_inpart específicamente cambió.
+  const estatusInpartActualizadoEn = (nuevo.estatus_inpart !== anterior.estatus_inpart) ? new Date().toISOString().replace('T',' ').slice(0,19) : anterior.estatus_inpart_actualizado_en;
+  db.prepare(`UPDATE pedidos SET cotizacion=?,aseguradora=?,fecha_creacion=?,fecha_prevista=?,estatus_inpart=?,total=?,tipo_evaluacion=?,estatus_operativo=?,motivo_cancelacion=?,fecha_prevista_confirmada_por=?,estatus_inpart_actualizado_en=?,actualizado_en=datetime('now') WHERE id=?`)
+    .run(nuevo.cotizacion, nuevo.aseguradora, nuevo.fecha_creacion, nuevo.fecha_prevista, nuevo.estatus_inpart, nuevo.total, nuevo.tipo_evaluacion, nuevo.estatus_operativo, nuevo.motivo_cancelacion, confirmadaPorPatch, estatusInpartActualizadoEn, req.params.id);
   auditarCambios(db, { entidad_tipo:'pedido', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+
+  // Hallazgo A-07 (Informe Daniela): si el estatus cambió y vino con un motivo explícito, se registra
+  // como su propia entrada de auditoría (queda visible en la línea de tiempo del expediente).
+  if(nuevo.estatus_operativo !== anterior.estatus_operativo && req.body.motivo_estatus && String(req.body.motivo_estatus).trim()){
+    registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id:req.params.id, accion:'cambio_estatus_motivo', campo:'motivo_estatus',
+      valor_anterior: anterior.estatus_operativo, valor_nuevo: `${anterior.estatus_operativo} -> ${nuevo.estatus_operativo}: ${String(req.body.motivo_estatus).trim()}`,
+      usuario: req.session.user });
+  }
 
   // Módulo Alejandra (Fase 5): automatizaciones cruzadas.
   if(nuevo.fecha_prevista && nuevo.fecha_prevista !== anterior.fecha_prevista){

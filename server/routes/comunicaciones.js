@@ -128,13 +128,45 @@ router.get('/pendientes', requireAuth, (req, res)=>{
   verificarCorreosPendientes(db);
   // Ventana operativa (27-ago-2026): por default solo pedidos desde el 1-jun-2026; ?ventana=todas lo quita.
   const conVentana = aplicaVentanaOperativa(req.query);
-  const filas = db.prepare(`SELECT c.*, s.numero as siniestro_numero, s.aseguradora, p.numero as pedido_numero
-                             FROM comunicaciones c
-                             JOIN pedidos p ON p.id = c.pedido_id
-                             JOIN siniestros s ON s.id = c.siniestro_id
-                             WHERE c.estado = 'pendiente_aprobacion'${conVentana ? ' AND p.fecha_creacion >= ?' : ''}
-                             ORDER BY c.fecha_envio ASC`).all(...(conVentana ? [VENTANA_OPERATIVA_DESDE] : []));
-  res.json(filas);
+  // Hallazgo A-02 (Informe Daniela): filtros por aseguradora/proveedor/incompleto, orden reciente/antiguo
+  // y paginación -- antes la bandeja completa (cientos de filas) se cargaba de un jalón sin forma de acotarla.
+  const { aseguradora, proveedor_id, incompleto, orden } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize, 10) || 50));
+  let sql = `SELECT c.*, s.numero as siniestro_numero, s.aseguradora, p.numero as pedido_numero
+             FROM comunicaciones c
+             JOIN pedidos p ON p.id = c.pedido_id
+             JOIN siniestros s ON s.id = c.siniestro_id
+             WHERE c.estado = 'pendiente_aprobacion'`;
+  const params = [];
+  if(conVentana){ sql += ' AND p.fecha_creacion >= ?'; params.push(VENTANA_OPERATIVA_DESDE); }
+  if(aseguradora){ sql += ' AND s.aseguradora = ?'; params.push(aseguradora); }
+  if(proveedor_id){ sql += ' AND c.proveedor_id = ?'; params.push(proveedor_id); }
+  if(incompleto === '1'){ sql += ' AND c.incompleto = 1'; }
+  else if(incompleto === '0'){ sql += ' AND c.incompleto = 0'; }
+  const total = db.prepare(`SELECT COUNT(*) n FROM (${sql})`).get(...params).n;
+  sql += orden === 'antiguo' ? ' ORDER BY c.fecha_envio ASC' : ' ORDER BY c.fecha_envio DESC';
+  sql += ' LIMIT ? OFFSET ?';
+  const filas = db.prepare(sql).all(...params, pageSize, (page - 1) * pageSize);
+  res.json({ total, page, pageSize, filas });
+});
+
+// Hallazgo C-03 (parcial, sin credenciales reales): estado de conexión visible antes de intentar
+// enviar -- así la pantalla puede avisar "Gmail no configurado" de entrada, en vez de que el usuario
+// se entere hasta que le rebota un 503.
+router.get('/estado-gmail', requireAuth, (req, res)=>{
+  const { estadoConexion } = require('../correoSaliente');
+  res.json(estadoConexion());
+});
+
+// Hallazgo A-02: fetch de un solo correo por id (con los mismos joins que /pendientes), para que la pantalla
+// de revisión no dependa de que ese registro siga estando en la página actual de la lista paginada.
+router.get('/:id', requireAuth, (req, res)=>{
+  const c = db.prepare(`SELECT c.*, s.numero as siniestro_numero, s.aseguradora, p.numero as pedido_numero
+                         FROM comunicaciones c JOIN pedidos p ON p.id = c.pedido_id JOIN siniestros s ON s.id = c.siniestro_id
+                         WHERE c.id = ?`).get(req.params.id);
+  if(!c) return res.status(404).json({ error:'Comunicación no encontrada.' });
+  res.json(c);
 });
 
 // Aprobar (y opcionalmente ajustar) un correo preparado automáticamente. Exclusivo de Daniela (operativo) y admin.
@@ -163,16 +195,22 @@ router.post('/:id/enviar', requireAuth, requireRole('operativo','admin'), async 
   const { configurado, enviarCorreo } = require('../correoSaliente');
   const com = db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(req.params.id);
   if(!com) return res.status(404).json({ error:'Comunicación no encontrada.' });
+  // Hallazgo C-03: si ya se envió (o se está reenviando por un doble clic/reintento de red), no se
+  // vuelve a mandar -- se informa con claridad que ya salió, en vez de arriesgar un envío duplicado.
+  if(com.estado === 'enviado'){
+    return res.status(409).json({ error:'Este correo ya se envió automáticamente (no se reenvía para evitar duplicados).', enviado_en: com.enviado_automaticamente_en, enviado_id_mensaje: com.enviado_id_mensaje });
+  }
   if(com.estado !== 'aprobado') return res.status(400).json({ error:'Solo se puede enviar un correo ya aprobado.' });
   if(!configurado()){
     return res.status(503).json({ error:'El envío automático por Gmail no está configurado todavía. Copia el correo manualmente como hasta ahora.' });
   }
+  let info;
   try{
-    await enviarCorreo({ to: com.destinatarios, cc: com.copia, subject: com.asunto, text: com.cuerpo });
+    info = await enviarCorreo({ to: com.destinatarios, cc: com.copia, subject: com.asunto, text: com.cuerpo });
   }catch(e){
     return res.status(502).json({ error:'Gmail rechazó el envío: ' + e.message + '. El correo sigue disponible para enviarlo manualmente.' });
   }
-  db.prepare(`UPDATE comunicaciones SET estado='enviado', enviado_automaticamente_en=datetime('now') WHERE id=?`).run(com.id);
+  db.prepare(`UPDATE comunicaciones SET estado='enviado', enviado_automaticamente_en=datetime('now'), enviado_id_mensaje=? WHERE id=?`).run(info && info.messageId ? String(info.messageId) : null, com.id);
   registrarAuditoria(db, { entidad_tipo:'comunicacion', entidad_id: com.id, accion:'correo_enviado_automaticamente', usuario:req.session.user, valor_nuevo: com.destinatarios });
   res.json(db.prepare('SELECT * FROM comunicaciones WHERE id = ?').get(com.id));
 });
