@@ -2876,3 +2876,73 @@ test('DANIELA2-10 (C-04): estatus_inpart_actualizado_en solo cambia cuando estat
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Proceso_Completo_Servicio_Cristian.docx (sección 7): reautorización de piezas
+   no autorizadas -- prioridad confirmada por Roberto sobre las demás brechas encontradas en ese
+   documento (grupo de WhatsApp, inventario manual, registro del paso de evaluación remota). ===================== */
+
+test('PROCESO-REAUT-1: admin/jefe puede solicitar reautorización con plazo de 24h y crea aviso automático para el expediente', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REAUT1-SIN', aseguradora: 'GNP' })).data;
+  const antes = Date.now();
+  const r = await req('POST', '/api/complementos', { siniestro_id: s.id, tipo: 'no_autorizado_inicial', pieza_operacion: 'defensa delantera, faro derecho', causa: 'No autorizadas, se requieren fotos editadas.' });
+  assert.equal(r.status, 201);
+  assert.equal(r.data.tipo, 'no_autorizado_inicial');
+  assert.equal(r.data.decision, 'pendiente');
+  assert.equal(r.data.vencido, false);
+  const limiteMs = new Date(r.data.fecha_limite).getTime();
+  const horas = (limiteMs - antes) / 3600000;
+  assert.ok(horas > 23.9 && horas < 24.1, `el plazo debe ser ~24h, fue ${horas}h`);
+
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  const aviso = tareas.find(t => t.disparador === 'reautorizacion_solicitada');
+  assert.ok(aviso, 'debe crearse un aviso automático');
+  assert.match(aviso.descripcion, /defensa delantera, faro derecho/);
+  assert.match(aviso.descripcion, /24h/);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('PROCESO-REAUT-2: Orlando y Beto no pueden crear una reautorización (es exclusivo de admin/jefe), pero sí siguen pudiendo registrar complementos por daño oculto', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REAUT2-SIN', aseguradora: 'GNP' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const bloqueado = await req('POST', '/api/complementos', { siniestro_id: s.id, tipo: 'no_autorizado_inicial', pieza_operacion: 'cofre', causa: 'x' });
+  assert.equal(bloqueado.status, 403);
+
+  const danoOculto = await req('POST', '/api/complementos', { siniestro_id: s.id, causa: 'golpe oculto detectado al desarmar' });
+  assert.equal(danoOculto.status, 201);
+  assert.equal(danoOculto.data.tipo, 'dano_oculto');
+  assert.equal(danoOculto.data.fecha_limite, null);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('PROCESO-REAUT-3: falta indicar las piezas no autorizadas se rechaza; y sin credenciales de tipo, la piezas no autorizadas se pueden marcar vencidas y contarlas en el resumen', async () => {
+  const db = require('../server/db');
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REAUT3-SIN', aseguradora: 'GNP' })).data;
+
+  const sinPiezas = await req('POST', '/api/complementos', { siniestro_id: s.id, tipo: 'no_autorizado_inicial', causa: 'x' });
+  assert.equal(sinPiezas.status, 400);
+
+  const creado = (await req('POST', '/api/complementos', { siniestro_id: s.id, tipo: 'no_autorizado_inicial', pieza_operacion: 'salpicadera', causa: 'x' })).data;
+  // Simula que ya venció el plazo (para no depender de esperar 24h reales en la prueba).
+  db.prepare("UPDATE complementos SET fecha_limite = datetime('now','-1 hour') WHERE id = ?").run(creado.id);
+
+  const lista = (await req('GET', `/api/complementos?siniestro_id=${s.id}&tipo=no_autorizado_inicial`)).data;
+  const fila = lista.find(c => c.id === creado.id);
+  assert.equal(fila.vencido, true);
+
+  const resumen = await req('GET', '/api/reportes/resumen');
+  assert.ok(resumen.data.complementosReautorizacionVencidos >= 1);
+
+  // Al resolverla (autorizado), deja de contar como vencida pendiente.
+  await req('PATCH', `/api/complementos/${creado.id}`, { decision: 'autorizado', estado: 'autorizado' });
+  const listaTrasResolver = (await req('GET', `/api/complementos?siniestro_id=${s.id}&tipo=no_autorizado_inicial`)).data;
+  const filaResuelta = listaTrasResolver.find(c => c.id === creado.id);
+  assert.equal(filaResuelta.vencido, false, 'ya resuelta (no pendiente), no debe seguir marcada como vencida');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

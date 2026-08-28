@@ -271,6 +271,7 @@ async function viewInicio(){
     <div class="card ${r.discrepanciasAbiertas>0?'rojo':'verde'}"><div class="num">${r.discrepanciasAbiertas}</div><div class="label">Discrepancias con proveedor</div></div>
     <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
     <div class="card ${r.correosIncompletos>0?'rojo':'verde'}" onclick="abrirCorreosIncompletos()"><div class="num">${r.correosIncompletos}</div><div class="label">Correos incompletos por completar</div></div>
+    <div class="card ${r.complementosReautorizacionVencidos>0?'rojo':'verde'}"><div class="num">${r.complementosReautorizacionVencidos}</div><div class="label">Reautorizaciones vencidas (24h)</div></div>
   </div>
   ${verOrlandoVanessa ? `
   <div class="section">
@@ -999,8 +1000,10 @@ async function viewSiniestro(id){
     ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoDocumento(${id})">+ Agregar documento</button></div>`:''}`;
   } else if(state.subtabSiniestro==='valuacion'){
     const puedeValuacion = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
+    const puedeSolicitarReautorizacion = currentUser && ['admin','jefe'].includes(currentUser.rol);
     const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
     const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
+    const reautorizaciones = await api('GET','/api/complementos?siniestro_id='+id+'&tipo=no_autorizado_inicial');
     body = `
     <h3>Valuación</h3>
     <p class="subtle">Sección 5.6 del documento maestro. Sistema de valuación tomado del expediente digital (${esc(s.sistema_valuacion||'sin definir')}).</p>
@@ -1024,7 +1027,20 @@ async function viewSiniestro(id){
       <tr><td>Importe autorizado</td><td>${s.autorizacion_importe!=null?fmtMoney(s.autorizacion_importe):'—'}</td></tr>
       <tr><td>Restricciones</td><td>${esc(s.autorizacion_restricciones||'—')}</td></tr>
     </tbody></table>
-    ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAutorizacion(${id})">Actualizar autorización</button></div>`:''}`;
+    ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAutorizacion(${id})">Actualizar autorización</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Piezas no autorizadas / reautorización</h3>
+    <p class="subtle">Sección 7 del proceso completo: cuando la evaluación regresa piezas no autorizadas, hay un plazo de 24h para mandar fotos editadas y pedirle al valuador que reconsidere, antes de soltar el expediente al equipo.</p>
+    ${reautorizaciones.length===0?'<div class="empty">Sin solicitudes de reautorización registradas.</div>':`
+    <table><thead><tr><th>Piezas no autorizadas</th><th>Plazo</th><th>Decisión</th><th></th></tr></thead><tbody>
+    ${reautorizaciones.map(rc=>`<tr>
+      <td>${esc(rc.pieza_operacion)}${rc.causa?`<div class="subtle">${esc(rc.causa)}</div>`:''}</td>
+      <td>${rc.decision==='pendiente'?(rc.vencido?`<span class="badge rojo">Vencido (${esc((rc.fecha_limite||'').slice(0,16).replace('T',' '))})</span>`:`<span class="badge ambar">Antes de ${esc((rc.fecha_limite||'').slice(0,16).replace('T',' '))}</span>`):'—'}</td>
+      <td><span class="badge ${rc.decision==='autorizado'?'verde':rc.decision==='rechazado'?'rojo':rc.decision==='parcial'?'ambar':'gris'}">${esc(rc.decision)}</span></td>
+      <td>${puedeValuacion?`<button class="btn small secondary" onclick="abrirFormEditarComplemento(${rc.id})">Actualizar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeSolicitarReautorizacion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaReautorizacion(${id})">+ Solicitar reautorización</button></div>`:''}`;
   } else if(state.subtabSiniestro==='produccion'){
     const puedeProduccion = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
     // Propuesta Orlando/Vanessa/Beto: Daniela/Alejandra adjuntan la OT (papel escaneado o digital) desde
@@ -1863,6 +1879,29 @@ async function guardarEdicionOperacion(operacionId){
   }catch(e){}
 }
 
+// Proceso_Completo_Servicio_Cristian.docx (sección 7): solicitud de reautorización por piezas no
+// autorizadas -- exclusiva de admin/jefe (Roberto), plazo de 24h calculado por el backend.
+async function abrirFormNuevaReautorizacion(siniestroId){
+  showModal(`
+    <h3>Solicitar reautorización</h3>
+    <p class="subtle">Piezas que la evaluación no autorizó. Se crea un aviso automático para Orlando con el plazo de 24h para mandar fotos editadas.</p>
+    <div class="field"><label>Piezas no autorizadas</label><textarea id="freaut_piezas" placeholder="Ej. defensa delantera, faro derecho"></textarea></div>
+    <div class="field"><label>Detalle / mano de obra requerida</label><textarea id="freaut_causa" placeholder="Qué se le pide al valuador que reconsidere"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaReautorizacion(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaReautorizacion(siniestroId){
+  const piezas = document.getElementById('freaut_piezas').value.trim();
+  if(!piezas){ toast('Indica qué piezas no fueron autorizadas.', 'error'); return; }
+  try{
+    await api('POST','/api/complementos', {
+      siniestro_id: siniestroId, tipo: 'no_autorizado_inicial', pieza_operacion: piezas,
+      causa: document.getElementById('freaut_causa').value.trim() || 'Piezas no autorizadas en la evaluación inicial.'
+    });
+    toast('Reautorización solicitada. Orlando tiene 24h para mandar fotos.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
 async function abrirFormNuevoComplemento(siniestroId){
   const ots = await api('GET','/api/ordenes-trabajo?siniestro_id='+siniestroId);
   showModal(`
@@ -1897,8 +1936,10 @@ async function abrirFormEditarComplemento(complementoId){
   const todos = await api('GET','/api/complementos');
   const c = todos.find(x=>x.id===complementoId);
   if(!c){ toast('Complemento no encontrado.', 'error'); return; }
+  const esReautorizacion = c.tipo === 'no_autorizado_inicial';
   showModal(`
-    <h3>Editar complemento</h3>
+    <h3>${esReautorizacion?'Actualizar reautorización':'Editar complemento'}</h3>
+    ${esReautorizacion?`<p class="subtle">Piezas: ${esc(c.pieza_operacion||'—')}. ${c.decision==='pendiente'?(c.vencido?`<span style="color:#b91c1c;">Plazo vencido (${esc((c.fecha_limite||'').slice(0,16).replace('T',' '))}).</span>`:`Plazo hasta ${esc((c.fecha_limite||'').slice(0,16).replace('T',' '))}.`):''}</p>`:''}
     <div class="field"><label>Causa / hallazgo</label><textarea id="fcompe_causa">${esc(c.causa)}</textarea></div>
     <div class="row-flex">
       <div class="field"><label>Decisión</label><select id="fcompe_decision">

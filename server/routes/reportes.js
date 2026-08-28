@@ -189,13 +189,18 @@ router.get('/resumen', requireAuth, (req, res)=>{
   // demás correos pendientes; ahora tiene su propio contador con acceso directo a la cola ya filtrada.
   const correosIncompletos = db.prepare(`SELECT COUNT(*) n FROM comunicaciones c JOIN pedidos p ON p.id=c.pedido_id WHERE c.estado='pendiente_aprobacion' AND c.incompleto=1 AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
 
+  // Proceso_Completo_Servicio_Cristian.docx (sección 7): solicitudes de reautorización por piezas no
+  // autorizadas cuyo plazo de 24h ya venció sin resolverse -- son las que más riesgo tienen de que
+  // Roberto pierda la ventana para pedirle al valuador que reconsidere.
+  const complementosReautorizacionVencidos = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE tipo='no_autorizado_inicial' AND decision='pendiente' AND fecha_limite < ?`).get(new Date().toISOString()).n;
+
   res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
     piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
     citasHoy, entregasProgramadas, porAvisarAutorizacion, refaccionesPorAvisar,
-    discrepanciasAbiertas, valesPendientesSinSurtir, correosIncompletos });
+    discrepanciasAbiertas, valesPendientesSinSurtir, correosIncompletos, complementosReautorizacionVencidos });
 });
 
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.

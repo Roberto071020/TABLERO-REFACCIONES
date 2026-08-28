@@ -997,6 +997,17 @@ if(!tieneColumna('comunicaciones', 'enviado_id_mensaje')){
 if(!tieneColumna('pedidos', 'estatus_inpart_actualizado_en')){
   db.exec(`ALTER TABLE pedidos ADD COLUMN estatus_inpart_actualizado_en TEXT;`);
 }
+// Proceso_Completo_Servicio_Cristian.docx (sección 7): "solicitud de complemento" por piezas NO
+// autorizadas en la evaluación inicial es un evento distinto al complemento por daño oculto que ya
+// existía (tabla 15) -- ocurre antes de producción, con un plazo corto (~24h) para reautorizar con
+// fotos editadas. Se reutiliza la misma tabla "complementos" (misma estructura: causa, archivo,
+// decisión, estado) distinguiendo el tipo, en vez de crear una tabla paralela.
+if(!tieneColumna('complementos', 'tipo')){
+  db.exec(`ALTER TABLE complementos ADD COLUMN tipo TEXT NOT NULL DEFAULT 'dano_oculto' CHECK(tipo IN ('dano_oculto','no_autorizado_inicial'));`);
+}
+if(!tieneColumna('complementos', 'fecha_limite')){
+  db.exec(`ALTER TABLE complementos ADD COLUMN fecha_limite TEXT;`);
+}
 
 module.exports = db;
 
