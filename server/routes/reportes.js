@@ -271,13 +271,95 @@ router.get('/pedidos-sin-piezas', requireAuth, (req, res)=>{
   res.json(filas);
 });
 
-// Roberto (28-ago-2026): las tarjetas del panorama de Orlando/Vanessa en Inicio deben abrir exactamente
-// lo que cuentan, mismo criterio que piezas-sin-proveedor/pedidos-sin-piezas de arriba. Empieza por
-// "Pendientes de revisión" (mismo WHERE que ovPendientesRevision en /resumen).
-router.get('/pendientes-revision-tecnica', requireAuth, (req, res)=>{
-  const filas = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, ingreso_tipo, creado_en
-    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica IS NULL ORDER BY creado_en ASC`).all();
-  res.json(filas);
+// Roberto (28-ago-2026): "quiero que se haga con todos, no solo con pendientes de revisión" -- todas
+// las tarjetas del resumen diario deben poder abrirse y mostrar exactamente lo que cuentan, no solo
+// unas cuantas. En vez de una ruta dedicada por tarjeta (piezas-sin-proveedor/pedidos-sin-piezas ya
+// existían así y se quedan igual), el resto usa esta ruta genérica con una clave por tarjeta: mismo
+// WHERE que su contador en /resumen, resultado siempre shape {id, numero, detalle} para un solo
+// renderer en el frontend. id/numero son del siniestro relacionado (para poder abrir su ficha).
+const DETALLE_TARJETAS = {
+  pedidosNuevos: (db, ctx) => db.prepare(`SELECT s.id, s.numero, ('Pedido ' || p.numero || ' · creado ' || p.fecha_creacion) detalle
+    FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo='Nuevo' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
+  piezasVencidas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' (pedido ' || p.numero || ') — vencía ' || z.fecha_prometida) detalle
+    FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ? ORDER BY z.fecha_prometida ASC`).all(ctx.hoy, ctx.desdeVentana),
+  piezasPorConfirmar: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' (pedido ' || p.numero || ')') detalle
+    FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE z.estatus='Asignada' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
+  recibidosParciales: (db, ctx) => db.prepare(`SELECT s.id, s.numero, ('Pedido ' || p.numero) detalle
+    FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo='Recibido parcial' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
+  piezasMalSurtidas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' — ' || i.tipo) detalle
+    FROM incidencias i JOIN piezas z ON z.id=i.pieza_id JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE i.tipo IN ('incorrecta','incompleta') AND i.estado IN ('abierta','en_proceso') AND p.fecha_creacion >= ? ORDER BY i.creado_en DESC`).all(ctx.desdeVentana),
+  piezasEnDevolucion: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' (pedido ' || p.numero || ')') detalle
+    FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE z.estatus='Devuelta' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
+  incidenciasAbiertas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' — ' || i.tipo) detalle
+    FROM incidencias i JOIN piezas z ON z.id=i.pieza_id JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE i.estado IN ('abierta','en_proceso') AND p.fecha_creacion >= ? ORDER BY i.creado_en DESC`).all(ctx.desdeVentana),
+  cierresHoy: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' (pedido ' || p.numero || ')') detalle
+    FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
+    WHERE z.fecha_recepcion LIKE ? AND p.fecha_creacion >= ? ORDER BY z.fecha_recepcion DESC`).all(ctx.hoy+'%', ctx.desdeVentana),
+  discrepanciasAbiertas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, d.descripcion detalle
+    FROM discrepancias_proveedor d JOIN siniestros s ON s.id=d.siniestro_id WHERE d.estado='abierta' ORDER BY d.creado_en DESC`).all(),
+  valesPendientesSinSurtir: (db, ctx) => db.prepare(`SELECT s.id, s.numero, ('Pendiente: ' || v.pieza_pendiente) detalle
+    FROM vales_pendientes v JOIN siniestros s ON s.id=v.siniestro_id WHERE v.estado='pendiente' ORDER BY v.creado_en DESC`).all(),
+  complementosReautorizacionVencidos: (db, ctx) => db.prepare(`SELECT s.id, s.numero, ('Vencía ' || c.fecha_limite || ' — ' || c.causa) detalle
+    FROM complementos c JOIN siniestros s ON s.id=c.siniestro_id
+    WHERE c.tipo='no_autorizado_inicial' AND c.decision='pendiente' AND c.fecha_limite < ? ORDER BY c.fecha_limite ASC`).all(new Date().toISOString()),
+
+  ovPendientesRevision: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo') || (CASE WHEN placas!='' THEN ' · '||placas ELSE '' END)) detalle
+    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica IS NULL ORDER BY creado_en ASC`).all(),
+  ovEnRevision: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo') || (CASE WHEN placas!='' THEN ' · '||placas ELSE '' END)) detalle
+    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='en_revision' ORDER BY creado_en ASC`).all(),
+  ovEsperandoDesarme: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo') || (CASE WHEN placas!='' THEN ' · '||placas ELSE '' END)) detalle
+    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='requiere_desarme' ORDER BY creado_en ASC`).all(),
+  ovComplementosPendientes: (db) => db.prepare(`SELECT s.id, s.numero, c.causa detalle
+    FROM complementos c JOIN siniestros s ON s.id=c.siniestro_id WHERE c.decision='pendiente' ORDER BY c.creado_en DESC`).all(),
+  ovBorradoresPorCapturar: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo')) detalle
+    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='revision_terminada' AND excel_capturado=0 ORDER BY creado_en ASC`).all(),
+  ovFotosPorCompletar: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo')) detalle
+    FROM siniestros WHERE archivado=0 AND excel_capturado=1 AND fotos_completas=0 ORDER BY creado_en ASC`).all(),
+  ovListosParaEnviar: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo')) detalle
+    FROM siniestros WHERE archivado=0 AND fotos_completas=1 AND enviado_propietario=0 ORDER BY creado_en ASC`).all(),
+
+  rbTiempoPromedioValuarDias: (db) => db.prepare(`SELECT id, numero,
+    ('Listo ' || expediente_listo_fecha || ' → enviado ' || valuacion_fecha_envio || ' (' || ROUND(julianday(valuacion_fecha_envio)-julianday(expediente_listo_fecha),1) || ' día(s))') detalle
+    FROM siniestros WHERE expediente_listo_fecha IS NOT NULL AND expediente_listo_fecha != '' AND valuacion_fecha_envio IS NOT NULL AND valuacion_fecha_envio != '' ORDER BY valuacion_fecha_envio DESC`).all(),
+  rbTiempoPromedioComplementoOrlandoDias: (db) => db.prepare(`SELECT s.id, s.numero,
+    ('Creado ' || c.creado_en || ' → resuelto ' || c.decision_en || ' (' || ROUND(julianday(c.decision_en)-julianday(c.creado_en),1) || ' día(s))') detalle
+    FROM complementos c JOIN siniestros s ON s.id=c.siniestro_id WHERE c.tipo='no_autorizado_inicial' AND c.decision_en IS NOT NULL AND c.decision_en != '' ORDER BY c.decision_en DESC`).all(),
+
+  citasHoy: (db, ctx) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo')) detalle
+    FROM siniestros WHERE archivado=0 AND cita_fecha=? ORDER BY numero`).all(ctx.hoy),
+  entregasProgramadas: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo')) detalle
+    FROM siniestros WHERE archivado=0 AND estado_entrega='cita_confirmada' ORDER BY numero`).all(),
+  porAvisarAutorizacion: (db) => db.prepare(`SELECT s.id, s.numero, t.descripcion detalle
+    FROM tareas t JOIN siniestros s ON s.id=t.siniestro_id WHERE t.disparador='autorizacion_resuelta' AND t.estado IN ('pendiente','en_proceso') ORDER BY t.creado_en DESC`).all(),
+  refaccionesPorAvisar: (db) => db.prepare(`SELECT s.id, s.numero, t.descripcion detalle
+    FROM tareas t JOIN siniestros s ON s.id=t.siniestro_id WHERE t.disparador='refacciones_completas' AND t.estado IN ('pendiente','en_proceso') ORDER BY t.creado_en DESC`).all(),
+  expedientesSinActualizar: (db) => db.prepare(`
+    SELECT s.id, s.numero, ('Sin comunicación desde ' || COALESCE((SELECT MAX(creado_en) FROM eventos_cliente WHERE siniestro_id=s.id), s.creado_en)) detalle
+    FROM siniestros s
+    WHERE s.archivado = 0 AND s.estatus_general != 'Cerrado' AND s.requiere_refacciones != 'no'
+      AND julianday('now') - julianday(COALESCE((SELECT MAX(creado_en) FROM eventos_cliente WHERE siniestro_id = s.id), s.creado_en)) > 3
+    ORDER BY s.numero`).all(),
+  tareasPendientes: (db) => db.prepare(`SELECT s.id, s.numero, (t.descripcion || CASE WHEN t.fecha_limite IS NOT NULL AND t.fecha_limite != '' THEN ' — vence ' || t.fecha_limite ELSE '' END) detalle
+    FROM tareas t JOIN siniestros s ON s.id=t.siniestro_id WHERE t.estado IN ('pendiente','en_proceso') ORDER BY t.fecha_limite ASC`).all(),
+  tareasVencidas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (t.descripcion || ' — vencía ' || t.fecha_limite) detalle
+    FROM tareas t JOIN siniestros s ON s.id=t.siniestro_id WHERE t.estado IN ('pendiente','en_proceso') AND t.fecha_limite != '' AND t.fecha_limite < ? ORDER BY t.fecha_limite ASC`).all(ctx.hoy),
+  hitosListosSinEnviar: (db) => db.prepare(`SELECT s.id, s.numero, ch.titulo detalle
+    FROM siniestro_hitos sh JOIN siniestros s ON s.id=sh.siniestro_id JOIN catalogo_hitos ch ON ch.id=sh.hito_id
+    WHERE sh.estado='generado' ORDER BY sh.actualizado_en DESC`).all(),
+  mensajesIaPendientes: (db) => db.prepare(`SELECT s.id, s.numero, ('Borrador generado ' || m.generado_en) detalle
+    FROM mensajes_ia m JOIN siniestros s ON s.id=m.siniestro_id WHERE m.estado='generado' ORDER BY m.generado_en DESC`).all(),
+};
+router.get('/detalle/:clave', requireAuth, (req, res)=>{
+  const fn = DETALLE_TARJETAS[req.params.clave];
+  if(!fn) return res.status(404).json({ error:'No hay detalle definido para esta tarjeta.' });
+  const hoy = new Date().toISOString().slice(0,10);
+  const ctx = { hoy, desdeVentana: aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01' };
+  res.json(fn(db, ctx));
 });
 
 // Hallazgo A-06 (Informe Daniela): vista dedicada de piezas ya recibidas físicamente, con quién y cuándo

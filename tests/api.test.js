@@ -3190,11 +3190,30 @@ test('ALEJ-5: deducible_aplica (alta) es independiente de cubre_deducible (entre
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
-test('ALEJ-6: pendientes-revision-tecnica devuelve exactamente lo que cuenta ovPendientesRevision en el resumen', async () => {
+test('ALEJ-6: el detalle genérico de ovPendientesRevision devuelve exactamente lo que cuenta la tarjeta del resumen', async () => {
   const s = (await req('POST', '/api/siniestros', { numero: 'ALEJ6-SIN', aseguradora: 'GNP' })).data;
   const resumen = await req('GET', '/api/reportes/resumen');
-  const lista = await req('GET', '/api/reportes/pendientes-revision-tecnica');
+  const lista = await req('GET', '/api/reportes/detalle/ovPendientesRevision');
   assert.equal(lista.status, 200);
   assert.equal(lista.data.length, resumen.data.ovPendientesRevision, 'la lista debe tener el mismo total que la tarjeta del resumen');
   assert.ok(lista.data.some(x => x.numero === 'ALEJ6-SIN'), 'un siniestro recién creado sin revisión técnica debe aparecer en la lista');
+});
+
+test('ALEJ-7: todas las claves de detalle de tarjetas del resumen diario responden 200 (sin errores de SQL)', async () => {
+  const claves = [
+    'pedidosNuevos','piezasVencidas','piezasPorConfirmar','recibidosParciales','piezasMalSurtidas',
+    'piezasEnDevolucion','incidenciasAbiertas','cierresHoy','discrepanciasAbiertas','valesPendientesSinSurtir',
+    'complementosReautorizacionVencidos',
+    'ovPendientesRevision','ovEnRevision','ovEsperandoDesarme','ovComplementosPendientes','ovBorradoresPorCapturar','ovFotosPorCompletar','ovListosParaEnviar',
+    'rbTiempoPromedioValuarDias','rbTiempoPromedioComplementoOrlandoDias',
+    'citasHoy','entregasProgramadas','porAvisarAutorizacion','refaccionesPorAvisar','expedientesSinActualizar',
+    'tareasPendientes','tareasVencidas','hitosListosSinEnviar','mensajesIaPendientes'
+  ];
+  for(const clave of claves){
+    const r = await req('GET', '/api/reportes/detalle/' + clave);
+    assert.equal(r.status, 200, 'clave ' + clave + ' debe responder 200, dio ' + r.status + ' ' + JSON.stringify(r.data));
+    assert.ok(Array.isArray(r.data), 'clave ' + clave + ' debe regresar un arreglo');
+  }
+  const noExiste = await req('GET', '/api/reportes/detalle/noExiste');
+  assert.equal(noExiste.status, 404);
 });

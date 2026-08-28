@@ -260,33 +260,33 @@ async function viewInicio(){
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
   ${r.pendientesCompletar>0?`<div class="banner ambar">${r.pendientesCompletar} siniestro(s) están "Pendiente de completar" — les falta vehículo o placas. Complétalos desde su ficha.</div>`:''}
   <div class="grid-cards">
-    <div class="card azul"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
-    <div class="card rojo"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
+    <div class="card azul" onclick="abrirDetalleTarjeta('pedidosNuevos','Pedidos nuevos')"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
+    <div class="card rojo" onclick="abrirDetalleTarjeta('piezasVencidas','Piezas vencidas')"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
     <div class="card ambar" onclick="abrirListaSinProveedor()"><div class="num">${r.sinProveedor}</div><div class="label">Piezas sin proveedor</div></div>
     <div class="card ambar" onclick="abrirListaPedidosSinPiezas()"><div class="num">${r.pedidosSinPiezas}</div><div class="label">Pedidos sin piezas capturadas</div></div>
-    <div class="card ambar"><div class="num">${r.piezasPorConfirmar}</div><div class="label">Por confirmar</div></div>
-    <div class="card azul"><div class="num">${r.recibidosParciales}</div><div class="label">Recibidos parciales</div></div>
-    <div class="card rojo"><div class="num">${r.piezasMalSurtidas}</div><div class="label">Mal surtidas</div></div>
-    <div class="card ambar"><div class="num">${r.piezasEnDevolucion}</div><div class="label">En devolución</div></div>
-    <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
-    <div class="card verde"><div class="num">${r.cierresHoy}</div><div class="label">Recibidas hoy</div></div>
-    <div class="card ${r.discrepanciasAbiertas>0?'rojo':'verde'}"><div class="num">${r.discrepanciasAbiertas}</div><div class="label">Discrepancias con proveedor</div></div>
-    <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
+    <div class="card ambar" onclick="abrirDetalleTarjeta('piezasPorConfirmar','Piezas por confirmar')"><div class="num">${r.piezasPorConfirmar}</div><div class="label">Por confirmar</div></div>
+    <div class="card azul" onclick="abrirDetalleTarjeta('recibidosParciales','Pedidos recibidos parciales')"><div class="num">${r.recibidosParciales}</div><div class="label">Recibidos parciales</div></div>
+    <div class="card rojo" onclick="abrirDetalleTarjeta('piezasMalSurtidas','Piezas mal surtidas')"><div class="num">${r.piezasMalSurtidas}</div><div class="label">Mal surtidas</div></div>
+    <div class="card ambar" onclick="abrirDetalleTarjeta('piezasEnDevolucion','Piezas en devolución')"><div class="num">${r.piezasEnDevolucion}</div><div class="label">En devolución</div></div>
+    <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('incidenciasAbiertas','Incidencias abiertas')"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
+    <div class="card verde" onclick="abrirDetalleTarjeta('cierresHoy','Piezas recibidas hoy')"><div class="num">${r.cierresHoy}</div><div class="label">Recibidas hoy</div></div>
+    <div class="card ${r.discrepanciasAbiertas>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('discrepanciasAbiertas','Discrepancias con proveedor')"><div class="num">${r.discrepanciasAbiertas}</div><div class="label">Discrepancias con proveedor</div></div>
+    <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}" onclick="abrirDetalleTarjeta('valesPendientesSinSurtir','Vales pendientes de surtir')"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
     <div class="card ${r.correosIncompletos>0?'rojo':'verde'}" onclick="abrirCorreosIncompletos()"><div class="num">${r.correosIncompletos}</div><div class="label">Correos incompletos por completar</div></div>
-    <div class="card ${r.complementosReautorizacionVencidos>0?'rojo':'verde'}"><div class="num">${r.complementosReautorizacionVencidos}</div><div class="label">Reautorizaciones vencidas (24h)</div></div>
+    <div class="card ${r.complementosReautorizacionVencidos>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('complementosReautorizacionVencidos','Reautorizaciones vencidas (24h)')"><div class="num">${r.complementosReautorizacionVencidos}</div><div class="label">Reautorizaciones vencidas (24h)</div></div>
   </div>
   ${verOrlandoVanessa ? `
   <div class="section">
     <h3>Revisión técnica y captura (Orlando + Vanessa)</h3>
     <p class="subtle">Panorama único que cubre revisión de daños y captura del expediente, para operar ambas partes sin cambiar de usuario.</p>
     <div class="grid-cards">
-      <div class="card ambar" onclick="abrirListaPendientesRevision()"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
-      <div class="card azul"><div class="num">${r.ovEnRevision}</div><div class="label">En revisión</div></div>
-      <div class="card rojo"><div class="num">${r.ovEsperandoDesarme}</div><div class="label">Esperando apoyo/desarme</div></div>
-      <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.ovComplementosPendientes}</div><div class="label">Complementos pendientes</div></div>
-      <div class="card ambar"><div class="num">${r.ovBorradoresPorCapturar}</div><div class="label">Borradores por capturar a Excel</div></div>
-      <div class="card azul"><div class="num">${r.ovFotosPorCompletar}</div><div class="label">Fotos/carpetas por completar</div></div>
-      <div class="card verde"><div class="num">${r.ovListosParaEnviar}</div><div class="label">Listos para enviar al propietario</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('ovPendientesRevision','Pendientes de revisión')"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('ovEnRevision','En revisión')"><div class="num">${r.ovEnRevision}</div><div class="label">En revisión</div></div>
+      <div class="card rojo" onclick="abrirDetalleTarjeta('ovEsperandoDesarme','Esperando apoyo/desarme')"><div class="num">${r.ovEsperandoDesarme}</div><div class="label">Esperando apoyo/desarme</div></div>
+      <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('ovComplementosPendientes','Complementos pendientes')"><div class="num">${r.ovComplementosPendientes}</div><div class="label">Complementos pendientes</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('ovBorradoresPorCapturar','Borradores por capturar a Excel')"><div class="num">${r.ovBorradoresPorCapturar}</div><div class="label">Borradores por capturar a Excel</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('ovFotosPorCompletar','Fotos/carpetas por completar')"><div class="num">${r.ovFotosPorCompletar}</div><div class="label">Fotos/carpetas por completar</div></div>
+      <div class="card verde" onclick="abrirDetalleTarjeta('ovListosParaEnviar','Listos para enviar al propietario')"><div class="num">${r.ovListosParaEnviar}</div><div class="label">Listos para enviar al propietario</div></div>
     </div>
   </div>` : ''}
   ${verRoberto ? `
@@ -299,8 +299,8 @@ async function viewInicio(){
       <div class="card ${r.rbComplementosAbiertos>0?'ambar':'verde'}" onclick="goTo('valuacion')"><div class="num">${r.rbComplementosAbiertos}</div><div class="label">Complementos abiertos</div></div>
       <div class="card ${r.rbFaltaAvisoProveedores>0?'ambar':'verde'}" onclick="goTo('valuacion')"><div class="num">${r.rbFaltaAvisoProveedores}</div><div class="label">Autorizados, falta avisar proveedores</div></div>
       <div class="card ${r.rbListosExpedienteCompleto>0?'verde':'gris'}" onclick="goTo('valuacion')"><div class="num">${r.rbListosExpedienteCompleto}</div><div class="label">Listos para enviar expediente completo</div></div>
-      <div class="card azul"><div class="num">${r.rbTiempoPromedioValuarDias!=null?r.rbTiempoPromedioValuarDias+'d':'—'}</div><div class="label">Tiempo promedio en valuar</div></div>
-      <div class="card azul"><div class="num">${r.rbTiempoPromedioComplementoOrlandoDias!=null?r.rbTiempoPromedioComplementoOrlandoDias+'d':'—'}</div><div class="label">Tiempo promedio de Orlando en complementos</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('rbTiempoPromedioValuarDias','Tiempo en valuar — detalle por expediente')"><div class="num">${r.rbTiempoPromedioValuarDias!=null?r.rbTiempoPromedioValuarDias+'d':'—'}</div><div class="label">Tiempo promedio en valuar</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('rbTiempoPromedioComplementoOrlandoDias','Tiempo de Orlando en complementos — detalle')"><div class="num">${r.rbTiempoPromedioComplementoOrlandoDias!=null?r.rbTiempoPromedioComplementoOrlandoDias+'d':'—'}</div><div class="label">Tiempo promedio de Orlando en complementos</div></div>
     </div>
   </div>` : ''}
   ${verBeto ? `
@@ -335,15 +335,15 @@ async function viewInicio(){
     <h3>Atención a clientes</h3>
     <p class="subtle">Seguimiento del lado del cliente (módulo de Alejandra), aparte de las refacciones.</p>
     <div class="grid-cards">
-      <div class="card azul"><div class="num">${r.citasHoy}</div><div class="label">Citas del día</div></div>
-      <div class="card verde"><div class="num">${r.entregasProgramadas}</div><div class="label">Entregas programadas</div></div>
-      <div class="card ambar"><div class="num">${r.porAvisarAutorizacion}</div><div class="label">Por avisar autorización</div></div>
-      <div class="card ambar"><div class="num">${r.refaccionesPorAvisar}</div><div class="label">Refacciones por avisar</div></div>
-      <div class="card ${r.expedientesSinActualizar>0?'rojo':'verde'}"><div class="num">${r.expedientesSinActualizar}</div><div class="label">Sin respuesta reciente (+3 días)</div></div>
-      <div class="card ambar"><div class="num">${r.tareasPendientes}</div><div class="label">Tareas pendientes</div></div>
-      <div class="card ${r.tareasVencidas>0?'rojo':'verde'}"><div class="num">${r.tareasVencidas}</div><div class="label">Tareas vencidas</div></div>
-      <div class="card azul"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Hitos listos, sin avisar al cliente</div></div>
-      <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.mensajesIaPendientes}</div><div class="label">Mensajes de IA por revisar</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('citasHoy','Citas del día')"><div class="num">${r.citasHoy}</div><div class="label">Citas del día</div></div>
+      <div class="card verde" onclick="abrirDetalleTarjeta('entregasProgramadas','Entregas programadas')"><div class="num">${r.entregasProgramadas}</div><div class="label">Entregas programadas</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('porAvisarAutorizacion','Por avisar autorización')"><div class="num">${r.porAvisarAutorizacion}</div><div class="label">Por avisar autorización</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('refaccionesPorAvisar','Refacciones por avisar')"><div class="num">${r.refaccionesPorAvisar}</div><div class="label">Refacciones por avisar</div></div>
+      <div class="card ${r.expedientesSinActualizar>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('expedientesSinActualizar','Sin respuesta reciente (+3 días)')"><div class="num">${r.expedientesSinActualizar}</div><div class="label">Sin respuesta reciente (+3 días)</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('tareasPendientes','Tareas pendientes')"><div class="num">${r.tareasPendientes}</div><div class="label">Tareas pendientes</div></div>
+      <div class="card ${r.tareasVencidas>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('tareasVencidas','Tareas vencidas')"><div class="num">${r.tareasVencidas}</div><div class="label">Tareas vencidas</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('hitosListosSinEnviar','Hitos listos, sin avisar al cliente')"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Hitos listos, sin avisar al cliente</div></div>
+      <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('mensajesIaPendientes','Mensajes de IA por revisar')"><div class="num">${r.mensajesIaPendientes}</div><div class="label">Mensajes de IA por revisar</div></div>
     </div>
   </div>` : ''}
   <div class="section">
@@ -361,20 +361,18 @@ function abrirCorreosIncompletos(){
   state.filtrosCorreos = { incompleto:'1', page:1 };
   goTo('correos');
 }
-async function abrirListaPendientesRevision(){
-  const filas = await api('GET','/api/reportes/pendientes-revision-tecnica');
-  const LABEL_ING = { grua:'Grúa', circulando:'Circulando' };
+// Roberto (28-ago-2026): "quiero que se haga con todos, no solo con pendientes de revisión" -- un solo
+// renderer genérico para cualquier tarjeta del resumen diario, usando la ruta genérica del backend
+// (/api/reportes/detalle/:clave), que siempre regresa filas {id, numero, detalle} de un siniestro.
+async function abrirDetalleTarjeta(clave, titulo){
+  const filas = await api('GET','/api/reportes/detalle/'+clave).catch(()=>[]);
   showModal(`
-    <h3>Pendientes de revisión técnica (${filas.length})</h3>
-    <p class="subtle">Expedientes sin ningún estado de revisión capturado todavía.</p>
+    <h3>${esc(titulo)} (${filas.length})</h3>
     ${filas.length===0?'<div class="empty">Ninguno.</div>':`
-    <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Vehículo</th><th>Placas</th><th>Ingreso</th></tr></thead><tbody>
+    <table><thead><tr><th>Siniestro</th><th>Detalle</th></tr></thead><tbody>
     ${filas.map(f=>`<tr>
       <td><span class="link" onclick="closeModal();goSiniestro(${f.id})">${esc(f.numero)}</span></td>
-      <td>${esc(f.aseguradora)}</td>
-      <td>${esc(f.vehiculo||'—')}</td>
-      <td>${esc(f.placas||'—')}</td>
-      <td>${f.ingreso_tipo?esc(LABEL_ING[f.ingreso_tipo]||f.ingreso_tipo):'<span class="badge gris">Sin definir</span>'}</td>
+      <td>${esc(f.detalle||'—')}</td>
     </tr>`).join('')}
     </tbody></table>`}
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
