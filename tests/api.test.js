@@ -3157,3 +3157,37 @@ test('ALEJ-4: bandeja-clientes expone tipo_reparacion y estado_entrega para los 
   assert.ok('estado_entrega' in fila);
 });
 
+test('ALEJ-5: deducible_aplica (alta) es independiente de cubre_deducible (entrega) -- fijarlo al crear no debe saltarse la pregunta de la entrega', async () => {
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba ALEJ5', 'atencion.alej5.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.alej5.test@serviciocristian.mx', password: 'x' });
+  const s = (await req('POST', '/api/siniestros', {
+    numero: 'ALEJ5-SIN', aseguradora: 'GNP', deducible_aplica: 1,
+    cliente_nombre: 'Cliente Deducible', cliente_telefono: '555-0005', cliente_correo: 'ded@cliente.com'
+  })).data;
+  assert.equal(s.deducible_aplica, 1, 'deducible_aplica debe guardarse desde el alta');
+  assert.equal(s.cubre_deducible, null, 'cubre_deducible (el de la entrega) NO debe tocarse solo por fijar deducible_aplica en el alta');
+
+  // solo el grupo de admisión puede tocar deducible_aplica
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const noPermitido = await req('PATCH', '/api/siniestros/' + s.id, { deducible_aplica: 0 });
+  assert.equal(noPermitido.status, 403);
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { deducible_aplica: '' });
+  assert.equal(r.data.deducible_aplica, null, '"" (Sin definir) debe normalizarse a NULL');
+
+  // el hito de entrega sigue preguntando cubre_deducible normalmente, sin importar deducible_aplica
+  const hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const hitoEntrega = hitos.find(h => h.clave === 'entrega');
+  assert.ok(hitoEntrega, 'debe existir el hito de entrega');
+  const rHito = await req('PATCH', '/api/hitos/' + hitoEntrega.id, { estado: 'pendiente', cubre_deducible: true });
+  assert.equal(rHito.status, 200);
+  const sDespues = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(sDespues.cubre_deducible, 1, 'cubre_deducible sí se puede fijar desde el hito de entrega, como siempre');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+

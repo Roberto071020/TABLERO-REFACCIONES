@@ -1051,6 +1051,13 @@ if(!tieneColumna('siniestros', 'tipo_reparacion')){
 if(!tieneColumna('siniestros', 'es_particular')){
   db.exec(`ALTER TABLE siniestros ADD COLUMN es_particular INTEGER DEFAULT 0;`);
 }
+// Roberto aclaró (28-ago-2026): "cubre_deducible" (arriba) y este campo NO son lo mismo. Son dos
+// preguntas en dos momentos distintos: al alta (Alejandra) se pregunta si el deducible APLICA o no,
+// solo para que el equipo lo sepa desde el inicio; en la entrega se pregunta si YA QUEDÓ VALIDADO
+// con la aseguradora y en firme (eso sigue siendo cubre_deducible, sin tocar). NULL = sin definir.
+if(!tieneColumna('siniestros', 'deducible_aplica')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN deducible_aplica INTEGER;`);
+}
 
 module.exports = db;
 

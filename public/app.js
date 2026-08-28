@@ -944,6 +944,7 @@ async function viewSiniestro(id){
       <tr><td>Kilometraje / combustible</td><td>${esc(s.kilometraje||'—')} ${s.combustible_nivel?('· '+esc(s.combustible_nivel)):''}</td></tr>
       <tr><td>Llaves entregadas</td><td>${s.llaves_entregadas?'Sí':'No'}</td></tr>
       ${s.requiere_dado_seguridad?`<tr><td>Dado de seguridad</td><td>${s.dado_seguridad_colocado?'<span class="badge verde">Colocado</span>':'<span class="badge rojo">Falta colocar</span>'}</td></tr>`:''}
+      <tr><td>¿Aplica deducible?</td><td>${s.deducible_aplica==null?'<span class="badge gris">Sin definir</span>':(s.deducible_aplica?'<span class="badge ambar">Sí aplica</span>':'<span class="badge gris">No aplica</span>')}</td></tr>
       <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
       <tr><td>Estado de admisión</td><td><span class="badge ${BADGE_ADM[s.estado_admision]||'gris'}">${LABEL_ADM[s.estado_admision]||'Pendiente'}</span>${s.motivo_admision?` — ${esc(s.motivo_admision)}`:''}</td></tr>
       <tr><td>Disponible para revisión</td><td>${s.fecha_hora_disponible_revision?`<span class="badge verde">Sí</span> · ${esc(s.fecha_hora_disponible_revision)}`:`<span class="badge ambar">Aún no</span>${(s.admision_faltantes&&s.admision_faltantes.length)?` — falta: ${s.admision_faltantes.map(esc).join(', ')}`:''}`}</td></tr>
@@ -1187,6 +1188,7 @@ async function viewSiniestro(id){
       <tr><td>Kilometraje / combustible</td><td>${esc(s.entrega_kilometraje||'—')} ${s.entrega_combustible?('· '+esc(s.entrega_combustible)):''}</td></tr>
       <tr><td>Llaves entregadas</td><td>${s.entrega_llaves_entregadas?'Sí':'No'}</td></tr>
       <tr><td>Deducible informado (monto)</td><td>${s.deducible!=null?fmtMoney(s.deducible):'—'}</td></tr>
+      <tr><td>¿Cubre deducible? (validado y en firme)</td><td>${s.cubre_deducible==null?'<span class="badge ambar">Sin validar con la aseguradora</span>':(s.cubre_deducible?'<span class="badge verde">Sí, en firme</span>':'<span class="badge gris">No</span>')}</td></tr>
       <tr><td>Deducible pagado y confirmado</td><td>${s.deducible_pagado_confirmado_en?`<span class="badge verde">Sí</span> · ${esc(s.deducible_pagado_confirmado_en)}`:'<span class="badge ambar">Aún no</span>'}</td></tr>
       ${s.aseguradora==='GNP'?`<tr><td>Encuesta GNP solicitada en el momento</td><td>${s.entrega_encuesta_gnp_solicitada?'<span class="badge verde">Sí</span>':'<span class="badge ambar">No</span>'}</td></tr>`:''}
       <tr><td>Observación</td><td>${esc(s.entrega_observacion||'—')}</td></tr>
@@ -2792,8 +2794,16 @@ function formNuevoExpediente(){
         <option value="circulando">Circulando</option>
         <option value="grua">Grúa</option>
       </select></div>
+      <div class="field">
+        <label>¿Aplica deducible?</label>
+        <select id="fx_deducible_aplica">
+          <option value="">Sin definir</option>
+          <option value="1">Sí aplica</option>
+          <option value="0">No aplica</option>
+        </select>
+        <p class="subtle" style="margin:4px 0 0;">Es solo para que el equipo lo sepa desde ahora; la confirmación de que ya quedó validado y en firme con la aseguradora se pregunta aparte, en la entrega.</p>
+      </div>
       <div class="field" style="display:flex;flex-direction:column;gap:6px;justify-content:center;">
-        <label><input type="checkbox" id="fx_deducible"> Cubre deducible</label>
         <label><input type="checkbox" id="fx_llaves"> Llaves entregadas</label>
         <label><input type="checkbox" id="fx_dado"> Dado de seguridad colocado</label>
       </div>
@@ -2852,7 +2862,7 @@ async function guardarExpediente(){
       vehiculo: document.getElementById('fx_vehiculo').value,
       placas: document.getElementById('fx_placas').value,
       ingreso_tipo: ingresoTipo,
-      cubre_deducible: document.getElementById('fx_deducible').checked ? 1 : 0,
+      deducible_aplica: document.getElementById('fx_deducible_aplica').value,
       llaves_entregadas: llaves ? 1 : 0,
       dado_seguridad_colocado: document.getElementById('fx_dado').checked ? 1 : 0,
       es_particular: particular ? 1 : 0
