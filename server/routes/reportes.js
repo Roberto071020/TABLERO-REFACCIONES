@@ -194,13 +194,37 @@ router.get('/resumen', requireAuth, (req, res)=>{
   // Roberto pierda la ventana para pedirle al valuador que reconsidere.
   const complementosReautorizacionVencidos = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE tipo='no_autorizado_inicial' AND decision='pendiente' AND fecha_limite < ?`).get(new Date().toISOString()).n;
 
+  // Proceso_Completo_Servicio_Cristian.docx (secciones 5, 7, 8, 9): panorama propio de Roberto -- lo
+  // que hoy hace por correo/Excel/CG y que quiere ver reflejado aquí: cuántos expedientes tiene listos
+  // para valuar, cuántos están esperando respuesta de la evaluación remota, cuántos complementos siguen
+  // abiertos, y a cuántos ya autorizados les falta avisar de proveedores o soltar el expediente completo.
+  const rbListosParaValuar = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_expediente='listo_para_valuacion' AND (valuacion_fecha_envio IS NULL OR valuacion_fecha_envio='')`).get().n;
+  const rbEnEsperaEvaluacion = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND valuacion_fecha_envio IS NOT NULL AND valuacion_fecha_envio != '' AND estado_autorizacion NOT IN ('autorizada','parcial','rechazada')`).get().n;
+  const rbComplementosAbiertos = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE tipo='no_autorizado_inicial' AND decision='pendiente'`).get().n;
+  const rbFaltaAvisoProveedores = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_autorizacion IN ('autorizada','parcial') AND (proveedores_aviso_pendiente_en IS NULL OR proveedores_aviso_pendiente_en='') AND (expediente_completo_enviado_en IS NULL OR expediente_completo_enviado_en='')`).get().n;
+  const rbListosExpedienteCompleto = db.prepare(`
+    SELECT COUNT(*) n FROM siniestros s
+    WHERE s.archivado=0 AND s.estado_autorizacion IN ('autorizada','parcial')
+      AND (s.expediente_completo_enviado_en IS NULL OR s.expediente_completo_enviado_en='')
+      AND NOT EXISTS (SELECT 1 FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE p.siniestro_id=s.id AND z.estatus='Sin proveedor')
+  `).get().n;
+  const rbTiempoPromedioValuarDias = db.prepare(`
+    SELECT ROUND(AVG(julianday(valuacion_fecha_envio) - julianday(expediente_listo_fecha)),1) prom FROM siniestros
+    WHERE expediente_listo_fecha IS NOT NULL AND expediente_listo_fecha != '' AND valuacion_fecha_envio IS NOT NULL AND valuacion_fecha_envio != ''
+  `).get().prom;
+  const rbTiempoPromedioComplementoOrlandoDias = db.prepare(`
+    SELECT ROUND(AVG(julianday(decision_en) - julianday(creado_en)),1) prom FROM complementos
+    WHERE tipo='no_autorizado_inicial' AND decision_en IS NOT NULL AND decision_en != ''
+  `).get().prom;
+
   res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
     piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
     citasHoy, entregasProgramadas, porAvisarAutorizacion, refaccionesPorAvisar,
-    discrepanciasAbiertas, valesPendientesSinSurtir, correosIncompletos, complementosReautorizacionVencidos });
+    discrepanciasAbiertas, valesPendientesSinSurtir, correosIncompletos, complementosReautorizacionVencidos,
+    rbListosParaValuar, rbEnEsperaEvaluacion, rbComplementosAbiertos, rbFaltaAvisoProveedores, rbListosExpedienteCompleto, rbTiempoPromedioValuarDias, rbTiempoPromedioComplementoOrlandoDias });
 });
 
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.

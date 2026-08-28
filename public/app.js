@@ -252,6 +252,7 @@ async function viewInicio(){
   const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
   const verBeto = currentUser && ['beto','admin','jefe'].includes(currentUser.rol);
+  const verRoberto = currentUser && ['admin','jefe'].includes(currentUser.rol);
   const colaBeto = verBeto ? await api('GET','/api/reportes/panorama-beto') : [];
   const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
   return `
@@ -286,6 +287,20 @@ async function viewInicio(){
       <div class="card ambar"><div class="num">${r.ovBorradoresPorCapturar}</div><div class="label">Borradores por capturar a Excel</div></div>
       <div class="card azul"><div class="num">${r.ovFotosPorCompletar}</div><div class="label">Fotos/carpetas por completar</div></div>
       <div class="card verde"><div class="num">${r.ovListosParaEnviar}</div><div class="label">Listos para enviar al propietario</div></div>
+    </div>
+  </div>` : ''}
+  ${verRoberto ? `
+  <div class="section">
+    <h3>Valuación y autorización (Roberto)</h3>
+    <p class="subtle">Lo que hoy se maneja por correo y Excel (captura a evaluación, complementos, avisos al equipo), en un solo lugar.</p>
+    <div class="grid-cards">
+      <div class="card azul" onclick="goTo('valuacion')"><div class="num">${r.rbListosParaValuar}</div><div class="label">Listos para valuar</div></div>
+      <div class="card azul" onclick="goTo('valuacion')"><div class="num">${r.rbEnEsperaEvaluacion}</div><div class="label">En espera de evaluación</div></div>
+      <div class="card ${r.rbComplementosAbiertos>0?'ambar':'verde'}" onclick="goTo('valuacion')"><div class="num">${r.rbComplementosAbiertos}</div><div class="label">Complementos abiertos</div></div>
+      <div class="card ${r.rbFaltaAvisoProveedores>0?'ambar':'verde'}" onclick="goTo('valuacion')"><div class="num">${r.rbFaltaAvisoProveedores}</div><div class="label">Autorizados, falta avisar proveedores</div></div>
+      <div class="card ${r.rbListosExpedienteCompleto>0?'verde':'gris'}" onclick="goTo('valuacion')"><div class="num">${r.rbListosExpedienteCompleto}</div><div class="label">Listos para enviar expediente completo</div></div>
+      <div class="card azul"><div class="num">${r.rbTiempoPromedioValuarDias!=null?r.rbTiempoPromedioValuarDias+'d':'—'}</div><div class="label">Tiempo promedio en valuar</div></div>
+      <div class="card azul"><div class="num">${r.rbTiempoPromedioComplementoOrlandoDias!=null?r.rbTiempoPromedioComplementoOrlandoDias+'d':'—'}</div><div class="label">Tiempo promedio de Orlando en complementos</div></div>
     </div>
   </div>` : ''}
   ${verBeto ? `
@@ -1043,7 +1058,14 @@ async function viewSiniestro(id){
       <td>${puedeValuacion?`<button class="btn small secondary" onclick="abrirFormEditarComplemento(${rc.id})">Actualizar</button>`:''}</td>
     </tr>`).join('')}
     </tbody></table>`}
-    ${puedeSolicitarReautorizacion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaReautorizacion(${id})">+ Solicitar reautorización</button></div>`:''}`;
+    ${puedeSolicitarReautorizacion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaReautorizacion(${id})">+ Solicitar reautorización</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Avisos al equipo</h3>
+    <p class="subtle">Secciones 8-9 del proceso completo: reemplaza los correos que hoy manda Roberto para avisar del estado de los proveedores y para soltar el expediente ya completo.</p>
+    <table class="kv"><tbody>
+      <tr><td>Proveedores pendientes</td><td>${s.proveedores_aviso_pendiente_en?`<span class="badge verde">Avisado el ${esc(s.proveedores_aviso_pendiente_en.slice(0,16).replace('T',' '))}</span>`:(puedeSolicitarReautorizacion?`<button class="btn small secondary" onclick="avisarProveedoresPendientes(${id})">Avisar proveedores pendientes</button>`:'<span class="subtle">—</span>')}</td></tr>
+      <tr><td>Expediente completo</td><td>${s.expediente_completo_enviado_en?`<span class="badge verde">Enviado el ${esc(s.expediente_completo_enviado_en.slice(0,16).replace('T',' '))}</span>`:(puedeSolicitarReautorizacion?`<button class="btn small" onclick="enviarExpedienteCompleto(${id})">Enviar expediente completo al equipo</button>`:'<span class="subtle">—</span>')}</td></tr>
+    </tbody></table>`;
   } else if(state.subtabSiniestro==='produccion'){
     const puedeProduccion = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
     // Propuesta Orlando/Vanessa/Beto: Daniela/Alejandra adjuntan la OT (papel escaneado o digital) desde
@@ -3092,6 +3114,24 @@ async function marcarGrupoWhatsappCreado(siniestroId){
     await api('PATCH','/api/siniestros/'+siniestroId, { grupo_whatsapp_creado: 1 });
     toast('Grupo de WhatsApp marcado como creado.', 'success');
     closeModal(); render();
+  }catch(e){}
+}
+// Proceso_Completo_Servicio_Cristian.docx (secciones 8-9): los dos avisos que Roberto hoy manda por
+// correo. Confirmación previa porque disparan tareas automáticas a Alejandra y Daniela.
+async function avisarProveedoresPendientes(siniestroId){
+  if(!confirm('¿Avisar que la valuación ya está autorizada pero seguimos esperando proveedor? Se les avisará a Alejandra y Daniela.')) return;
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId+'/avisar-proveedores-pendientes', {});
+    toast('Aviso enviado: proveedores pendientes.', 'success');
+    render();
+  }catch(e){}
+}
+async function enviarExpedienteCompleto(siniestroId){
+  if(!confirm('¿Enviar el expediente completo al equipo (evaluación autorizada, orden de trabajo y proveedores ya asignados)? Se les avisará a Alejandra y Daniela.')) return;
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId+'/enviar-expediente-completo', {});
+    toast('Expediente completo enviado al equipo.', 'success');
+    render();
   }catch(e){}
 }
 /* ===================== MÓDULO ALEJANDRA: copiloto de IA (sin API conectada — copiar/pegar) ===================== */

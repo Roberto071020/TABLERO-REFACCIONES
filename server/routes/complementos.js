@@ -99,8 +99,13 @@ router.patch('/:id', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
     return res.status(403).json({ error:`Complementos por más de $${LIMITE_AUTORIZACION_SIN_PROPIETARIO} MXN requieren autorización del propietario/gerente (admin o jefe).` });
   }
 
-  db.prepare(`UPDATE complementos SET causa=?,fecha=?,pieza_operacion=?,archivo_id=?,importe=?,folio=?,decision=?,impacto_dias=?,estado=?,ot_id=?,actualizado_en=datetime('now') WHERE id=?`)
-    .run(nuevo.causa, nuevo.fecha, nuevo.pieza_operacion, nuevo.archivo_id||null, nuevo.importe, nuevo.folio, nuevo.decision, nuevo.impacto_dias, nuevo.estado, nuevo.ot_id||null, req.params.id);
+  // Para medir "cuánto tardó Orlando en resolver el complemento" (Roberto, 28-ago-2026): se sella sola
+  // la primera vez que la decisión deja de ser 'pendiente'.
+  const decisionEn = (anterior.decision === 'pendiente' && nuevo.decision !== 'pendiente' && !anterior.decision_en)
+    ? new Date().toISOString() : anterior.decision_en;
+
+  db.prepare(`UPDATE complementos SET causa=?,fecha=?,pieza_operacion=?,archivo_id=?,importe=?,folio=?,decision=?,impacto_dias=?,estado=?,ot_id=?,decision_en=?,actualizado_en=datetime('now') WHERE id=?`)
+    .run(nuevo.causa, nuevo.fecha, nuevo.pieza_operacion, nuevo.archivo_id||null, nuevo.importe, nuevo.folio, nuevo.decision, nuevo.impacto_dias, nuevo.estado, nuevo.ot_id||null, decisionEn, req.params.id);
   auditarCambios(db, { entidad_tipo:'complemento', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(marcarVencido(db.prepare(`SELECT c.*, u.nombre as autor_nombre FROM complementos c LEFT JOIN usuarios u ON u.id=c.autor_id WHERE c.id=?`).get(req.params.id)));
 });

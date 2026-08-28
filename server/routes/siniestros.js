@@ -24,7 +24,7 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
     roles:['orlando','admin','jefe'], nombre:'revisión técnica' },
   { campos:['fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'],
     roles:['orlando','vanessa','admin','jefe'], nombre:'captura y envío' },
-  { campos:['estado_expediente','sistema_valuacion','expediente_folio'],
+  { campos:['estado_expediente','sistema_valuacion','expediente_folio','expediente_listo_fecha'],
     roles:['vanessa','admin','jefe'], nombre:'expediente digital' },
   { campos:['valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
       'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
@@ -131,7 +131,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
     'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
     'requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado',
     // Documento Maestro / Fase C: captura y armado de expediente (Vanessa)
-    'estado_expediente','sistema_valuacion','expediente_folio',
+    'estado_expediente','sistema_valuacion','expediente_folio','expediente_listo_fecha',
     // Documento Maestro / Fase D: valuación y autorización
     'valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
     'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
@@ -156,6 +156,9 @@ router.patch('/:id', requireAuth, (req, res)=>{
   if(nuevo.excel_capturado && !anterior.excel_capturado && !nuevo.excel_capturado_fecha) nuevo.excel_capturado_fecha = hoyISO;
   if(nuevo.fotos_completas && !anterior.fotos_completas && !nuevo.fotos_completas_fecha) nuevo.fotos_completas_fecha = hoyISO;
   if(nuevo.enviado_propietario && !anterior.enviado_propietario && !nuevo.enviado_propietario_fecha) nuevo.enviado_propietario_fecha = hoyISO;
+  // Roberto (28-ago-2026): sella sola la primera vez que el expediente queda listo para valuar, para
+  // poder medir después cuánto tardó él mismo en capturarlo y enviarlo a evaluación (valuacion_fecha_envio).
+  if(nuevo.estado_expediente === 'listo_para_valuacion' && anterior.estado_expediente !== 'listo_para_valuacion' && !nuevo.expediente_listo_fecha) nuevo.expediente_listo_fecha = hoyISO;
   nuevo.excel_capturado = nuevo.excel_capturado ? 1 : 0;
   nuevo.fotos_completas = nuevo.fotos_completas ? 1 : 0;
   nuevo.enviado_propietario = nuevo.enviado_propietario ? 1 : 0;
@@ -239,7 +242,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
       estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
       requiere_dado_seguridad=?,dado_seguridad_colocado=?,grupo_whatsapp_creado=?,
-      estado_expediente=?,sistema_valuacion=?,expediente_folio=?,
+      estado_expediente=?,sistema_valuacion=?,expediente_folio=?,expediente_listo_fecha=?,
       valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_fecha_respuesta=?,valuacion_observaciones=?,
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
       entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
@@ -254,7 +257,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
       nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
       nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado, nuevo.grupo_whatsapp_creado,
-      nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio,
+      nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio, nuevo.expediente_listo_fecha,
       nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_fecha_respuesta, nuevo.valuacion_observaciones,
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
       nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
@@ -311,6 +314,53 @@ router.patch('/:id', requireAuth, (req, res)=>{
     }
   }
 
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
+});
+
+// Proceso_Completo_Servicio_Cristian.docx (secciones 8-9): dos avisos propios de Roberto que hoy manda
+// por correo y que quiere ver reflejados en el tablero, cada uno disparando tareas automáticas a quien
+// corresponde -- mismo patrón que 'ot_lista_beto' / 'autorizacion_resuelta' (tareas visibles en la
+// bitácora del expediente, no una bandeja personal). Ambas exclusivas de admin/jefe (el propietario).
+
+// Sección 8: "ya está todo autorizado pero seguimos esperando que Impart asigne proveedor" -- avisa a
+// Alejandra (para que informe al cliente que va en tiempo, aunque falte proveedor) y a Daniela (para
+// que lo tenga en su radar de seguimiento).
+router.patch('/:id/avisar-proveedores-pendientes', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  if(!['autorizada','parcial'].includes(s.estado_autorizacion)){
+    return res.status(400).json({ error:'La valuación debe estar autorizada (total o parcial) antes de avisar que faltan proveedores.' });
+  }
+  if(s.proveedores_aviso_pendiente_en){
+    return res.status(400).json({ error:'Ya se avisó de proveedores pendientes el ' + s.proveedores_aviso_pendiente_en.slice(0,16).replace('T',' ') + '.' });
+  }
+  const ahora = new Date().toISOString();
+  db.prepare(`UPDATE siniestros SET proveedores_aviso_pendiente_en=? WHERE id=?`).run(ahora, req.params.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, accion:'aviso_proveedores_pendientes', usuario:req.session.user });
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,'pendiente','automatica','proveedores_pendientes_aviso',?)`)
+    .run(req.params.id, 'mensaje', 'Valuación ya autorizada, todavía en espera de que se asignen proveedores. Alejandra: informar al cliente que va en tiempo. Daniela: dar seguimiento en Impart hasta que queden asignados.', ahora.slice(0,10), req.session.user.id);
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
+});
+
+// Sección 9: el "suelta" del expediente completo (ya autorizado y con proveedor) -- reemplaza el
+// correo que hoy manda Roberto a todo el equipo. Avisa a Alejandra (informar al cliente que ya se
+// puede programar) y a Daniela (seguimiento del pedido en Impart).
+router.patch('/:id/enviar-expediente-completo', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  if(!['autorizada','parcial'].includes(s.estado_autorizacion)){
+    return res.status(400).json({ error:'La valuación debe estar autorizada (total o parcial) antes de enviar el expediente completo.' });
+  }
+  if(s.expediente_completo_enviado_en){
+    return res.status(400).json({ error:'El expediente completo ya se envió el ' + s.expediente_completo_enviado_en.slice(0,16).replace('T',' ') + '.' });
+  }
+  const ahora = new Date().toISOString();
+  db.prepare(`UPDATE siniestros SET expediente_completo_enviado_en=? WHERE id=?`).run(ahora, req.params.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, accion:'expediente_completo_enviado', usuario:req.session.user });
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,'pendiente','automatica','expediente_completo_enviado',?)`)
+    .run(req.params.id, 'mensaje', 'Expediente completo: evaluación autorizada, orden de trabajo y proveedores ya asignados. Alejandra: informar al cliente y coordinar entrada a producción. Daniela: dar seguimiento a los pedidos en Impart.', ahora.slice(0,10), req.session.user.id);
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
 });
 

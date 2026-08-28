@@ -1021,6 +1021,26 @@ if(!tieneColumna('siniestros', 'grupo_whatsapp_creado')){
   db.exec(`ALTER TABLE siniestros ADD COLUMN grupo_whatsapp_creado INTEGER;`);
 }
 
+// Roberto explicó (28-ago-2026) cinco momentos propios que hoy vive solo en correo/Excel y que quiere
+// ver reflejados en el tablero: cuándo un expediente queda listo para valuar (para medir su propio
+// tiempo de respuesta), cuándo avisó que ya está autorizado pero sin proveedor, y cuándo soltó el
+// expediente completo al equipo (con proveedor ya asignado). Todo aditivo, mismo patrón que las demás
+// "fecha_x" que se sellan solas la primera vez.
+if(!tieneColumna('siniestros', 'expediente_listo_fecha')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN expediente_listo_fecha TEXT;`);
+}
+if(!tieneColumna('siniestros', 'proveedores_aviso_pendiente_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN proveedores_aviso_pendiente_en TEXT;`);
+}
+if(!tieneColumna('siniestros', 'expediente_completo_enviado_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN expediente_completo_enviado_en TEXT;`);
+}
+// Para medir "cuánto tardó Orlando en resolver el complemento": se sella la primera vez que la
+// decisión deja de ser 'pendiente' (igual que fecha_borrador_captura y similares).
+if(!tieneColumna('complementos', 'decision_en')){
+  db.exec(`ALTER TABLE complementos ADD COLUMN decision_en TEXT;`);
+}
+
 module.exports = db;
 
 

@@ -2975,3 +2975,92 @@ test('PROCESO-WHATSAPP-1: grupo_whatsapp_creado se puede marcar desde el checkli
   assert.equal(r.data.grupo_whatsapp_creado, 1);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('ROBERTO-1: expediente_listo_fecha se sella sola la primera vez que estado_expediente pasa a listo_para_valuacion', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'RB1-SIN', aseguradora: 'GNP' })).data;
+  assert.ok(!s.expediente_listo_fecha);
+  const r1 = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.ok(r1.data.expediente_listo_fecha, 'debe sellarse sola al quedar listo para valuar');
+  const sellada = r1.data.expediente_listo_fecha;
+  // un cambio posterior cualquiera no debe mover la fecha ya sellada
+  const r2 = await req('PATCH', '/api/siniestros/' + s.id, { valuacion_folio: 'F-1' });
+  assert.equal(r2.data.expediente_listo_fecha, sellada);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ROBERTO-2: avisar-proveedores-pendientes requiere autorización resuelta, notifica una sola vez y es exclusivo de admin/jefe', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'RB2-SIN', aseguradora: 'GNP' })).data;
+
+  const antes = await req('PATCH', '/api/siniestros/' + s.id + '/avisar-proveedores-pendientes', {});
+  assert.equal(antes.status, 400, 'no debe permitirse antes de que la valuación esté autorizada');
+
+  await req('PATCH', '/api/siniestros/' + s.id, {
+    estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-28', autorizador: 'Ajustador'
+  });
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const noPermitido = await req('PATCH', '/api/siniestros/' + s.id + '/avisar-proveedores-pendientes', {});
+  assert.equal(noPermitido.status, 403, 'solo admin/jefe puede disparar este aviso');
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const r = await req('PATCH', '/api/siniestros/' + s.id + '/avisar-proveedores-pendientes', {});
+  assert.equal(r.status, 200);
+  assert.ok(r.data.proveedores_aviso_pendiente_en);
+
+  const otraVez = await req('PATCH', '/api/siniestros/' + s.id + '/avisar-proveedores-pendientes', {});
+  assert.equal(otraVez.status, 400, 'no debe poder avisarse dos veces');
+
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.ok(tareas.some(t => t.disparador === 'proveedores_pendientes_aviso'), 'debe crear la tarea de aviso');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ROBERTO-3: enviar-expediente-completo requiere autorización resuelta, notifica una sola vez y es exclusivo de admin/jefe', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'RB3-SIN', aseguradora: 'GNP' })).data;
+
+  const antes = await req('PATCH', '/api/siniestros/' + s.id + '/enviar-expediente-completo', {});
+  assert.equal(antes.status, 400);
+
+  await req('PATCH', '/api/siniestros/' + s.id, {
+    estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-28', autorizador: 'Ajustador'
+  });
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const noPermitido = await req('PATCH', '/api/siniestros/' + s.id + '/enviar-expediente-completo', {});
+  assert.equal(noPermitido.status, 403);
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const r = await req('PATCH', '/api/siniestros/' + s.id + '/enviar-expediente-completo', {});
+  assert.equal(r.status, 200);
+  assert.ok(r.data.expediente_completo_enviado_en);
+
+  const otraVez = await req('PATCH', '/api/siniestros/' + s.id + '/enviar-expediente-completo', {});
+  assert.equal(otraVez.status, 400);
+
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.ok(tareas.some(t => t.disparador === 'expediente_completo_enviado'), 'debe crear la tarea de aviso');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ROBERTO-4: decision_en del complemento se sella sola la primera vez que la decisión deja de ser pendiente', async () => {
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'RB4-SIN', aseguradora: 'GNP' })).data;
+  const c = (await req('POST', '/api/complementos', { siniestro_id: s.id, causa: 'Daño oculto de prueba' })).data;
+  assert.ok(!c.decision_en);
+  const r1 = await req('PATCH', '/api/complementos/' + c.id, { decision: 'autorizado' });
+  assert.ok(r1.data.decision_en, 'debe sellarse al resolver la decisión');
+  const sellada = r1.data.decision_en;
+  const r2 = await req('PATCH', '/api/complementos/' + c.id, { estado: 'incorporado_a_ot' });
+  assert.equal(r2.data.decision_en, sellada, 'no debe moverse en ediciones posteriores');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ROBERTO-5: el resumen incluye el panorama de valuación de Roberto', async () => {
+  const r = await req('GET', '/api/reportes/resumen');
+  assert.equal(r.status, 200);
+  ['rbListosParaValuar','rbEnEsperaEvaluacion','rbComplementosAbiertos','rbFaltaAvisoProveedores','rbListosExpedienteCompleto','rbTiempoPromedioValuarDias','rbTiempoPromedioComplementoOrlandoDias']
+    .forEach(k => assert.ok(k in r.data, 'falta el campo ' + k + ' en el resumen'));
+});
