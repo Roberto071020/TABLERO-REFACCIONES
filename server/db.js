@@ -1008,6 +1008,18 @@ if(!tieneColumna('complementos', 'tipo')){
 if(!tieneColumna('complementos', 'fecha_limite')){
   db.exec(`ALTER TABLE complementos ADD COLUMN fecha_limite TEXT;`);
 }
+// Proceso_Completo_Servicio_Cristian.docx (sección 5): ya existía valuacion_fecha_envio (cuándo Roberto
+// mandó los datos al centro de evaluación remoto) pero no había forma de registrar cuándo REGRESÓ ya
+// autorizada -- el documento lo describe como un paso propio ("de ahí regresa una evaluación autorizada").
+if(!tieneColumna('siniestros', 'valuacion_fecha_respuesta')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN valuacion_fecha_respuesta TEXT;`);
+}
+// Sección 2: grupo de WhatsApp de admisión -- sin credenciales de WhatsApp Business API no se puede
+// crear el grupo ni mandar el mensaje solo; se deja registrado si ya se creó, para que quede visible
+// en el checklist de admisión igual que las otras casillas de ese grupo.
+if(!tieneColumna('siniestros', 'grupo_whatsapp_creado')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN grupo_whatsapp_creado INTEGER;`);
+}
 
 module.exports = db;
 

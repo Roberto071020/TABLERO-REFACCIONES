@@ -2946,3 +2946,32 @@ test('PROCESO-REAUT-3: falta indicar las piezas no autorizadas se rechaza; y sin
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('PROCESO-EVAL-1: la fecha de regreso de la evaluación (valuacion_fecha_respuesta) se guarda y se puede editar sin depender de autorizacion_fecha_respuesta', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'EVAL1-SIN', aseguradora: 'GNP' })).data;
+  const r = await req('PATCH', '/api/siniestros/' + s.id, {
+    estado_valuacion: 'enviada', valuacion_fecha_envio: '2026-08-20', valuacion_fecha_respuesta: '2026-08-22'
+  });
+  assert.equal(r.data.valuacion_fecha_envio, '2026-08-20');
+  assert.equal(r.data.valuacion_fecha_respuesta, '2026-08-22');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('PROCESO-WHATSAPP-1: grupo_whatsapp_creado se puede marcar desde el checklist de admisión (rol atencion_cliente)', async () => {
+  // Nota: no se usa la cuenta real "alejandra@serviciocristian.mx" porque REQ-DANIELA-19 le resetea la
+  // contraseña más arriba en esta misma suite; se crea una cuenta de prueba propia con el rol, igual que
+  // hace FASE0-3, para no depender del orden de las demás pruebas.
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba WSP1', 'atencion.wsp1.test@serviciocristian.mx', bcrypt.hashSync('x',4), 'atencion_cliente');
+  const loginR = await req('POST', '/api/auth/login', { email: 'atencion.wsp1.test@serviciocristian.mx', password: 'x' });
+  assert.equal(loginR.status, 200);
+  const s = (await req('POST', '/api/siniestros', { numero: 'WSP1-SIN', aseguradora: 'GNP', cliente_nombre: 'Cliente WSP1', cliente_telefono: '555-0001', cliente_correo: 'wsp1@cliente.com' })).data;
+  const antes = await req('GET', '/api/siniestros/' + s.id);
+  assert.ok(!antes.data.grupo_whatsapp_creado);
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { grupo_whatsapp_creado: 1 });
+  assert.equal(r.data.grupo_whatsapp_creado, 1);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

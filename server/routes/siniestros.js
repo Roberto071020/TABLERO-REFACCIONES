@@ -18,7 +18,7 @@ function calcularCompleto(row){
 // que "solo lectura" sea real y no solo una convención de la interfaz. Los campos generales del expediente
 // (vehículo, placas, cliente, notas, etc.) siguen abiertos a cualquier usuario autenticado, como siempre.
 const GRUPOS_CAMPOS_RESTRINGIDOS = [
-  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro','requiere_dado_seguridad','dado_seguridad_colocado'],
+  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro','requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado'],
     roles:['atencion_cliente','vanessa','admin','jefe'], nombre:'admisión' },
   { campos:['estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia'],
     roles:['orlando','admin','jefe'], nombre:'revisión técnica' },
@@ -26,7 +26,7 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
     roles:['orlando','vanessa','admin','jefe'], nombre:'captura y envío' },
   { campos:['estado_expediente','sistema_valuacion','expediente_folio'],
     roles:['vanessa','admin','jefe'], nombre:'expediente digital' },
-  { campos:['valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_observaciones',
+  { campos:['valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
       'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
       'piezas_autorizadas_cambio','estado_valuacion'],
     roles:['orlando','admin','jefe'], nombre:'valuación/autorización' },
@@ -129,11 +129,11 @@ router.patch('/:id', requireAuth, (req, res)=>{
     // Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando)
     'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
     'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
-    'requiere_dado_seguridad','dado_seguridad_colocado',
+    'requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado',
     // Documento Maestro / Fase C: captura y armado de expediente (Vanessa)
     'estado_expediente','sistema_valuacion','expediente_folio',
     // Documento Maestro / Fase D: valuación y autorización
-    'valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_observaciones',
+    'valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
     'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
     // Documento Maestro / Fase F: control de calidad, entrega, finiquito y encuesta
     'estado_calidad','entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega',
@@ -238,9 +238,9 @@ router.patch('/:id', requireAuth, (req, res)=>{
       aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
       cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
       estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
-      requiere_dado_seguridad=?,dado_seguridad_colocado=?,
+      requiere_dado_seguridad=?,dado_seguridad_colocado=?,grupo_whatsapp_creado=?,
       estado_expediente=?,sistema_valuacion=?,expediente_folio=?,
-      valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_observaciones=?,
+      valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_fecha_respuesta=?,valuacion_observaciones=?,
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
       entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
       finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,postventa_resultado=?,deducible_pagado_confirmado_en=?,entrega_encuesta_gnp_solicitada=?,
@@ -253,9 +253,9 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
       nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
       nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
-      nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado,
+      nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado, nuevo.grupo_whatsapp_creado,
       nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio,
-      nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_observaciones,
+      nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_fecha_respuesta, nuevo.valuacion_observaciones,
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
       nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
       nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios, nuevo.postventa_resultado, nuevo.deducible_pagado_confirmado_en, (nuevo.entrega_encuesta_gnp_solicitada===undefined||nuevo.entrega_encuesta_gnp_solicitada===null||nuevo.entrega_encuesta_gnp_solicitada==='')?null:(nuevo.entrega_encuesta_gnp_solicitada?1:0),

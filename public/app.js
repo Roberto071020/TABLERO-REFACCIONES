@@ -931,8 +931,9 @@ async function viewSiniestro(id){
       <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
       <tr><td>Estado de admisión</td><td><span class="badge ${BADGE_ADM[s.estado_admision]||'gris'}">${LABEL_ADM[s.estado_admision]||'Pendiente'}</span>${s.motivo_admision?` — ${esc(s.motivo_admision)}`:''}</td></tr>
       <tr><td>Disponible para revisión</td><td>${s.fecha_hora_disponible_revision?`<span class="badge verde">Sí</span> · ${esc(s.fecha_hora_disponible_revision)}`:`<span class="badge ambar">Aún no</span>${(s.admision_faltantes&&s.admision_faltantes.length)?` — falta: ${s.admision_faltantes.map(esc).join(', ')}`:''}`}</td></tr>
+      <tr><td>Grupo de WhatsApp</td><td>${s.grupo_whatsapp_creado?'<span class="badge verde">Creado</span>':'<span class="badge gris">Sin crear</span>'}</td></tr>
     </tbody></table>
-    ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button></div>`:''}
+    ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button> <button class="btn small secondary" onclick="abrirMensajeBienvenida(${id})">Mensaje de bienvenida (WhatsApp)</button> <button class="btn small secondary" onclick="imprimirInventarioFisico(${id})">Imprimir inventario para el cliente</button></div>`:''}
 
     <h3 style="margin-top:20px;">Revisión técnica (Orlando)</h3>
     <p class="subtle">Secciones 5.3/5.4 del documento maestro: daño relacionado/no relacionado, visible/oculto, y si requiere desarme.</p>
@@ -1012,6 +1013,7 @@ async function viewSiniestro(id){
       <tr><td>Folio / versión</td><td>${esc(s.valuacion_folio||'—')} ${s.valuacion_version?('· v'+s.valuacion_version):''}</td></tr>
       <tr><td>Importe</td><td>${s.valuacion_importe!=null?fmtMoney(s.valuacion_importe):'—'}</td></tr>
       <tr><td>Fecha de envío</td><td>${esc(s.valuacion_fecha_envio||'—')}</td></tr>
+      <tr><td>Fecha de regreso (evaluación autorizada)</td><td>${esc(s.valuacion_fecha_respuesta||'—')}</td></tr>
       <tr><td>Observaciones</td><td>${esc(s.valuacion_observaciones||'—')}</td></tr>
     </tbody></table>
     ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormValuacion(${id})">Actualizar valuación</button></div>`:''}
@@ -1334,6 +1336,50 @@ async function guardarEntrega(siniestroId){
     closeModal(); render();
   }catch(e){}
 }
+// Proceso_Completo_Servicio_Cristian.docx (sección 2): "Alejandra elabora un inventario manual del
+// vehículo y se lo entrega al cliente" -- se genera ya llenado con lo capturado en admisión (kilometraje,
+// combustible, llaves, pertenencias) en una ventana limpia para imprimir/firmar, en vez de escribirlo a
+// mano aparte. Esto es evidencia adicional; el requisito de subir el inventario ya existía (tipo
+// 'inventario_fisico' en Archivos) y sigue igual.
+async function imprimirInventarioFisico(siniestroId){
+  const s = await api('GET','/api/siniestros/'+siniestroId);
+  const hoy = new Date().toLocaleString('es-MX');
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Inventario físico — ${esc(s.numero)}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;padding:24px;color:#111;}
+      h1{font-size:18px;margin-bottom:4px;} h2{font-size:14px;color:#444;margin-top:0;}
+      table{width:100%;border-collapse:collapse;margin-top:16px;}
+      td,th{border:1px solid #ccc;padding:8px;text-align:left;font-size:13px;}
+      th{background:#f2f2f2;width:35%;}
+      .firma{margin-top:60px;display:flex;justify-content:space-between;}
+      .firma div{width:45%;border-top:1px solid #333;text-align:center;padding-top:6px;font-size:12px;}
+    </style></head><body>
+    <h1>Servicio Cristian — Inventario físico de recepción</h1>
+    <h2>Generado ${esc(hoy)}</h2>
+    <table>
+      <tr><th>Siniestro</th><td>${esc(s.numero)} · ${esc(s.aseguradora)}</td></tr>
+      <tr><th>Vehículo</th><td>${esc(s.vehiculo||'—')} ${s.anio_modelo?('· '+esc(s.anio_modelo)):''}</td></tr>
+      <tr><th>Placas / VIN</th><td>${esc(s.placas||'—')} ${s.vin?('· VIN '+esc(s.vin)):''}</td></tr>
+      <tr><th>Tipo de ingreso</th><td>${s.ingreso_tipo==='grua'?'Grúa (no circula)':s.ingreso_tipo==='circulando'?'Circulando':'Sin definir'}</td></tr>
+      <tr><th>Fecha de admisión</th><td>${esc(s.fecha_admision||'—')}</td></tr>
+      <tr><th>Kilometraje</th><td>${esc(s.kilometraje||'—')}</td></tr>
+      <tr><th>Nivel de combustible</th><td>${esc(s.combustible_nivel||'—')}</td></tr>
+      <tr><th>Llaves entregadas</th><td>${s.llaves_entregadas?'Sí':'No'}</td></tr>
+      ${s.requiere_dado_seguridad?`<tr><th>Dado de seguridad</th><td>${s.dado_seguridad_colocado?'Colocado':'Pendiente de colocar'}</td></tr>`:''}
+      <tr><th>Pertenencias dentro del vehículo</th><td>${esc(s.pertenencias||'Sin pertenencias registradas')}</td></tr>
+    </table>
+    <div class="firma">
+      <div>Firma del cliente</div>
+      <div>Firma de Servicio Cristian</div>
+    </div>
+    </body></html>`;
+  const ventana = window.open('', '_blank', 'width=800,height=900');
+  if(!ventana){ toast('El navegador bloqueó la ventana de impresión; permite pop-ups para este sitio.', 'warn'); return; }
+  ventana.document.write(html);
+  ventana.document.close();
+  ventana.focus();
+  setTimeout(()=>ventana.print(), 300);
+}
 function abrirFormAdmision(siniestroId){
   api('GET','/api/siniestros/'+siniestroId).then(s=>{
     showModal(`
@@ -1384,6 +1430,7 @@ function abrirFormAdmision(siniestroId){
         <option value="no_admitido" ${s.estado_admision==='no_admitido'?'selected':''}>No admitido</option>
       </select></div>
       <div id="fad_motivo_wrap" class="field" style="display:${['condicionado','no_admitido'].includes(s.estado_admision)?'block':'none'}"><label>Motivo</label><textarea id="fad_motivo_admision">${esc(s.motivo_admision||'')}</textarea></div>
+      <div class="field"><label><input id="fad_whatsapp" type="checkbox" ${s.grupo_whatsapp_creado?'checked':''}> Grupo de WhatsApp ya creado</label></div>
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarAdmision(${siniestroId})">Guardar</button></div>
     `);
   });
@@ -1403,7 +1450,8 @@ async function guardarAdmision(siniestroId){
     dado_seguridad_colocado: Number(document.getElementById('fad_dado_colocado').value),
     pertenencias: document.getElementById('fad_pertenencias').value,
     estado_admision: document.getElementById('fad_estado_admision').value,
-    motivo_admision: document.getElementById('fad_motivo_admision').value
+    motivo_admision: document.getElementById('fad_motivo_admision').value,
+    grupo_whatsapp_creado: document.getElementById('fad_whatsapp').checked ? 1 : 0
   };
   try{
     await api('PATCH','/api/siniestros/'+siniestroId, payload);
@@ -1664,6 +1712,7 @@ function abrirFormValuacion(siniestroId){
         <div class="field"><label>Importe</label><input id="fval_importe" type="number" step="0.01" value="${s.valuacion_importe!=null?s.valuacion_importe:''}"></div>
         <div class="field"><label>Fecha de envío</label><input id="fval_fecha" type="date" value="${esc(s.valuacion_fecha_envio||'')}"></div>
       </div>
+      <div class="field"><label>Fecha de regreso (evaluación autorizada)</label><input id="fval_fecha_respuesta" type="date" value="${esc(s.valuacion_fecha_respuesta||'')}"></div>
       <div class="field"><label>Observaciones</label><textarea id="fval_observaciones">${esc(s.valuacion_observaciones||'')}</textarea></div>
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarValuacion(${siniestroId})">Guardar</button></div>
     `);
@@ -1677,6 +1726,7 @@ async function guardarValuacion(siniestroId){
       valuacion_version: Number(document.getElementById('fval_version').value)||1,
       valuacion_importe: document.getElementById('fval_importe').value===''?null:Number(document.getElementById('fval_importe').value),
       valuacion_fecha_envio: document.getElementById('fval_fecha').value,
+      valuacion_fecha_respuesta: document.getElementById('fval_fecha_respuesta').value,
       valuacion_observaciones: document.getElementById('fval_observaciones').value
     });
     toast('Valuación actualizada.', 'success');
@@ -3006,6 +3056,43 @@ async function guardarHito(id){
   }catch(e){}
 }
 
+// Proceso_Completo_Servicio_Cristian.docx (sección 2): sin credenciales de WhatsApp Business API no se
+// puede crear el grupo ni mandar el mensaje solo -- se genera el texto de bienvenida listo para
+// copiar/pegar al grupo, igual que ya se hace con el contexto de IA.
+async function abrirMensajeBienvenida(siniestroId){
+  const s = await api('GET','/api/siniestros/'+siniestroId);
+  const texto = `Buen día, le damos la bienvenida a Servicio Cristian.\n\n` +
+    `Vehículo: ${s.vehiculo||'(pendiente)'} · Placas: ${s.placas||'(pendiente)'}\n` +
+    `Aseguradora: ${s.aseguradora}${s.numero?` · Siniestro: ${s.numero}`:''}\n\n` +
+    `Así sigue el proceso a partir de hoy:\n` +
+    `1. Revisamos la unidad y contamos con 72 horas para que la evaluación quede autorizada por la aseguradora.\n` +
+    `2. En cuanto se autoriza, se asignan los proveedores de las refacciones necesarias.\n` +
+    `3. En cuanto llegan las piezas, se repara la unidad.\n\n` +
+    `Le vamos a mantener informado en este grupo durante todo el proceso. Cualquier duda, quedamos atentos.`;
+  showModal(`
+    <h3>Mensaje de bienvenida (WhatsApp)</h3>
+    <p class="subtle">Crea el grupo de WhatsApp con el cliente (y el supervisor de siniestros si la aseguradora lo pide) y pega este mensaje ahí.</p>
+    <div class="field"><textarea id="fbien_texto" readonly style="min-height:220px;">${esc(texto)}</textarea></div>
+    <button class="btn small secondary" type="button" onclick="copiarMensajeBienvenida()">Copiar mensaje</button>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button><button class="btn" onclick="marcarGrupoWhatsappCreado(${siniestroId})">Marcar grupo creado</button></div>
+  `, true);
+}
+function copiarMensajeBienvenida(){
+  const el = document.getElementById('fbien_texto');
+  el.select();
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(el.value);
+    else document.execCommand('copy');
+    toast('Mensaje copiado.', 'success');
+  }catch(e){ toast('No se pudo copiar automáticamente; selecciona el texto manualmente.', 'warn'); }
+}
+async function marcarGrupoWhatsappCreado(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { grupo_whatsapp_creado: 1 });
+    toast('Grupo de WhatsApp marcado como creado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
 /* ===================== MÓDULO ALEJANDRA: copiloto de IA (sin API conectada — copiar/pegar) ===================== */
 async function abrirFormIA(siniestroId, hitoId){
   const r = await api('GET', `/api/mensajes-ia/contexto?siniestro_id=${siniestroId}${hitoId?`&hito_id=${hitoId}`:''}`);
