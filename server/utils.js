@@ -481,9 +481,42 @@ function calcularSemaforo(s){
   return { admision, expediente, valuacion, produccion, calidad };
 }
 
+// Modificacion (Modificaciones_Tablero_SC_Control.docx, seccion 2): "Esquema de surtido" por siniestro,
+// para que Daniela vea de un vistazo si un expediente sigue el flujo normal de Inpart o uno de los
+// esquemas especiales (autosurtido GNP/ANA, Zurich pendiente de confirmar) en vez de asumir Inpart
+// para todos. Reutiliza calcularRutaAseguradora (ya calculada y guardada en cada siniestro) en vez de
+// inventar un campo nuevo: es una traduccion a texto amigable de aseguradora_ruta_refacciones.
+function esquemaSurtidoLabel(ruta, aseguradora){
+  if(aseguradora === 'ANA') return 'Autosurtido ANA';
+  if(aseguradora === 'GNP'){
+    if(ruta === 'autosurtido') return 'Autosurtido GNP';
+    if(ruta === 'pendiente_confirmar') return 'GNP: falta capturar piezas';
+    return 'Impart (GNP, 4+ piezas)';
+  }
+  if(aseguradora === 'Zurich') return 'Zurich (esquema pendiente de confirmar)';
+  if(!aseguradora) return '—';
+  return 'Impart';
+}
+
+// Modificacion 1 (vista de prioridad de Beto): "aviso de listo para iniciar en cuanto haya piezas
+// suficientes, aunque el expediente no este 100% completo." Como no existe un catalogo de que pieza es
+// "critica" para arrancar, se usa una senal objetiva y verificable: el porcentaje de piezas ya recibidas
+// fisicamente sobre el total de piezas del expediente. >=80% se considera "piezas suficientes" (aviso
+// informativo, prioridad menor a "refacciones completas" al 100%); no se inventa nada que no este ya
+// capturado en piezas.estatus.
+function porcentajePiezasRecibidas(db, siniestroId){
+  const fila = db.prepare(`
+    SELECT COUNT(*) total, SUM(CASE WHEN z.estatus = 'Recibida físicamente' THEN 1 ELSE 0 END) recibidas
+    FROM piezas z JOIN pedidos p ON p.id = z.pedido_id WHERE p.siniestro_id = ?
+  `).get(siniestroId);
+  if(!fila || !fila.total) return null;
+  return fila.recibidas / fila.total;
+}
+
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
   VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
-  requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua };
+  requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua,
+  esquemaSurtidoLabel, porcentajePiezasRecibidas };

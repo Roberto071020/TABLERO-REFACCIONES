@@ -2603,3 +2603,137 @@ test('ORLA-5: el detalle de "qué falta" para admisión nunca pide llaves/invent
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Modificaciones_Tablero_SC_Control.docx (28-ago-2026) ===================== */
+
+test('SC-1: "Esquema de surtido" en la lista maestra refleja la regla real por aseguradora (GNP autosurtido 1-3, GNP Impart 4+, ANA autosurtido, Zurich pendiente de confirmar)', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
+  const sGnpAuto = (await req('POST', '/api/siniestros', { numero: 'SC1-GNP-AUTO', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sGnpAuto.id, { piezas_autorizadas_cambio: 2 });
+  await req('POST', '/api/pedidos', { numero: 'SC1-PED-GNPA', siniestro_id: sGnpAuto.id, fecha_prevista: '2026-09-01' });
+
+  const sGnpInpart = (await req('POST', '/api/siniestros', { numero: 'SC1-GNP-INPART', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + sGnpInpart.id, { piezas_autorizadas_cambio: 5 });
+  await req('POST', '/api/pedidos', { numero: 'SC1-PED-GNPI', siniestro_id: sGnpInpart.id, fecha_prevista: '2026-09-01' });
+
+  const sAna = (await req('POST', '/api/siniestros', { numero: 'SC1-ANA', aseguradora: 'ANA' })).data;
+  await req('POST', '/api/pedidos', { numero: 'SC1-PED-ANA', siniestro_id: sAna.id, fecha_prevista: '2026-09-01' });
+
+  const sZurich = (await req('POST', '/api/siniestros', { numero: 'SC1-ZURICH', aseguradora: 'Zurich' })).data;
+  await req('POST', '/api/pedidos', { numero: 'SC1-PED-ZUR', siniestro_id: sZurich.id, fecha_prevista: '2026-09-01' });
+
+  const lista = (await req('GET', '/api/reportes/lista-maestra?ventana=todas')).data;
+  const buscar = numero => lista.find(f => f.siniestro_numero === numero);
+  assert.equal(buscar('SC1-GNP-AUTO').esquema_surtido, 'Autosurtido GNP');
+  assert.equal(buscar('SC1-GNP-INPART').esquema_surtido, 'Impart (GNP, 4+ piezas)');
+  assert.equal(buscar('SC1-ANA').esquema_surtido, 'Autosurtido ANA');
+  assert.equal(buscar('SC1-ZURICH').esquema_surtido, 'Zurich (esquema pendiente de confirmar)');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('SC-2: discrepancia con proveedor (marcó "entregado" sin haberlo enviado) se registra, se resuelve y cuenta en el resumen', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC2-TEST', aseguradora: 'Mapfre' })).data;
+  const antes = (await req('GET', '/api/reportes/resumen')).data.discrepanciasAbiertas;
+
+  const d = (await req('POST', '/api/discrepancias-proveedor', {
+    siniestro_id: s.id, descripcion: 'Impart marcó entregado el 20-ago pero nunca llegó',
+    fecha_marcado_entregado: '2026-08-20', no_llego: 1
+  })).data;
+  assert.equal(d.estado, 'abierta');
+
+  const despues = (await req('GET', '/api/reportes/resumen')).data.discrepanciasAbiertas;
+  assert.equal(despues, antes + 1, 'debe subir el contador de discrepancias abiertas');
+
+  const resuelta = await req('PATCH', '/api/discrepancias-proveedor/' + d.id, { estado: 'resuelta', fecha_real_llegada: '2026-08-27' });
+  assert.equal(resuelta.data.estado, 'resuelta');
+  const finalCount = (await req('GET', '/api/reportes/resumen')).data.discrepanciasAbiertas;
+  assert.equal(finalCount, antes, 'al resolverla, vuelve a bajar el contador');
+
+  const sinDescripcion = await req('POST', '/api/discrepancias-proveedor', { siniestro_id: s.id });
+  assert.equal(sinDescripcion.status, 400, 'no debe aceptar una discrepancia sin descripción');
+});
+
+test('SC-3: vale pendiente (pieza que quedó fuera al entregar) se da seguimiento hasta que se surte', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC3-TEST', aseguradora: 'Afirme' })).data;
+  const v = (await req('POST', '/api/vales-pendientes', {
+    siniestro_id: s.id, pieza_pendiente: 'Emblema trasero', fecha_entrega_vehiculo: '2026-08-28', fecha_estimada_llegada: '2026-09-05'
+  })).data;
+  assert.equal(v.estado, 'pendiente');
+
+  const listaPendiente = (await req('GET', '/api/vales-pendientes?siniestro_id=' + s.id)).data;
+  assert.equal(listaPendiente.length, 1, 'por default solo se listan los vales pendientes (revisión periódica)');
+
+  await req('PATCH', '/api/vales-pendientes/' + v.id, { estado: 'surtido' });
+  const listaPendienteDespues = (await req('GET', '/api/vales-pendientes?siniestro_id=' + s.id)).data;
+  assert.equal(listaPendienteDespues.length, 0, 'ya surtido, deja de aparecer en la revisión periódica de pendientes');
+  const listaTodos = (await req('GET', '/api/vales-pendientes?siniestro_id=' + s.id + '&estado=todos')).data;
+  assert.equal(listaTodos.length, 1, 'con estado=todos sigue apareciendo para historial');
+});
+
+test('SC-4: seguimiento posventa registra el resultado del contacto (contactado / no contesta), separado de solo la fecha programada', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC4-TEST', aseguradora: 'GNP' })).data;
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { postventa_resultado: 'contactado', postventa_completada: '2026-08-28' });
+  assert.equal(r.data.postventa_resultado, 'contactado');
+  assert.equal(r.data.postventa_completada, '2026-08-28');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('SC-5: checklist de entrega -- deducible pagado y confirmado (fecha) queda separado del monto informado, y la encuesta GNP se puede marcar como solicitada en el momento', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC5-TEST', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { deducible: 5000 }); // monto informado (ya existía)
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { deducible_pagado_confirmado_en: '2026-08-27', entrega_encuesta_gnp_solicitada: 1 });
+  assert.equal(r.data.deducible, 5000, 'el monto informado no se pierde');
+  assert.equal(r.data.deducible_pagado_confirmado_en, '2026-08-27', 'la confirmación de pago queda aparte, con su propia fecha');
+  assert.equal(r.data.entrega_encuesta_gnp_solicitada, 1);
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('SC-6: en cuanto la autorización se resuelve, Beto recibe un aviso digital de la OT (no depende de que le impriman el papel)', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC6-TEST', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, {
+    estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-28', autorizador: 'Ajustador'
+  });
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  const avisoBeto = tareas.find(t => t.disparador === 'ot_lista_beto');
+  assert.ok(avisoBeto, 'debe existir una tarea de aviso a Beto (ot_lista_beto)');
+  assert.equal(avisoBeto.estado, 'pendiente');
+
+  // Idempotente: si se vuelve a guardar sin cambiar el estado de autorización, no debe duplicarse.
+  await req('PATCH', '/api/siniestros/' + s.id, { notas: 'sin relación con autorización' });
+  const tareasDespues = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.equal(tareasDespues.filter(t => t.disparador === 'ot_lista_beto').length, 1, 'no se duplica el aviso');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('SC-7: la etapa de producción acepta pulido y lavado como pasos propios, en el orden confirmado (mecánica -> hojalatería -> pintura -> armado -> pulido -> lavado -> entrega)', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC7-TEST', aseguradora: 'Mapfre' })).data;
+  const r1 = await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'pulido' });
+  assert.equal(r1.data.estado_produccion, 'pulido');
+  const r2 = await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'lavado' });
+  assert.equal(r2.data.estado_produccion, 'lavado');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('SC-8: panorama de Beto distingue "reingreso citado con fecha de entrega" (todavía no llega) de "unidad en piso" (ya está físicamente), y da aviso con piezas suficientes aunque no esté al 100%', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
+  const s = (await req('POST', '/api/siniestros', { numero: 'SC8-TEST', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, {
+    ingreso_tipo: 'circulando', cita_fecha: '2026-09-02',
+    estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-28', autorizador: 'Ajustador'
+  });
+  const panorama = (await req('GET', '/api/reportes/panorama-beto')).data;
+  const fila = panorama.find(x => x.numero === 'SC8-TEST');
+  assert.ok(fila, 'el expediente autorizado debe aparecer en el panorama de Beto');
+  assert.equal(fila.reingreso_citado, true, 'tiene cita pero todavía no hay fecha_admision -> reingreso citado, no "en piso"');
+  assert.equal(fila.situacion, 'reingreso_citado');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

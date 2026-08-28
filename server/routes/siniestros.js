@@ -32,9 +32,9 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
     roles:['orlando','admin','jefe'], nombre:'valuación/autorización' },
   { campos:['estado_produccion'], roles:['beto','orlando','admin','jefe'], nombre:'producción' },
   { campos:['estado_calidad'], roles:['beto','orlando','admin','jefe'], nombre:'calidad' },
-  { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega'],
+  { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada'],
     roles:['beto','atencion_cliente','admin','jefe'], nombre:'entrega' },
-  { campos:['finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios'],
+  { campos:['finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios','postventa_resultado'],
     roles:['atencion_cliente','admin','jefe'], nombre:'finiquito/encuesta' }
 ];
 function campoRestringidoSinPermiso(body, rol){
@@ -137,7 +137,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
     'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
     // Documento Maestro / Fase F: control de calidad, entrega, finiquito y encuesta
     'estado_calidad','entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega',
-    'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios',
+    'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios','postventa_resultado','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada',
     // Propuesta Orlando/Vanessa fusionados: Excel capturado, fotos/carpeta completas, enviado al propietario
     'fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'];
   const nuevo = { ...anterior };
@@ -243,7 +243,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_observaciones=?,
       estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
       entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
-      finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,
+      finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,postventa_resultado=?,deducible_pagado_confirmado_en=?,entrega_encuesta_gnp_solicitada=?,
       fecha_borrador_captura=?,excel_capturado=?,excel_capturado_fecha=?,fotos_completas=?,fotos_completas_fecha=?,enviado_propietario=?,enviado_propietario_fecha=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
@@ -258,7 +258,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_observaciones,
       nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
       nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
-      nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios,
+      nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios, nuevo.postventa_resultado, nuevo.deducible_pagado_confirmado_en, (nuevo.entrega_encuesta_gnp_solicitada===undefined||nuevo.entrega_encuesta_gnp_solicitada===null||nuevo.entrega_encuesta_gnp_solicitada==='')?null:(nuevo.entrega_encuesta_gnp_solicitada?1:0),
       nuevo.fecha_borrador_captura, nuevo.excel_capturado, nuevo.excel_capturado_fecha, nuevo.fotos_completas, nuevo.fotos_completas_fecha, nuevo.enviado_propietario, nuevo.enviado_propietario_fecha,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
@@ -273,6 +273,19 @@ router.patch('/:id', requireAuth, (req, res)=>{
       db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
         VALUES (?,?,?,?,'pendiente','automatica','autorizacion_resuelta',?)`)
         .run(req.params.id, 'mensaje', 'Autorización resuelta: avisar al cliente y explicar el siguiente paso.', new Date().toISOString().slice(0,10), req.session.user.id);
+    }
+  }
+
+  // Modificación 7 (Modificaciones_Tablero_SC_Control.docx): hoy Beto se entera del expediente autorizado
+  // hasta que le imprimen y dejan la OT físicamente, sin contexto previo. En cuanto la autorización se
+  // resuelve (equivalente digital a "Roberto lo libera"), se le avisa de una vez en el sistema -- no
+  // depende de que alguien le entregue el papel.
+  if(autorizacionReciénResuelta){
+    const yaExisteAvisoBeto = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='ot_lista_beto' AND estado IN ('pendiente','en_proceso')`).get(req.params.id);
+    if(!yaExisteAvisoBeto){
+      db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+        VALUES (?,?,?,?,'pendiente','automatica','ot_lista_beto',?)`)
+        .run(req.params.id, 'aviso', 'Expediente autorizado: ya puedes revisar la orden de trabajo y proveedores asignados, aunque todavía no llegue la hoja impresa.', new Date().toISOString().slice(0,10), req.session.user.id);
     }
   }
 

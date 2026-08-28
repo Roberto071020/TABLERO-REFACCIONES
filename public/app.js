@@ -247,7 +247,7 @@ async function viewInicio(){
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
   const verBeto = currentUser && ['beto','admin','jefe'].includes(currentUser.rol);
   const colaBeto = verBeto ? await api('GET','/api/reportes/panorama-beto') : [];
-  const LABEL_PROD = { programado:'Programado', en_laminado:'En laminado', mecanica:'Mecánica', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
+  const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
   return `
   <h2>Resumen diario</h2>
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
@@ -262,6 +262,8 @@ async function viewInicio(){
     <div class="card ambar"><div class="num">${r.piezasEnDevolucion}</div><div class="label">En devolución</div></div>
     <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
     <div class="card verde"><div class="num">${r.cierresHoy}</div><div class="label">Recibidas hoy</div></div>
+    <div class="card ${r.discrepanciasAbiertas>0?'rojo':'verde'}"><div class="num">${r.discrepanciasAbiertas}</div><div class="label">Discrepancias con proveedor</div></div>
+    <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
   </div>
   ${verOrlandoVanessa ? `
   <div class="section">
@@ -291,13 +293,15 @@ async function viewInicio(){
     <h4 style="margin-top:14px;">Orden sugerido de trabajo</h4>
     <p class="subtle">Calculado solo con lo que ya está en el sistema (fecha promesa, OT, refacciones) — no necesitas capturar nada extra.</p>
     ${colaBeto.length===0?'<div class="empty">Sin unidades autorizadas pendientes de producción.</div>':`
-    <table><thead><tr><th>#</th><th>Siniestro</th><th>Vehículo</th><th>OT</th><th>F. promesa</th><th>Motivo</th></tr></thead><tbody>
+    <table><thead><tr><th>#</th><th>Siniestro</th><th>Vehículo</th><th>Situación</th><th>OT</th><th>F. promesa</th><th>Antigüedad</th><th>Motivo</th></tr></thead><tbody>
     ${colaBeto.slice(0,20).map((x,i)=>`<tr>
-      <td><span class="badge ${x.prioridad===1?'rojo':x.prioridad===2?'ambar':x.prioridad===3?'azul':'gris'}">${x.prioridad}</span></td>
+      <td><span class="badge ${x.prioridad===1?'rojo':x.prioridad===2?'ambar':(x.prioridad===3||x.prioridad===3.5)?'azul':'gris'}">${x.prioridad}</span></td>
       <td><span class="link" onclick="goSiniestro(${x.id})">${esc(x.numero)}</span></td>
       <td>${esc(x.vehiculo||'—')} ${esc(x.placas?('· '+x.placas):'')}</td>
+      <td>${x.reingreso_citado?'<span class="badge ambar">Reingreso citado</span>':x.situacion==='en_piso'?'<span class="badge verde">En piso</span>':'<span class="badge gris">En proceso</span>'}</td>
       <td>${esc(x.ot_numero||'—')}</td>
       <td>${esc(x.fecha_entrega_prevista||'—')}</td>
+      <td class="subtle">${x.dias_en_taller!=null?x.dias_en_taller+' día(s)':'—'}</td>
       <td class="subtle">${esc(x.motivo)}</td>
     </tr>`).join('')}
     </tbody></table>`}
@@ -593,12 +597,13 @@ async function viewLista(){
     <button class="btn small secondary" onclick="exportarExpedientesCSV()">Exportar expedientes (CSV)</button>
     <button class="btn secondary small" onclick="window.print()">Imprimir / PDF</button>
   </div>
-  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Pedido</th><th>Proveedor</th><th>Pieza</th><th>Estatus</th><th>Fecha prometida</th><th>Alerta</th></tr></thead>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Esquema</th><th>Pedido</th><th>Proveedor</th><th>Pieza</th><th>Estatus</th><th>Fecha prometida</th><th>Alerta</th></tr></thead>
   <tbody>
-  ${filas.length===0?'<tr><td colspan="8" class="empty">Sin resultados con los filtros actuales.</td></tr>':filas.map(f=>`
+  ${filas.length===0?'<tr><td colspan="9" class="empty">Sin resultados con los filtros actuales.</td></tr>':filas.map(f=>`
     <tr>
       <td><span class="link" onclick="goSiniestro(${f.siniestro_id})">${esc(f.siniestro_numero)}</span></td>
       <td>${esc(f.aseguradora)}</td>
+      <td><span class="badge ${f.esquema_surtido&&f.esquema_surtido.startsWith('Autosurtido')?'ambar':f.esquema_surtido&&f.esquema_surtido.includes('pendiente')?'rojo':'gris'}">${esc(f.esquema_surtido||'—')}</span></td>
       <td>${esc(f.pedido_numero)}</td>
       <td>${esc(f.proveedor_nombre||'—')}</td>
       <td>${f.pieza_id ? esc(f.descripcion) : '<i>Pendiente de capturar piezas</i>'}</td>
@@ -882,7 +887,7 @@ async function viewSiniestro(id){
     for(const ot of ots){ const ops = await api('GET','/api/ot-operaciones?ot_id='+ot.id); ops.forEach(op=>operaciones.push({op,ot})); }
     const complementosLista = await api('GET','/api/complementos?siniestro_id='+id);
     const retrabajosLista = await api('GET','/api/retrabajos?siniestro_id='+id);
-    const LABEL_PROD = { programado:'Programado', en_laminado:'En laminado', mecanica:'Mecánica', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', detenido:'Detenido', terminado:'Terminado' };
+    const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
     const LABEL_OT = { borrador:'Borrador', emitida:'Emitida', actualizada:'Actualizada', suspendida:'Suspendida', terminada:'Terminada' };
     const LABEL_OP = { programado:'Programado', en_proceso:'En proceso', detenido:'Detenido', terminado:'Terminado' };
     const LABEL_DECISION = { pendiente:'Pendiente', autorizado:'Autorizado', rechazado:'Rechazado', parcial:'Parcial' };
@@ -958,6 +963,7 @@ async function viewSiniestro(id){
     const puedeEntregaDetalle = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
     const puedeFiniquito = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
     const checklist = await api('GET','/api/checklist-calidad?siniestro_id='+id);
+    const valesLista = await api('GET','/api/vales-pendientes?siniestro_id='+id+'&estado=todos').catch(()=>[]);
     const LABEL_CAL = { en_inspeccion:'En inspección', rechazado_a_retrabajo:'Rechazado a retrabajo', reinspeccion:'Reinspección', liberado:'Liberado' };
     const LABEL_RES = { pendiente:'Pendiente', aprobado:'Aprobado', rechazado:'Rechazado' };
     const LABEL_ENTREGA = { listo:'Listo', cita_confirmada:'Cita confirmada', entregado_con_observacion:'Entregado con observación', entregado:'Entregado' };
@@ -990,9 +996,13 @@ async function viewSiniestro(id){
       <tr><td>Receptor</td><td>${esc(s.entrega_receptor||'—')} ${s.entrega_identificacion?('· '+esc(s.entrega_identificacion)):''}</td></tr>
       <tr><td>Kilometraje / combustible</td><td>${esc(s.entrega_kilometraje||'—')} ${s.entrega_combustible?('· '+esc(s.entrega_combustible)):''}</td></tr>
       <tr><td>Llaves entregadas</td><td>${s.entrega_llaves_entregadas?'Sí':'No'}</td></tr>
+      <tr><td>Deducible informado (monto)</td><td>${s.deducible!=null?fmtMoney(s.deducible):'—'}</td></tr>
+      <tr><td>Deducible pagado y confirmado</td><td>${s.deducible_pagado_confirmado_en?`<span class="badge verde">Sí</span> · ${esc(s.deducible_pagado_confirmado_en)}`:'<span class="badge ambar">Aún no</span>'}</td></tr>
+      ${s.aseguradora==='GNP'?`<tr><td>Encuesta GNP solicitada en el momento</td><td>${s.entrega_encuesta_gnp_solicitada?'<span class="badge verde">Sí</span>':'<span class="badge ambar">No</span>'}</td></tr>`:''}
       <tr><td>Observación</td><td>${esc(s.entrega_observacion||'—')}</td></tr>
     </tbody></table>
     <p class="subtle" style="margin-top:6px;">La fecha de entrega se registra con el botón "Registrar entrega" del encabezado. Aquí se captura el detalle (tabla 18 del documento maestro).</p>
+    ${s.aseguradora==='GNP'?'<p class="subtle">Modificación 4 (GNP): el deducible debe quedar pagado y confirmado, idealmente un día antes de la entrega; además, pídele al cliente que revise su correo y conteste ahí mismo la encuesta de satisfacción — quien la contesta después, a solas, tiende a calificar peor.</p>':''}
     ${puedeEntregaDetalle?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormDetalleEntrega(${id})">Capturar detalle de entrega</button></div>`:''}
 
     <h3 style="margin-top:20px;">Finiquito y encuesta</h3>
@@ -1002,7 +1012,29 @@ async function viewSiniestro(id){
       <tr><td>Encuesta</td><td>${esc(LABEL_ENCUESTA[s.encuesta_estado]||'Pendiente')} ${s.encuesta_calificacion!=null?('· calificación '+s.encuesta_calificacion):''}</td></tr>
       <tr><td>Comentarios de encuesta</td><td>${esc(s.encuesta_comentarios||'—')}</td></tr>
     </tbody></table>
-    ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormFiniquito(${id})">Actualizar finiquito / encuesta</button></div>`:''}`;
+    ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormFiniquito(${id})">Actualizar finiquito / encuesta</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Seguimiento posventa</h3>
+    <p class="subtle">Modificación 4: llamada de seguimiento 2-3 días después de la entrega (importa especialmente con MAPFRE, GNP y AFIRME, que envían encuesta de satisfacción al cliente).</p>
+    <table class="kv"><tbody>
+      <tr><td>Programado para</td><td>${esc(s.postventa_programada||'—')}</td></tr>
+      <tr><td>Resultado del contacto</td><td>${s.postventa_resultado==='contactado'?'<span class="badge verde">Contactado</span>':s.postventa_resultado==='no_contesta'?'<span class="badge rojo">No contesta</span>':'<span class="badge ambar">Pendiente</span>'}${s.postventa_completada?' · '+esc(s.postventa_completada):''}</td></tr>
+    </tbody></table>
+    ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="registrarPostventa(${id},'contactado')">Marcar contactado</button> <button class="btn small secondary" onclick="registrarPostventa(${id},'no_contesta')">Marcar no contesta</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Vales pendientes</h3>
+    <p class="subtle">Modificación 3: piezas que quedaron pendientes al momento de la entrega (ej. un emblema), con seguimiento periódico para que no se pierdan de vista.</p>
+    ${valesLista.length===0?'<div class="empty">Sin vales pendientes registrados.</div>':`
+    <table><thead><tr><th>Pieza pendiente</th><th>F. entrega vehículo</th><th>F. estimada llegada</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${valesLista.map(v=>`<tr>
+      <td>${esc(v.pieza_pendiente)}${v.notas?`<div class="subtle">${esc(v.notas)}</div>`:''}</td>
+      <td>${esc(v.fecha_entrega_vehiculo||'—')}</td>
+      <td>${esc(v.fecha_estimada_llegada||'—')}</td>
+      <td><span class="badge ${v.estado==='surtido'?'verde':v.estado==='cancelado'?'gris':'ambar'}">${esc(v.estado)}</span></td>
+      <td>${v.estado==='pendiente'?`<button class="btn small secondary" onclick="abrirFormEditarVale(${v.id})">Actualizar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoVale(${id})">+ Registrar vale pendiente</button></div>`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}</td><td>
@@ -1016,6 +1048,7 @@ async function viewSiniestro(id){
     for(const p of peds){ const zs = await api('GET','/api/piezas?pedido_id='+p.id); zs.forEach(z=>allz.push({z,p})); }
     const proveedoresNombre = {};
     (await api('GET','/api/proveedores')).forEach(pv=>{ proveedoresNombre[pv.id] = pv.razon_social; });
+    const discrepancias = await api('GET','/api/discrepancias-proveedor?siniestro_id='+id);
     body = `<table><thead><tr><th>Pedido</th><th>Pieza</th><th>Proveedor</th><th>F. prometida</th><th>Estatus</th><th>Recepción</th><th></th></tr></thead><tbody>
     ${allz.map(o=>`<tr>
       <td>${esc(o.p.numero)}</td><td>${esc(o.z.descripcion)}${o.z.observaciones?`<div class="subtle">${esc(o.z.observaciones)}</div>`:''}</td>
@@ -1030,7 +1063,21 @@ async function viewSiniestro(id){
       </td>
     </tr>`).join('')}
     </tbody></table>
-    ${peds.length>0?`<div style="margin-top:10px"><select id="piezaPedidoSel">${peds.map(p=>`<option value="${p.id}">Pedido ${esc(p.numero)}</option>`).join('')}</select> <button class="btn small" onclick="abrirFormNuevaPieza()">+ Agregar pieza</button></div>`:'<div class="empty">Da de alta un pedido primero para poder agregar piezas.</div>'}`;
+    ${peds.length>0?`<div style="margin-top:10px"><select id="piezaPedidoSel">${peds.map(p=>`<option value="${p.id}">Pedido ${esc(p.numero)}</option>`).join('')}</select> <button class="btn small" onclick="abrirFormNuevaPieza()">+ Agregar pieza</button></div>`:'<div class="empty">Da de alta un pedido primero para poder agregar piezas.</div>'}
+    <h4 style="margin-top:20px;">Discrepancias con proveedor</h4>
+    <p class="subtle">Cuando un proveedor marca una pieza "entregada" en Impart sin haberla enviado (Modificación 2, 28-ago-2026): queda el respaldo de la fecha que marcó el sistema vs. la fecha real de llegada, para responder a la aseguradora.</p>
+    ${discrepancias.length===0?'<div class="empty">Sin discrepancias registradas.</div>':`
+    <table><thead><tr><th>Descripción</th><th>F. marcado entregado</th><th>F. real / no llegó</th><th>Correo avisado</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${discrepancias.map(d=>`<tr>
+      <td>${esc(d.descripcion)}${d.proveedor_nombre?`<div class="subtle">${esc(d.proveedor_nombre)}</div>`:''}</td>
+      <td>${esc(d.fecha_marcado_entregado||'—')}</td>
+      <td>${d.no_llego?'<span class="badge rojo">No llegó</span>':esc(d.fecha_real_llegada||'—')}</td>
+      <td>${esc(d.correo_enviado_en||'—')}</td>
+      <td><span class="badge ${d.estado==='resuelta'?'verde':'ambar'}">${esc(d.estado)}</span></td>
+      <td>${d.estado==='abierta'?`<button class="btn small secondary" onclick="abrirFormEditarDiscrepancia(${d.id})">Actualizar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaDiscrepancia(${id})">+ Registrar discrepancia</button></div>`;
   } else if(state.subtabSiniestro==='incidencias'){
     let todas = [];
     for(const p of peds){ const zs = await api('GET','/api/piezas?pedido_id='+p.id); for(const z of zs){ const incs = await api('GET','/api/incidencias?pieza_id='+z.id); incs.forEach(i=>todas.push({i,z,p})); } }
@@ -1522,14 +1569,17 @@ function abrirFormEtapaProduccion(siniestroId){
       <div class="field"><label>Etapa</label><select id="fprod_estado">
         <option value="" ${!s.estado_produccion?'selected':''}>Sin iniciar</option>
         <option value="programado" ${s.estado_produccion==='programado'?'selected':''}>Programado</option>
-        <option value="en_laminado" ${s.estado_produccion==='en_laminado'?'selected':''}>En laminado</option>
         <option value="mecanica" ${s.estado_produccion==='mecanica'?'selected':''}>Mecánica</option>
+        <option value="en_laminado" ${s.estado_produccion==='en_laminado'?'selected':''}>Hojalatería</option>
         <option value="preparacion" ${s.estado_produccion==='preparacion'?'selected':''}>Preparación</option>
         <option value="pintura" ${s.estado_produccion==='pintura'?'selected':''}>Pintura</option>
         <option value="armado" ${s.estado_produccion==='armado'?'selected':''}>Armado</option>
+        <option value="pulido" ${s.estado_produccion==='pulido'?'selected':''}>Pulido</option>
+        <option value="lavado" ${s.estado_produccion==='lavado'?'selected':''}>Lavado</option>
         <option value="detenido" ${s.estado_produccion==='detenido'?'selected':''}>Detenido</option>
         <option value="terminado" ${s.estado_produccion==='terminado'?'selected':''}>Terminado</option>
       </select></div>
+      <p class="subtle" style="margin-top:4px;">Orden confirmado por Roberto: mecánica → hojalatería → pintura → armado → pulido → lavado → entrega.</p>
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEtapaProduccion(${siniestroId})">Guardar</button></div>
     `);
   });
@@ -1882,6 +1932,12 @@ function abrirFormDetalleEntrega(siniestroId){
         <option value="1" ${s.entrega_llaves_entregadas?'selected':''}>Sí</option>
         <option value="0" ${!s.entrega_llaves_entregadas?'selected':''}>No</option>
       </select></div>
+      <div class="field"><label>Deducible pagado y confirmado (fecha)</label><input id="fent2_deducible_confirmado" type="date" value="${esc(s.deducible_pagado_confirmado_en||'')}">
+        <p class="subtle" style="margin:2px 0 0;">Distinto de solo haberlo informado (monto ya capturado en Valuación/autorización). Idealmente un día antes de la entrega.</p></div>
+      ${s.aseguradora==='GNP'?`<div class="field"><label>¿Se le pidió al cliente contestar la encuesta ahí mismo?</label><select id="fent2_encuesta_gnp">
+        <option value="0" ${!s.entrega_encuesta_gnp_solicitada?'selected':''}>No</option>
+        <option value="1" ${s.entrega_encuesta_gnp_solicitada?'selected':''}>Sí</option>
+      </select></div>`:''}
       <div class="field"><label>Estado de entrega</label><select id="fent2_estado">
         <option value="" ${!s.estado_entrega?'selected':''}>Sin definir</option>
         <option value="listo" ${s.estado_entrega==='listo'?'selected':''}>Listo</option>
@@ -1896,11 +1952,14 @@ function abrirFormDetalleEntrega(siniestroId){
 }
 async function guardarDetalleEntrega(siniestroId){
   try{
+    const encuestaEl = document.getElementById('fent2_encuesta_gnp');
     await api('PATCH','/api/siniestros/'+siniestroId, {
       entrega_receptor: document.getElementById('fent2_receptor').value, entrega_identificacion: document.getElementById('fent2_identificacion').value,
       entrega_kilometraje: document.getElementById('fent2_km').value, entrega_combustible: document.getElementById('fent2_combustible').value,
       entrega_llaves_entregadas: Number(document.getElementById('fent2_llaves').value), estado_entrega: document.getElementById('fent2_estado').value,
-      entrega_observacion: document.getElementById('fent2_observacion').value
+      entrega_observacion: document.getElementById('fent2_observacion').value,
+      deducible_pagado_confirmado_en: document.getElementById('fent2_deducible_confirmado').value,
+      ...(encuestaEl ? { entrega_encuesta_gnp_solicitada: Number(encuestaEl.value) } : {})
     });
     toast('Detalle de entrega actualizado.', 'success');
     closeModal(); render();
@@ -1945,6 +2004,136 @@ async function guardarFiniquito(siniestroId){
   }catch(e){
     if(e.message){ /* el toast del error ya se mostró */ }
   }
+}
+
+/* ===================== Modificaciones_Tablero_SC_Control.docx (28-ago-2026) ===================== */
+
+// Modificación 4: resultado del seguimiento posventa (2-3 días después de la entrega).
+async function registrarPostventa(siniestroId, resultado){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { postventa_resultado: resultado, postventa_completada: todayISO() });
+    toast('Seguimiento posventa registrado.', 'success');
+    render();
+  }catch(e){}
+}
+
+// Modificación 3: vale pendiente por pieza que quedó fuera al momento de la entrega.
+function abrirFormNuevoVale(siniestroId){
+  showModal(`
+    <h3>Registrar vale pendiente</h3>
+    <div class="field"><label>Pieza pendiente</label><input id="fvale_pieza" placeholder="Ej. emblema trasero"></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha de entrega del vehículo</label><input id="fvale_fentrega" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Fecha estimada de llegada</label><input id="fvale_fllegada" type="date"></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="fvale_notas"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarVale(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarVale(siniestroId){
+  const pieza = document.getElementById('fvale_pieza').value.trim();
+  if(!pieza){ toast('Indica qué pieza quedó pendiente.', 'error'); return; }
+  try{
+    await api('POST','/api/vales-pendientes', {
+      siniestro_id: siniestroId, pieza_pendiente: pieza,
+      fecha_entrega_vehiculo: document.getElementById('fvale_fentrega').value,
+      fecha_estimada_llegada: document.getElementById('fvale_fllegada').value,
+      notas: document.getElementById('fvale_notas').value
+    });
+    toast('Vale pendiente registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function abrirFormEditarVale(valeId){
+  api('GET','/api/vales-pendientes?estado=todos').then(lista=>{
+    const v = lista.find(x=>x.id===valeId);
+    if(!v){ toast('Vale no encontrado.', 'error'); return; }
+    showModal(`
+      <h3>Actualizar vale pendiente</h3>
+      <div class="field"><label>Pieza pendiente</label><input id="fvale2_pieza" value="${esc(v.pieza_pendiente)}"></div>
+      <div class="field"><label>Fecha estimada de llegada</label><input id="fvale2_fllegada" type="date" value="${esc(v.fecha_estimada_llegada||'')}"></div>
+      <div class="field"><label>Estado</label><select id="fvale2_estado">
+        <option value="pendiente" ${v.estado==='pendiente'?'selected':''}>Pendiente</option>
+        <option value="surtido" ${v.estado==='surtido'?'selected':''}>Surtido</option>
+        <option value="cancelado" ${v.estado==='cancelado'?'selected':''}>Cancelado</option>
+      </select></div>
+      <div class="field"><label>Notas</label><textarea id="fvale2_notas">${esc(v.notas||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionVale(${valeId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEdicionVale(valeId){
+  try{
+    await api('PATCH','/api/vales-pendientes/'+valeId, {
+      pieza_pendiente: document.getElementById('fvale2_pieza').value,
+      fecha_estimada_llegada: document.getElementById('fvale2_fllegada').value,
+      estado: document.getElementById('fvale2_estado').value,
+      notas: document.getElementById('fvale2_notas').value
+    });
+    toast('Vale actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+// Modificación 2: discrepancia con proveedor (marcó entregado sin haber enviado).
+function abrirFormNuevaDiscrepancia(siniestroId){
+  showModal(`
+    <h3>Registrar discrepancia con proveedor</h3>
+    <div class="field"><label>Descripción</label><textarea id="fdisc_descripcion" placeholder="Qué pieza, qué marcó el sistema"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha en que el sistema marcó "entregado"</label><input id="fdisc_fmarcado" type="date"></div>
+      <div class="field"><label>Fecha real de llegada</label><input id="fdisc_freal" type="date"></div>
+    </div>
+    <div class="field"><label><input id="fdisc_nollego" type="checkbox"> No llegó (todavía)</label></div>
+    <div class="field"><label>Fecha de correo avisando la discrepancia</label><input id="fdisc_fcorreo" type="date"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarDiscrepancia(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarDiscrepancia(siniestroId){
+  const descripcion = document.getElementById('fdisc_descripcion').value.trim();
+  if(!descripcion){ toast('Describe la discrepancia.', 'error'); return; }
+  try{
+    await api('POST','/api/discrepancias-proveedor', {
+      siniestro_id: siniestroId, descripcion,
+      fecha_marcado_entregado: document.getElementById('fdisc_fmarcado').value,
+      fecha_real_llegada: document.getElementById('fdisc_freal').value,
+      no_llego: document.getElementById('fdisc_nollego').checked ? 1 : 0,
+      correo_enviado_en: document.getElementById('fdisc_fcorreo').value
+    });
+    toast('Discrepancia registrada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function abrirFormEditarDiscrepancia(discrepanciaId){
+  api('GET','/api/discrepancias-proveedor').then(lista=>{
+    const d = lista.find(x=>x.id===discrepanciaId);
+    if(!d){ toast('Discrepancia no encontrada.', 'error'); return; }
+    showModal(`
+      <h3>Actualizar discrepancia</h3>
+      <div class="field"><label>Descripción</label><textarea id="fdisc2_descripcion">${esc(d.descripcion)}</textarea></div>
+      <div class="field"><label>Fecha real de llegada</label><input id="fdisc2_freal" type="date" value="${esc(d.fecha_real_llegada||'')}"></div>
+      <div class="field"><label><input id="fdisc2_nollego" type="checkbox" ${d.no_llego?'checked':''}> No llegó</label></div>
+      <div class="field"><label>Fecha de correo avisando</label><input id="fdisc2_fcorreo" type="date" value="${esc(d.correo_enviado_en||'')}"></div>
+      <div class="field"><label>Estado</label><select id="fdisc2_estado">
+        <option value="abierta" ${d.estado==='abierta'?'selected':''}>Abierta</option>
+        <option value="resuelta" ${d.estado==='resuelta'?'selected':''}>Resuelta</option>
+      </select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionDiscrepancia(${discrepanciaId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEdicionDiscrepancia(discrepanciaId){
+  try{
+    await api('PATCH','/api/discrepancias-proveedor/'+discrepanciaId, {
+      descripcion: document.getElementById('fdisc2_descripcion').value,
+      fecha_real_llegada: document.getElementById('fdisc2_freal').value,
+      no_llego: document.getElementById('fdisc2_nollego').checked ? 1 : 0,
+      correo_enviado_en: document.getElementById('fdisc2_fcorreo').value,
+      estado: document.getElementById('fdisc2_estado').value
+    });
+    toast('Discrepancia actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
 }
 
 async function abrirFormCapturaEnvio(siniestroId){
@@ -2424,7 +2613,7 @@ async function viewCalidad(){
 /* ===================== VISTA: PRODUCCIÓN (Beto) ===================== */
 async function viewProduccion(){
   const expedientes = await api('GET','/api/reportes/bandeja-produccion');
-  const LABEL_PROD = { programado:'Programado', en_laminado:'En laminado', mecanica:'Mecánica', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', detenido:'Detenido', terminado:'Terminado' };
+  const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
   return `
   <h2>Producción</h2>
   <p class="subtle">Expedientes autorizados en proceso de reparación (módulo de Beto). Sección 5.10 y 9 del documento maestro: prioridades, bloqueos y retrabajos.</p>

@@ -68,6 +68,8 @@ app.use('/api/retrabajos', require('./routes/retrabajos'));
 app.use('/api/checklist-calidad', require('./routes/checklistCalidad'));
 app.use('/api/mapeo-estatus-inpart', require('./routes/mapeoEstatusInpart'));
 app.use('/api/respaldos', require('./routes/respaldos'));
+app.use('/api/discrepancias-proveedor', require('./routes/discrepanciasProveedor'));
+app.use('/api/vales-pendientes', require('./routes/valesPendientes'));
 
 // ---- Frontend estático ----
 app.use(express.static(path.join(__dirname, '..', 'public')));

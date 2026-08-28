@@ -895,4 +895,78 @@ for(const [col, def] of NUEVAS_COLUMNAS_PROPUESTA_ORLANDO){
   }
 }
 
+/* ===================== Modificaciones_Tablero_SC_Control.docx (28-ago-2026) =====================
+   Roberto explicó el proceso completo de principio a fin y de ahí salieron 7 modificaciones puntuales
+   + una regla por aseguradora. Todo aditivo, nada se borra ni se renombra. */
+
+// Modificación 4: seguimiento de posventa -- ya existía postventa_programada/postventa_completada
+// (tarea automática 2-3 días después de la entrega); falta el RESULTADO del contacto, distinto de la
+// fecha en que se completó la tarea. NULL = todavía no se sabe; 'contactado' | 'no_contesta'.
+// Modificación 5: el deducible YA se "informa" al cliente cuando se captura el monto (columna
+// `deducible`, ya existente); lo que faltaba es un sello de fecha de PAGO CONFIRMADO, distinto e
+// independiente de solo haberlo informado, para no entregar la unidad sin la confirmación bancaria.
+// Modificación 4 (GNP): paso adicional del checklist de entrega -- pedirle al cliente que conteste la
+// encuesta de satisfacción ahí mismo, en el momento de la entrega (solo aplica a GNP).
+const NUEVAS_COLUMNAS_MODIFICACIONES_SC_CONTROL = [
+  ['postventa_resultado', 'TEXT'],                  // NULL | 'contactado' | 'no_contesta'
+  ['deducible_pagado_confirmado_en', 'TEXT'],       // fecha en que se confirmó el pago (no solo informado)
+  ['entrega_encuesta_gnp_solicitada', 'INTEGER']    // 1/0 -- solo aplica/se muestra cuando aseguradora = GNP
+];
+for(const [col, def] of NUEVAS_COLUMNAS_MODIFICACIONES_SC_CONTROL){
+  if(!tieneColumna('siniestros', col)){
+    db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${def};`);
+  }
+}
+
+// Modificación 2: "discrepancia proveedor" -- un proveedor marca una pieza como entregada en Impart sin
+// haberla enviado; cuando se descubre la falta, la aseguradora reclama por qué no se avisó a tiempo.
+// Tabla nueva (no se reutiliza `incidencias` porque esa tabla exige pieza_id NOT NULL y un CHECK de tipo
+// cerrado; esto necesita quedar documentado aunque la pieza/proveedor todavía no estén identificados).
+db.exec(`
+CREATE TABLE IF NOT EXISTS discrepancias_proveedor (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  pieza_id INTEGER REFERENCES piezas(id),
+  proveedor_id INTEGER REFERENCES proveedores(id),
+  descripcion TEXT NOT NULL,
+  fecha_marcado_entregado TEXT,
+  fecha_real_llegada TEXT,
+  no_llego INTEGER NOT NULL DEFAULT 0,
+  correo_enviado_en TEXT,
+  correo_texto TEXT,
+  estado TEXT NOT NULL DEFAULT 'abierta' CHECK(estado IN ('abierta','resuelta')),
+  creado_por INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_discrepancias_siniestro ON discrepancias_proveedor(siniestro_id);
+`);
+
+// Modificación 3: "vale pendiente" -- al entregar con una pieza faltante (ej. un emblema) se da un vale
+// al cliente, pero hoy no hay seguimiento formal y se olvida hasta que el cliente pregunta.
+db.exec(`
+CREATE TABLE IF NOT EXISTS vales_pendientes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  pieza_pendiente TEXT NOT NULL,
+  fecha_entrega_vehiculo TEXT,
+  fecha_estimada_llegada TEXT,
+  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente','surtido','cancelado')),
+  notas TEXT,
+  creado_por INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vales_siniestro ON vales_pendientes(siniestro_id);
+`);
+
+// Modificación 6: orden real de producción confirmado por Roberto: mecánica -> hojalatería -> pintura ->
+// armado -> pulido -> lavado -> entrega. El catálogo de hitos (checklist de avisos al cliente de
+// Alejandra) tenía hojalatería (orden 9) antes que mecánica (orden 10); se corrige el orden de
+// despliegue nada más -- no se toca la clave ni se borra el hito, así que no afecta lo ya capturado
+// en siniestro_hitos (que referencia hito_id, no el número de orden).
+db.prepare("UPDATE catalogo_hitos SET orden = 9 WHERE clave = 'mecanica'").run();
+db.prepare("UPDATE catalogo_hitos SET orden = 10 WHERE clave = 'hojalateria'").run();
+
 module.exports = db;
+

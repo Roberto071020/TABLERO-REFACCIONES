@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua } = require('../utils');
+const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua, esquemaSurtidoLabel, porcentajePiezasRecibidas } = require('../utils');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -10,6 +10,7 @@ const CERRADAS = ['Recibida físicamente','Cancelada'];
 function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, incluir_archivados, ventana }){
   let sql = `SELECT p.id as pedido_id, p.numero as pedido_numero, p.estatus_operativo, p.fecha_prevista as pedido_fecha_prevista,
                     s.id as siniestro_id, s.numero as siniestro_numero, s.aseguradora, s.vehiculo, s.placas, s.archivado,
+                    s.aseguradora_ruta_refacciones,
                     z.id as pieza_id, z.descripcion, z.estatus as pieza_estatus, z.fecha_prometida, z.proveedor_id,
                     pv.razon_social as proveedor_nombre
              FROM pedidos p
@@ -32,7 +33,10 @@ function obtenerFilasListaMaestra({ aseguradora, estatus, proveedor_id, q, inclu
   // ?incluir_archivados=1 lo trae de vuelta para consultas de historial.
   if(incluir_archivados !== '1'){ sql += ' AND s.archivado = 0'; }
   sql += ' ORDER BY z.fecha_prometida IS NULL, z.fecha_prometida ASC';
-  return db.prepare(sql).all(...params);
+  // Modificación (Modificaciones_Tablero_SC_Control.docx, sección 2): "Esquema de surtido" visible en la
+  // lista maestra de Daniela, para que el seguimiento correcto se aplique según la aseguradora en vez de
+  // asumir Impart para todos. Traduce la ruta ya calculada (aseguradora_ruta_refacciones) a texto claro.
+  return db.prepare(sql).all(...params).map(f => ({ ...f, esquema_surtido: esquemaSurtidoLabel(f.aseguradora_ruta_refacciones, f.aseguradora) }));
 }
 
 router.get('/lista-maestra', requireAuth, (req, res)=>{
@@ -164,12 +168,19 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const porAvisarAutorizacion = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='autorizacion_resuelta' AND estado IN ('pendiente','en_proceso')`).get().n;
   const refaccionesPorAvisar = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE disparador='refacciones_completas' AND estado IN ('pendiente','en_proceso')`).get().n;
 
+  // Modificaciones 2 y 3 (Modificaciones_Tablero_SC_Control.docx): igual que el resto de indicadores,
+  // conteos simples de lo que necesita revisión periódica -- discrepancias con proveedores sin resolver
+  // y vales pendientes de surtir que todavía no se le han dado seguimiento al cliente.
+  const discrepanciasAbiertas = db.prepare(`SELECT COUNT(*) n FROM discrepancias_proveedor WHERE estado='abierta'`).get().n;
+  const valesPendientesSinSurtir = db.prepare(`SELECT COUNT(*) n FROM vales_pendientes WHERE estado='pendiente'`).get().n;
+
   res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
     piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
-    citasHoy, entregasProgramadas, porAvisarAutorizacion, refaccionesPorAvisar });
+    citasHoy, entregasProgramadas, porAvisarAutorizacion, refaccionesPorAvisar,
+    discrepanciasAbiertas, valesPendientesSinSurtir });
 });
 
 // F-20: la búsqueda global regresa una LISTA de coincidencias agrupadas, no abre automáticamente la primera.
@@ -355,20 +366,37 @@ router.get('/panorama-beto', requireAuth, (req, res)=>{
         return piezas.length > 0 && piezas.every(z => z.estatus === 'Recibida físicamente');
       });
     }
+    // Modificación 1 (Modificaciones_Tablero_SC_Control.docx): aviso de "listo para iniciar" en cuanto
+    // haya piezas SUFICIENTES, aunque el expediente no esté 100% completo. No existe un catálogo de qué
+    // pieza es "crítica" para arrancar, así que se usa una señal objetiva: 80%+ de las piezas del
+    // expediente ya recibidas físicamente (sin llegar al 100% que ya cubre refaccionesCompletas arriba).
+    const pctPiezas = s.requiere_refacciones === 'si' ? porcentajePiezasRecibidas(db, s.id) : null;
+    const piezasSuficientes = !refaccionesCompletas && pctPiezas !== null && pctPiezas >= 0.8;
     const enPiso = !s.estado_produccion || s.estado_produccion === 'programado';
     const vencidaOProxima = s.fecha_entrega_prevista && (s.fecha_entrega_prevista <= manana);
+    // Modificación 1(a): "reingreso citado con fecha de entrega" separado de "unidad en piso" -- hoy
+    // Beto no distingue entre una unidad que ya está físicamente en el taller (fecha_admision capturada)
+    // y una que solo tiene cita agendada para reingresar (circulando, todavía no llega).
+    const reingresoCitado = s.ingreso_tipo === 'circulando' && s.cita_fecha && !s.fecha_admision;
+    const situacion = reingresoCitado ? 'reingreso_citado' : (s.fecha_admision ? 'en_piso' : (enPiso ? 'en_piso' : 'en_proceso'));
+    const diasEnTaller = s.creado_en ? Math.floor((Date.now() - new Date(s.creado_en.replace(' ','T')+'Z').getTime()) / 86400000) : null;
 
     let prioridad = 4, motivo = 'En proceso normal, dentro de fecha.';
     if(vencidaOProxima){ prioridad = 1; motivo = s.fecha_entrega_prevista < hoy ? 'Vencida.' : 'Vence hoy o mañana.'; }
     else if(otRapidaSinTocar){ prioridad = 2; motivo = 'Reparación rápida recién asignable, sin tocar.'; }
     else if(enPiso && refaccionesCompletas){ prioridad = 3; motivo = 'Lista para iniciar: refacciones completas.'; }
+    else if(enPiso && piezasSuficientes){ prioridad = 3.5; motivo = `Piezas suficientes recibidas (${Math.round(pctPiezas*100)}%), aunque no esté al 100%.`; }
 
     return { id:s.id, numero:s.numero, vehiculo:s.vehiculo, placas:s.placas, aseguradora:s.aseguradora,
       fecha_entrega_prevista:s.fecha_entrega_prevista, estado_produccion:s.estado_produccion,
-      ot_numero: otMasReciente ? otMasReciente.numero : null, prioridad, motivo };
+      ot_numero: otMasReciente ? otMasReciente.numero : null, prioridad, motivo,
+      situacion, reingreso_citado: !!reingresoCitado, dias_en_taller: diasEnTaller };
   });
 
-  out.sort((a,b)=> a.prioridad - b.prioridad || (a.fecha_entrega_prevista||'9999').localeCompare(b.fecha_entrega_prevista||'9999'));
+  // Modificación 1(c): orden por antigüedad/urgencia en vez de solo el orden físico en que llegan las
+  // hojas -- dentro de la misma prioridad y fecha promesa, gana el expediente más antiguo (más días en
+  // taller esperando), para que no se quede debajo del montón.
+  out.sort((a,b)=> a.prioridad - b.prioridad || (a.fecha_entrega_prevista||'9999').localeCompare(b.fecha_entrega_prevista||'9999') || (b.dias_en_taller||0) - (a.dias_en_taller||0));
   res.json(out);
 });
 
@@ -424,6 +452,10 @@ router.get('/pendientes-hoy', requireAuth, (req, res)=>{
   const enHojalateria = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'en_laminado' ORDER BY numero`).all();
   const enPintura = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'pintura' ORDER BY numero`).all();
   const enArmado = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'armado' ORDER BY numero`).all();
+  // Modificación 6: se agregan pulido y lavado como etapas propias (antes quedaban implícitas dentro de
+  // "detallado y pulido" o no se distinguían), siguiendo el orden confirmado por Roberto.
+  const enPulido = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'pulido' ORDER BY numero`).all();
+  const enLavado = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_produccion = 'lavado' ORDER BY numero`).all();
   const listoParaEntrega = db.prepare(`SELECT id, numero, vehiculo, placas FROM siniestros WHERE archivado = 0 AND estado_entrega = 'cita_confirmada' ORDER BY numero`).all();
 
   res.json({
@@ -436,8 +468,8 @@ router.get('/pendientes-hoy', requireAuth, (req, res)=>{
       total: esperandoAseguradora.length + esperandoRefacciones.length + esperandoAutorizacionComplemento.length + esperandoRespuestaCliente.length
     },
     verde: {
-      enHojalateria, enPintura, enArmado, listoParaEntrega,
-      total: enHojalateria.length + enPintura.length + enArmado.length + listoParaEntrega.length
+      enHojalateria, enPintura, enArmado, enPulido, enLavado, listoParaEntrega,
+      total: enHojalateria.length + enPintura.length + enArmado.length + enPulido.length + enLavado.length + listoParaEntrega.length
     }
   });
 });
