@@ -271,6 +271,15 @@ router.get('/pedidos-sin-piezas', requireAuth, (req, res)=>{
   res.json(filas);
 });
 
+// Roberto (28-ago-2026): las tarjetas del panorama de Orlando/Vanessa en Inicio deben abrir exactamente
+// lo que cuentan, mismo criterio que piezas-sin-proveedor/pedidos-sin-piezas de arriba. Empieza por
+// "Pendientes de revisión" (mismo WHERE que ovPendientesRevision en /resumen).
+router.get('/pendientes-revision-tecnica', requireAuth, (req, res)=>{
+  const filas = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, ingreso_tipo, creado_en
+    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica IS NULL ORDER BY creado_en ASC`).all();
+  res.json(filas);
+});
+
 // Hallazgo A-06 (Informe Daniela): vista dedicada de piezas ya recibidas físicamente, con quién y cuándo
 // las recibió y a qué proveedor/pedido/siniestro pertenecen -- antes esta información existía en la BD
 // (fecha_recepcion, recibido_por) pero no había ninguna pantalla que la expusiera junta.

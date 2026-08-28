@@ -3190,4 +3190,11 @@ test('ALEJ-5: deducible_aplica (alta) es independiente de cubre_deducible (entre
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
-
+test('ALEJ-6: pendientes-revision-tecnica devuelve exactamente lo que cuenta ovPendientesRevision en el resumen', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALEJ6-SIN', aseguradora: 'GNP' })).data;
+  const resumen = await req('GET', '/api/reportes/resumen');
+  const lista = await req('GET', '/api/reportes/pendientes-revision-tecnica');
+  assert.equal(lista.status, 200);
+  assert.equal(lista.data.length, resumen.data.ovPendientesRevision, 'la lista debe tener el mismo total que la tarjeta del resumen');
+  assert.ok(lista.data.some(x => x.numero === 'ALEJ6-SIN'), 'un siniestro recién creado sin revisión técnica debe aparecer en la lista');
+});

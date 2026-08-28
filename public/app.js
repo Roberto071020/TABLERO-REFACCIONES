@@ -280,7 +280,7 @@ async function viewInicio(){
     <h3>Revisión técnica y captura (Orlando + Vanessa)</h3>
     <p class="subtle">Panorama único que cubre revisión de daños y captura del expediente, para operar ambas partes sin cambiar de usuario.</p>
     <div class="grid-cards">
-      <div class="card ambar"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
+      <div class="card ambar" onclick="abrirListaPendientesRevision()"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
       <div class="card azul"><div class="num">${r.ovEnRevision}</div><div class="label">En revisión</div></div>
       <div class="card rojo"><div class="num">${r.ovEsperandoDesarme}</div><div class="label">Esperando apoyo/desarme</div></div>
       <div class="card morado" style="border-left:4px solid #7c3aed"><div class="num">${r.ovComplementosPendientes}</div><div class="label">Complementos pendientes</div></div>
@@ -360,6 +360,25 @@ async function viewInicio(){
 function abrirCorreosIncompletos(){
   state.filtrosCorreos = { incompleto:'1', page:1 };
   goTo('correos');
+}
+async function abrirListaPendientesRevision(){
+  const filas = await api('GET','/api/reportes/pendientes-revision-tecnica');
+  const LABEL_ING = { grua:'Grúa', circulando:'Circulando' };
+  showModal(`
+    <h3>Pendientes de revisión técnica (${filas.length})</h3>
+    <p class="subtle">Expedientes sin ningún estado de revisión capturado todavía.</p>
+    ${filas.length===0?'<div class="empty">Ninguno.</div>':`
+    <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Vehículo</th><th>Placas</th><th>Ingreso</th></tr></thead><tbody>
+    ${filas.map(f=>`<tr>
+      <td><span class="link" onclick="closeModal();goSiniestro(${f.id})">${esc(f.numero)}</span></td>
+      <td>${esc(f.aseguradora)}</td>
+      <td>${esc(f.vehiculo||'—')}</td>
+      <td>${esc(f.placas||'—')}</td>
+      <td>${f.ingreso_tipo?esc(LABEL_ING[f.ingreso_tipo]||f.ingreso_tipo):'<span class="badge gris">Sin definir</span>'}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `, true);
 }
 async function abrirListaSinProveedor(){
   const filas = await api('GET','/api/reportes/piezas-sin-proveedor');
