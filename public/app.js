@@ -72,6 +72,7 @@ function renderLogin(){
   document.getElementById('loginRoot').innerHTML = `
   <div class="login-wrap">
     <div class="login-card">
+      <img class="login-logo" src="/img/logo.png" alt="Servicio Cristian">
       <h2>Servicio Cristian</h2>
       <p class="subtle">Tablero de Seguimiento de Refacciones</p>
       <div class="field"><label>Correo</label><input id="loginEmail" type="email" placeholder="daniela@serviciocristian.mx"></div>
