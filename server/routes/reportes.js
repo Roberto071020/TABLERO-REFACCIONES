@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua, esquemaSurtidoLabel, porcentajePiezasRecibidas } = require('../utils');
+const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua, esquemaSurtidoLabel, porcentajePiezasRecibidas, sincronizarPiezasPedidosExistentes } = require('../utils');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -106,11 +106,14 @@ router.get('/siniestros.csv', requireAuth, (req, res)=>{
 router.get('/resumen', requireAuth, (req, res)=>{
   verificarCorreosPendientes(db);
   archivarSiniestrosVencidos(db);
+  // Roberto (29-ago-2026): auto-sanación de piezas que se quedaron atrás cuando su pedido ya quedó
+  // Recibido completo/Cancelado (ver server/utils.js). Se ejecuta en cada carga del resumen diario.
+  sincronizarPiezasPedidosExistentes(db);
   const hoy = new Date().toISOString().slice(0,10);
   // Ventana operativa (27-ago-2026): ?ventana=todas regresa los contadores sin el corte del 1-jun-2026.
   const desdeVentanaResumen = aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01';
   const pedidosNuevos = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Nuevo' AND fecha_creacion >= ?`).get(desdeVentanaResumen).n;
-  const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ?`).get(hoy, desdeVentanaResumen).n;
+  const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ?`).get(hoy, desdeVentanaResumen).n;
   const sinProveedor = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Sin proveedor' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   // Triage documento de Daniela (DEF-016): "sinProveedor" solo contaba piezas ya capturadas sin proveedor,
   // pero un pedido sin NINGUNA pieza capturada todavía es un vacío más grande y no aparecía en ningún lado.
@@ -166,7 +169,7 @@ router.get('/resumen', requireAuth, (req, res)=>{
 
   // Propuesta: 4 contadores nuevos para el panorama de Daniela (los otros 6 ya existían: pedidosNuevos,
   // piezasVencidas, sinProveedor, recibidosParciales, incidenciasAbiertas y cierresHoy = "recibidas hoy").
-  const piezasPorConfirmar = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Asignada' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
+  const piezasPorConfirmar = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Asignada' AND p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   const piezasMalSurtidas = db.prepare(`SELECT COUNT(*) n FROM incidencias i JOIN piezas z ON z.id=i.pieza_id JOIN pedidos p ON p.id=z.pedido_id WHERE i.tipo IN ('incorrecta','incompleta') AND i.estado IN ('abierta','en_proceso') AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   const piezasEnDevolucion = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Devuelta' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
 
@@ -282,10 +285,10 @@ const DETALLE_TARJETAS = {
     FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo='Nuevo' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
   piezasVencidas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' (pedido ' || p.numero || ') — vencía ' || z.fecha_prometida) detalle
     FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
-    WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ? ORDER BY z.fecha_prometida ASC`).all(ctx.hoy, ctx.desdeVentana),
+    WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ? ORDER BY z.fecha_prometida ASC`).all(ctx.hoy, ctx.desdeVentana),
   piezasPorConfirmar: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' (pedido ' || p.numero || ')') detalle
     FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
-    WHERE z.estatus='Asignada' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
+    WHERE z.estatus='Asignada' AND p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
   recibidosParciales: (db, ctx) => db.prepare(`SELECT s.id, s.numero, ('Pedido ' || p.numero) detalle
     FROM pedidos p JOIN siniestros s ON s.id=p.siniestro_id WHERE p.estatus_operativo='Recibido parcial' AND p.fecha_creacion >= ? ORDER BY p.creado_en DESC`).all(ctx.desdeVentana),
   piezasMalSurtidas: (db, ctx) => db.prepare(`SELECT s.id, s.numero, (z.descripcion || ' — ' || i.tipo) detalle

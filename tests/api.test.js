@@ -3217,3 +3217,83 @@ test('ALEJ-7: todas las claves de detalle de tarjetas del resumen diario respond
   const noExiste = await req('GET', '/api/reportes/detalle/noExiste');
   assert.equal(noExiste.status, 404);
 });
+
+// ===================== Corrección "Por confirmar"/"Piezas vencidas" con pedidos ya recibidos (29-ago-2026) =====================
+
+test('SYNC-1: al marcar un pedido como Recibido completo por PATCH, sus piezas abiertas pasan a Recibida físicamente al instante', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SYNC1-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'SYNC1-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const z1 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro derecho', estatus: 'Asignada' })).data;
+  const z2 = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro izquierdo', estatus: 'Confirmada' })).data;
+  await req('PATCH', '/api/pedidos/' + p.id, { estatus_operativo: 'Recibido completo' });
+  const z1Despues = (await req('GET', '/api/piezas/' + z1.id)).data;
+  const z2Despues = (await req('GET', '/api/piezas/' + z2.id)).data;
+  assert.equal(z1Despues.estatus, 'Recibida físicamente');
+  assert.equal(z2Despues.estatus, 'Recibida físicamente');
+  assert.ok(z1Despues.fecha_recepcion, 'debe sellar fecha_recepcion');
+});
+
+test('SYNC-2: una pieza con incidencia abierta NO se fuerza a Recibida físicamente aunque su pedido quede Recibido completo', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SYNC2-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'SYNC2-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre', estatus: 'Asignada' })).data;
+  // fecha_incumplida dispara estatus 'Entrega vencida' (no terminal) + incidencia abierta -- el escenario exacto a proteger.
+  await req('POST', '/api/incidencias', { pieza_id: z.id, tipo: 'fecha_incumplida', descripcion: 'Prueba' });
+  await req('PATCH', '/api/pedidos/' + p.id, { estatus_operativo: 'Recibido completo' });
+  const zDespues = (await req('GET', '/api/piezas/' + z.id)).data;
+  assert.equal(zDespues.estatus, 'Entrega vencida', 'no debe tocarse mientras la incidencia siga abierta');
+});
+
+test('SYNC-3: al cancelar un pedido, sus piezas abiertas pasan a Cancelada', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SYNC3-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'SYNC3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Salpicadera', estatus: 'Asignada' })).data;
+  await req('PATCH', '/api/pedidos/' + p.id, { estatus_operativo: 'Cancelado', motivo_cancelacion: 'Prueba' });
+  const zDespues = (await req('GET', '/api/piezas/' + z.id)).data;
+  assert.equal(zDespues.estatus, 'Cancelada');
+});
+
+test('SYNC-4: piezas de pedidos Recibido completo/Cancelado/Cerrado no cuentan en "Por confirmar" ni "Piezas vencidas"', async () => {
+  const antes = await req('GET', '/api/reportes/resumen');
+  const s = (await req('POST', '/api/siniestros', { numero: 'SYNC4-SIN', aseguradora: 'GNP' })).data;
+
+  const p1 = (await req('POST', '/api/pedidos', { numero: 'SYNC4-PED1', siniestro_id: s.id, fecha_prevista: '2020-01-01' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p1.id, descripcion: 'Pieza vencida recibida', estatus: 'Asignada', fecha_prometida: '2020-01-01' });
+  await req('PATCH', '/api/pedidos/' + p1.id, { estatus_operativo: 'Recibido completo' });
+
+  const p2 = (await req('POST', '/api/pedidos', { numero: 'SYNC4-PED2', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  await req('POST', '/api/piezas', { pedido_id: p2.id, descripcion: 'Pieza por confirmar activa', estatus: 'Asignada' });
+
+  const despues = await req('GET', '/api/reportes/resumen');
+  assert.equal(despues.data.piezasPorConfirmar, antes.data.piezasPorConfirmar + 1, 'solo debe sumar la pieza del pedido activo, no la del pedido ya recibido');
+
+  const detalle = await req('GET', '/api/reportes/detalle/piezasPorConfirmar');
+  assert.equal(detalle.data.length, despues.data.piezasPorConfirmar, 'el detalle debe coincidir exactamente con el total de la tarjeta');
+});
+
+test('SYNC-5: depuración histórica -- una pieza que se quedó "Asignada" aunque su pedido YA estaba Recibido completo desde antes, se corrige sola al cargar el resumen', async () => {
+  const db = require('../server/db');
+  const s = (await req('POST', '/api/siniestros', { numero: 'SYNC5-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'SYNC5-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza histórica atorada', estatus: 'Asignada' })).data;
+  // Se fuerza el pedido a Recibido completo directo en la base de datos, SIN pasar por el PATCH (simula
+  // el estado real encontrado en producción: dato viejo de una sincronización anterior a esta corrección).
+  db.prepare(`UPDATE pedidos SET estatus_operativo='Recibido completo' WHERE id=?`).run(p.id);
+  const antesDelResumen = (await req('GET', '/api/piezas/' + z.id)).data;
+  assert.equal(antesDelResumen.estatus, 'Asignada', 'sanity: sigue atorada antes de que corra el barrido');
+  await req('GET', '/api/reportes/resumen');
+  const despues = (await req('GET', '/api/piezas/' + z.id)).data;
+  assert.equal(despues.estatus, 'Recibida físicamente', 'el barrido de /resumen debe corregirla sola');
+});
+
+test('SYNC-6: un pedido Recibido parcial NO fuerza a Recibida físicamente las piezas que de verdad siguen pendientes', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'SYNC6-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'SYNC6-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const zRecibida = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Ya llegó', estatus: 'Asignada' })).data;
+  const zPendiente = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Todavía no', estatus: 'Asignada' })).data;
+  await req('POST', '/api/piezas/' + zRecibida.id + '/recibir'); // esto deja el pedido en 'Recibido parcial'
+  const pedidoDespues = (await req('GET', '/api/pedidos?siniestro_id=' + s.id)).data.find(x => x.id === p.id);
+  assert.equal(pedidoDespues.estatus_operativo, 'Recibido parcial');
+  const zPendienteDespues = (await req('GET', '/api/piezas/' + zPendiente.id)).data;
+  assert.equal(zPendienteDespues.estatus, 'Asignada', 'la pieza realmente pendiente no debe tocarse solo porque el pedido quedó parcial');
+});

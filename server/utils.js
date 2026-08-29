@@ -590,10 +590,57 @@ function porcentajePiezasRecibidas(db, siniestroId){
   return fila.recibidas / fila.total;
 }
 
+// Roberto (29-ago-2026), reporte en vivo: un pedido puede quedar con estatus_operativo='Recibido
+// completo' (por PATCH manual o por sincronización con Inpart en cargaMasiva.js) sin que sus piezas
+// individuales se hayan actualizado -- quedaban en 'Asignada'/'Confirmada'/etc. y seguían contando en
+// "Por confirmar" y "Piezas vencidas" del resumen diario, aunque el pedido ya estaba cerrado. La
+// dirección correcta YA existía (pieza -> pedido, en piezas.js /recibir); esta es la dirección que
+// faltaba (pedido -> piezas). Nunca se toca una pieza ya cerrada (Recibida físicamente/Cancelada/
+// Devuelta/Incorrecta-dañada -- ESTATUS_PIEZA_TERMINALES_MANUALES) ni una con una incidencia abierta,
+// para no pisar un problema real sin resolver.
+const ESTATUS_PIEZA_TERMINALES_MANUALES = ['Recibida físicamente','Cancelada','Devuelta','Incorrecta/dañada'];
+function sincronizarPiezasConEstatusPedido(db, pedidoId, usuario){
+  const pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(pedidoId);
+  if(!pedido) return { actualizadas: 0 };
+  let nuevoEstatusPieza = null;
+  if(pedido.estatus_operativo === 'Recibido completo') nuevoEstatusPieza = 'Recibida físicamente';
+  else if(pedido.estatus_operativo === 'Cancelado') nuevoEstatusPieza = 'Cancelada';
+  if(!nuevoEstatusPieza) return { actualizadas: 0 };
+  const piezas = db.prepare('SELECT * FROM piezas WHERE pedido_id = ?').all(pedidoId);
+  let actualizadas = 0;
+  for(const z of piezas){
+    if(ESTATUS_PIEZA_TERMINALES_MANUALES.includes(z.estatus)) continue;
+    const incidenciaAbierta = db.prepare(`SELECT id FROM incidencias WHERE pieza_id=? AND estado IN ('abierta','en_proceso') LIMIT 1`).get(z.id);
+    if(incidenciaAbierta) continue;
+    if(nuevoEstatusPieza === 'Recibida físicamente'){
+      db.prepare(`UPDATE piezas SET estatus='Recibida físicamente', fecha_recepcion=COALESCE(NULLIF(fecha_recepcion,''), datetime('now')),
+        observaciones = TRIM(COALESCE(observaciones,'') || ' [Auto: pedido ya recibido completo]'), actualizado_en=datetime('now') WHERE id=?`).run(z.id);
+    } else {
+      db.prepare(`UPDATE piezas SET estatus='Cancelada',
+        observaciones = TRIM(COALESCE(observaciones,'') || ' [Auto: pedido cancelado]'), actualizado_en=datetime('now') WHERE id=?`).run(z.id);
+    }
+    registrarAuditoria(db, { entidad_tipo:'pieza', entidad_id:z.id, accion:'sincronizacion_automatica', campo:'estatus',
+      valor_anterior:z.estatus, valor_nuevo:nuevoEstatusPieza, usuario: usuario || null });
+    actualizadas++;
+  }
+  return { actualizadas };
+}
+// Barrido de depuración/auto-sanación: revisa TODOS los pedidos ya recibidos completos o cancelados y
+// sincroniza las piezas que se hayan quedado atrás. Se llama en /api/reportes/resumen (igual que
+// verificarCorreosPendientes/archivarSiniestrosVencidos) para que se recalcule solo en cada carga del
+// tablero, sin depender de un cron ni de una migración de un solo uso.
+function sincronizarPiezasPedidosExistentes(db){
+  const pedidos = db.prepare(`SELECT id FROM pedidos WHERE estatus_operativo IN ('Recibido completo','Cancelado')`).all();
+  let total = 0;
+  for(const p of pedidos) total += sincronizarPiezasConEstatusPedido(db, p.id, null).actualizadas;
+  return total;
+}
+
 module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditarCambios, csvCell, csvTextForced,
   verificarRefaccionesCompletas, crearTareaFechaPromesaModificada,
   copiaSugeridaPorAseguradora, prepararCorreoPedidoNuevo, verificarCorreosPendientes, recalcularCorreosPorPiezaCerrada, limpiarDuplicadosCorreosPendientesExistentes, corregirBorradoresAutomaticosExistentes, piezasPendientesDePedido, resolverDestinatarioAutomatico, esDiaHabil, sumarDiasHabiles,
   archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo,
   VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
   requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua,
-  esquemaSurtidoLabel, porcentajePiezasRecibidas, normalizarAseguradora, normalizarAseguradorasExistentes, ASEGURADORAS_CANONICAS };
+  esquemaSurtidoLabel, porcentajePiezasRecibidas, normalizarAseguradora, normalizarAseguradorasExistentes, ASEGURADORAS_CANONICAS,
+  sincronizarPiezasConEstatusPedido, sincronizarPiezasPedidosExistentes };

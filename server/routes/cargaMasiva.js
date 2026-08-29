@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, corregirBorradoresAutomaticosExistentes, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes, normalizarAseguradora } = require('../utils');
+const { registrarAuditoria, corregirBorradoresAutomaticosExistentes, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes, normalizarAseguradora, sincronizarPiezasConEstatusPedido } = require('../utils');
 const router = express.Router();
 
 /* ===================== Documento de Daniela (25-ago-2026), items 3/4/6 =====================
@@ -315,6 +315,12 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
         registrarAuditoria(db, { entidad_tipo:'pieza', entidad_id: piezaExistente.id, accion:'actualizacion_carga_masiva', usuario:req.session.user, valor_nuevo:`Sincronizado desde Inpart (lote #${loteId})` });
       }
     }
+
+    // Roberto (29-ago-2026): si con esta sincronización el pedido quedó Recibido completo/Cancelado,
+    // cualquier pieza suya que NO haya venido en este mismo lote de Inpart (y por eso se quedó con un
+    // estatus viejo tipo 'Asignada') se sincroniza aquí -- después de aplicar los datos de piezas de
+    // este lote, para no pisar un estatus de pieza que Inpart sí mandó explícito en esta misma carga.
+    sincronizarPiezasConEstatusPedido(db, pedido.id, req.session.user);
 
     // Recalcula el total del pedido a partir de sus piezas (soluciona los importes en $0.00).
     const piezasPedido = db.prepare('SELECT precio, cantidad FROM piezas WHERE pedido_id = ?').all(pedido.id);
