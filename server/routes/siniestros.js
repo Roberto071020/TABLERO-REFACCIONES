@@ -31,7 +31,7 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
       'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
       'piezas_autorizadas_cambio','estado_valuacion'],
     roles:['orlando','admin','jefe'], nombre:'valuación/autorización' },
-  { campos:['estado_produccion'], roles:['beto','orlando','admin','jefe'], nombre:'producción' },
+  { campos:['estado_produccion','entrega_compromiso_gnp'], roles:['beto','orlando','admin','jefe'], nombre:'producción' },
   { campos:['estado_calidad'], roles:['beto','orlando','admin','jefe'], nombre:'calidad' },
   { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada'],
     roles:['beto','atencion_cliente','admin','jefe'], nombre:'entrega' },
@@ -135,7 +135,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
   const campos = ['aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
     'cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen','etapa_actual','prioridad',
     'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada',
-    'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio',
+    'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio','entrega_compromiso_gnp',
     // Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando)
     'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
     'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
@@ -200,6 +200,21 @@ router.patch('/:id', requireAuth, (req, res)=>{
   // seguridad como cuarto requisito antes de aparecer disponible para su revisión.
   nuevo.requiere_dado_seguridad = (nuevo.requiere_dado_seguridad===1||nuevo.requiere_dado_seguridad===true||nuevo.requiere_dado_seguridad==='1') ? 1 : (nuevo.requiere_dado_seguridad ? 1 : 0);
   nuevo.dado_seguridad_colocado = (nuevo.dado_seguridad_colocado===1||nuevo.dado_seguridad_colocado===true||nuevo.dado_seguridad_colocado==='1') ? 1 : (nuevo.dado_seguridad_colocado ? 1 : 0);
+
+  // Flujo de reparación (31-ago-2026), punto 6 autorizado por Roberto: "los de GNP que se quedan en piso
+  // siempre tienen una fecha de entrega establecida por el supervisor... que se debe cumplir sí o sí."
+  // Una vez marcado entrega_compromiso_gnp, la fecha de entrega queda bloqueada para todos salvo admin/jefe.
+  nuevo.entrega_compromiso_gnp = (nuevo.entrega_compromiso_gnp===1||nuevo.entrega_compromiso_gnp===true||nuevo.entrega_compromiso_gnp==='1') ? 1 : (nuevo.entrega_compromiso_gnp ? 1 : 0);
+  if(nuevo.entrega_compromiso_gnp === 1 && anterior.entrega_compromiso_gnp !== 1){
+    nuevo.entrega_compromiso_establecido_en = new Date().toISOString();
+  } else {
+    nuevo.entrega_compromiso_establecido_en = anterior.entrega_compromiso_establecido_en;
+  }
+  if(anterior.entrega_compromiso_gnp === 1 && req.body.fecha_entrega_prevista !== undefined
+      && String(req.body.fecha_entrega_prevista) !== String(anterior.fecha_entrega_prevista || '')
+      && !['admin','jefe'].includes(req.session.user.rol)){
+    return res.status(403).json({ error:'Esta fecha de entrega es un compromiso obligatorio de GNP establecido por el supervisor; solo Roberto puede moverla.' });
+  }
 
   // Documento Maestro / Fase C, tabla 9: "criterio de salida: expediente digital validado y listo para
   // valuación." No se puede marcar listo si hay documentos faltantes o ilegibles pendientes (misma lógica
@@ -267,7 +282,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
   db.prepare(`UPDATE siniestros SET aseguradora=?,vehiculo=?,anio_modelo=?,placas=?,vin=?,fecha_ingreso=?,ubicacion=?,responsable=?,estatus_general=?,notas=?,completo=?,
       cliente_nombre=?,cliente_telefono=?,cliente_correo=?,cliente_notas=?,orden_admision=?,canal_origen=?,etapa_actual=?,prioridad=?,
       requiere_refacciones=?,deducible=?,forma_pago=?,fecha_entrega_prevista=?,fecha_entrega_real=?,postventa_programada=?,postventa_completada=?,
-      estado_valuacion=?,estado_produccion=?,estado_calidad=?,ingreso_tipo=?,ingreso_seguro=?,piezas_autorizadas_cambio=?,
+      estado_valuacion=?,estado_produccion=?,estado_calidad=?,ingreso_tipo=?,ingreso_seguro=?,piezas_autorizadas_cambio=?,entrega_compromiso_gnp=?,entrega_compromiso_establecido_en=?,
       aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
       cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
       estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
@@ -283,7 +298,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
       nuevo.requiere_refacciones, nuevo.deducible, nuevo.forma_pago, nuevo.fecha_entrega_prevista, nuevo.fecha_entrega_real, nuevo.postventa_programada, nuevo.postventa_completada,
-      nuevo.estado_valuacion, nuevo.estado_produccion, nuevo.estado_calidad, nuevo.ingreso_tipo, nuevo.ingreso_seguro, nuevo.piezas_autorizadas_cambio,
+      nuevo.estado_valuacion, nuevo.estado_produccion, nuevo.estado_calidad, nuevo.ingreso_tipo, nuevo.ingreso_seguro, nuevo.piezas_autorizadas_cambio, nuevo.entrega_compromiso_gnp, nuevo.entrega_compromiso_establecido_en,
       nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
       nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
       nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,

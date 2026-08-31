@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
-const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua, esquemaSurtidoLabel, porcentajePiezasRecibidas, sincronizarPiezasPedidosExistentes } = require('../utils');
+const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua, esquemaSurtidoLabel, porcentajePiezasRecibidas, sincronizarPiezasPedidosExistentes, verificarReingreso90Porciento } = require('../utils');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -109,6 +109,8 @@ router.get('/resumen', requireAuth, (req, res)=>{
   // Roberto (29-ago-2026): auto-sanación de piezas que se quedaron atrás cuando su pedido ya quedó
   // Recibido completo/Cancelado (ver server/utils.js). Se ejecuta en cada carga del resumen diario.
   sincronizarPiezasPedidosExistentes(db);
+  // Flujo de reparación (31-ago-2026), punto 3: aviso automático de "listo para agendar reingreso" al 90%.
+  verificarReingreso90Porciento(db);
   const hoy = new Date().toISOString().slice(0,10);
   // Ventana operativa (27-ago-2026): ?ventana=todas regresa los contadores sin el corte del 1-jun-2026.
   const desdeVentanaResumen = aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01';
@@ -574,6 +576,7 @@ router.get('/panorama-beto', requireAuth, (req, res)=>{
 
     return { id:s.id, numero:s.numero, vehiculo:s.vehiculo, placas:s.placas, aseguradora:s.aseguradora,
       fecha_entrega_prevista:s.fecha_entrega_prevista, estado_produccion:s.estado_produccion,
+      entrega_compromiso_gnp: !!s.entrega_compromiso_gnp,
       ot_numero: otMasReciente ? otMasReciente.numero : null, prioridad, motivo,
       situacion, reingreso_citado: !!reingresoCitado, dias_en_taller: diasEnTaller };
   });

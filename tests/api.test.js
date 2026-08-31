@@ -3363,3 +3363,94 @@ test('DEP-3: marcar estatus_general=Cerrado por el PATCH general (sin pasar por 
   const r2 = await req('PATCH', '/api/siniestros/' + s.id, { notas: 'nota de prueba' });
   assert.equal(r2.data.archivado_en, archivadoEnOriginal, 'no debe recalcular archivado_en en cada PATCH posterior');
 });
+
+/* ===================== Flujo de reparación (31-ago-2026, autorizado por Roberto) ===================== */
+
+test('FLUJO-3: al llegar al 90% de piezas recibidas (circulando, sin cita) se genera la tarea automática de reingreso, una sola vez', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FLUJO3-SIN', aseguradora: 'GNP' })).data;
+  // ingreso_tipo es del grupo restringido "admisión" (atencion_cliente/vanessa/admin/jefe) -- daniela (operativo) no puede tocarlo.
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', requiere_refacciones: 'si' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const p = (await req('POST', '/api/pedidos', { numero: 'FLUJO3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const piezas = [];
+  for (let i = 0; i < 10; i++) {
+    piezas.push((await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Pieza ' + i, estatus: 'Asignada' })).data);
+  }
+  // Recibir 8 de 10 (80%) -- todavía no debe disparar la tarea.
+  for (let i = 0; i < 8; i++) await req('POST', '/api/piezas/' + piezas[i].id + '/recibir');
+  await req('GET', '/api/reportes/resumen');
+  let tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.ok(!tareas.some(t => t.disparador === 'reingreso_90pct'), 'con 80% todavía no debe avisar');
+
+  // Recibir la 9na (90%) -- ahora sí debe disparar.
+  await req('POST', '/api/piezas/' + piezas[8].id + '/recibir');
+  await req('GET', '/api/reportes/resumen');
+  tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  const tareasReingreso = tareas.filter(t => t.disparador === 'reingreso_90pct');
+  assert.equal(tareasReingreso.length, 1, 'con 90% debe crear exactamente una tarea');
+
+  // Una segunda pasada por /resumen no debe duplicarla.
+  await req('GET', '/api/reportes/resumen');
+  tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.equal(tareas.filter(t => t.disparador === 'reingreso_90pct').length, 1, 'no debe duplicarse en corridas posteriores');
+});
+
+test('FLUJO-3b: si ya tiene cita_fecha agendada, no se vuelve a avisar aunque llegue al 90%', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FLUJO3B-SIN', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', requiere_refacciones: 'si', cita_fecha: '2026-09-10' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const p = (await req('POST', '/api/pedidos', { numero: 'FLUJO3B-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Única pieza', estatus: 'Asignada' })).data;
+  await req('POST', '/api/piezas/' + z.id + '/recibir');
+  await req('GET', '/api/reportes/resumen');
+  const tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
+  assert.ok(!tareas.some(t => t.disparador === 'reingreso_90pct'), 'ya tiene cita agendada, no debe generar el aviso');
+});
+
+test('FLUJO-5: el checklist de calidad ya lo puede capturar Alejandra, Daniela y Vanessa, no solo Beto/Orlando', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FLUJO5-SIN', aseguradora: 'GNP' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const rDaniela = await req('POST', '/api/checklist-calidad', { siniestro_id: s.id, dimension: 'Alcance', resultado: 'aprobado' });
+  assert.equal(rDaniela.status, 201, 'Daniela (operativo) ya debe poder capturar el checklist');
+
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba FLUJO5', 'atencion.flujo5.test@serviciocristian.mx', bcrypt.hashSync('x', 4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.flujo5.test@serviciocristian.mx', password: 'x' });
+  const rAlejandra = await req('POST', '/api/checklist-calidad', { siniestro_id: s.id, dimension: 'Presentación', resultado: 'aprobado' });
+  assert.equal(rAlejandra.status, 201, 'Alejandra (atencion_cliente) ya debe poder capturar el checklist');
+
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const rVanessa = await req('POST', '/api/checklist-calidad', { siniestro_id: s.id, dimension: 'Documentación', resultado: 'aprobado' });
+  assert.equal(rVanessa.status, 201, 'Vanessa ya debe poder capturar el checklist');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('FLUJO-6: fecha de entrega con compromiso obligatorio de GNP -- solo admin/jefe puede volver a moverla', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'FLUJO6-SIN', aseguradora: 'GNP' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const rMarca = await req('PATCH', '/api/siniestros/' + s.id, { fecha_entrega_prevista: '2026-09-15', entrega_compromiso_gnp: 1 });
+  assert.equal(rMarca.status, 200);
+  assert.equal(rMarca.data.entrega_compromiso_gnp, 1);
+  assert.ok(rMarca.data.entrega_compromiso_establecido_en, 'debe quedar sellada la fecha en que se marcó');
+
+  const rIntento = await req('PATCH', '/api/siniestros/' + s.id, { fecha_entrega_prevista: '2026-09-20' });
+  assert.equal(rIntento.status, 403, 'Beto ya no debe poder mover la fecha una vez marcada como compromiso GNP');
+
+  // Un PATCH que no toca la fecha (p.ej. solo la etapa) sí debe seguir funcionando con normalidad.
+  const rEtapa = await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'mecanica' });
+  assert.equal(rEtapa.status, 200);
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const rAdmin = await req('PATCH', '/api/siniestros/' + s.id, { fecha_entrega_prevista: '2026-09-20' });
+  assert.equal(rAdmin.status, 200, 'Roberto (admin/jefe) sí puede moverla');
+  assert.equal(rAdmin.data.fecha_entrega_prevista, '2026-09-20');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

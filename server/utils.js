@@ -464,6 +464,40 @@ function archivarSiniestrosVencidos(db){
 }
 
 
+// ===================== Flujo de reparación (31-ago-2026), punto 3 autorizado por Roberto =====================
+// "Si la unidad se selecciona en tránsito se debe activar la opción de programar cita de reingreso cuando
+// cuente con el 90% de refacciones". El % ya se podía calcular (porcentajePiezasRecibidas) pero no
+// generaba ningún aviso -- Alejandra tenía que ir a revisarlo a mano. Este barrido (mismo patrón perezoso
+// que archivarSiniestrosVencidos/verificarCorreosPendientes, se corre en cada carga de /resumen) genera
+// una tarea automática UNA sola vez por expediente (deduplicado por disparador, igual que
+// 'autorizacion_resuelta') en cuanto se cruza el 90%, mientras siga circulando y sin cita agendada todavía.
+function verificarReingreso90Porciento(db){
+  // Nota: el driver node:sqlite no resuelve alias del SELECT dentro de HAVING (se probó y devuelve vacío
+  // aunque la condición sea verdadera) -- hay que repetir las expresiones agregadas completas en HAVING.
+  const candidatos = db.prepare(`
+    SELECT s.id, s.numero, COUNT(z.id) total, SUM(CASE WHEN z.estatus = 'Recibida físicamente' THEN 1 ELSE 0 END) recibidas
+    FROM siniestros s
+    JOIN pedidos p ON p.siniestro_id = s.id
+    JOIN piezas z ON z.pedido_id = p.id
+    WHERE s.archivado = 0 AND s.ingreso_tipo = 'circulando' AND s.requiere_refacciones = 'si'
+      AND (s.cita_fecha IS NULL OR s.cita_fecha = '')
+    GROUP BY s.id
+    HAVING COUNT(z.id) > 0
+      AND (CAST(SUM(CASE WHEN z.estatus = 'Recibida físicamente' THEN 1 ELSE 0 END) AS REAL) / COUNT(z.id)) >= 0.9
+  `).all();
+  for(const c of candidatos){
+    const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id = ? AND disparador = 'reingreso_90pct' AND estado IN ('pendiente','en_proceso')`).get(c.id);
+    if(yaExiste) continue;
+    db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+      VALUES (?,?,?,?,'pendiente','automatica','reingreso_90pct',NULL)`)
+      .run(c.id, 'mensaje', `Ya se recibió el 90% de las piezas (${c.recibidas}/${c.total}): agendar la cita de reingreso con el cliente.`,
+           new Date().toISOString().slice(0,10));
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: c.id, accion:'reingreso_90pct_detectado',
+      valor_nuevo: `${c.recibidas}/${c.total} piezas recibidas`, usuario: null });
+  }
+}
+
+
 // Hallazgo A-03 (Informe_funcional_tablero_refacciones_para_Claude.docx): las cargas masivas de InPart
 // traen el nombre de la aseguradora tal cual viene en el CSV/Excel ("MAPFRE TEPEYAC, S.A.", "LA
 // LATINOAMERICANA SEGUROS S.A. DE C.V.", etc.), lo que separa en los indicadores lo que en realidad es
@@ -643,4 +677,4 @@ module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditar
   VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
   requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua,
   esquemaSurtidoLabel, porcentajePiezasRecibidas, normalizarAseguradora, normalizarAseguradorasExistentes, ASEGURADORAS_CANONICAS,
-  sincronizarPiezasConEstatusPedido, sincronizarPiezasPedidosExistentes };
+  sincronizarPiezasConEstatusPedido, sincronizarPiezasPedidosExistentes, verificarReingreso90Porciento };

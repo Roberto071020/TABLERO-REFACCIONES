@@ -6,7 +6,10 @@ const { requireAuth, requireRole } = require('../auth');
 const { registrarAuditoria, auditarCambios } = require('../utils');
 const router = express.Router();
 
-const ROLES_EDICION = ['beto','orlando','admin','jefe'];
+// Flujo de reparación (31-ago-2026), punto 5 autorizado por Roberto: "el checklist lo puede hacer
+// cualquiera de oficina, ya sea Orlando, Alejandra, Daniela, Vanessa o yo" -- Beto sigue siendo el
+// responsable principal (coordina/libera), pero ya no es el único con permiso de captura.
+const ROLES_EDICION = ['beto','orlando','atencion_cliente','operativo','vanessa','admin','jefe'];
 const DIMENSIONES = ['Alcance','Seguridad y función','Lámina/ajuste','Pintura/acabado','Armado','Presentación','Documentación'];
 const RESULTADOS = ['pendiente','aprobado','rechazado'];
 

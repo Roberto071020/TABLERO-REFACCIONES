@@ -330,7 +330,7 @@ async function viewInicio(){
       <td>${esc(x.vehiculo||'—')} ${esc(x.placas?('· '+x.placas):'')}</td>
       <td>${x.reingreso_citado?'<span class="badge ambar">Reingreso citado</span>':x.situacion==='en_piso'?'<span class="badge verde">En piso</span>':'<span class="badge gris">En proceso</span>'}</td>
       <td>${esc(x.ot_numero||'—')}</td>
-      <td>${esc(x.fecha_entrega_prevista||'—')}</td>
+      <td>${esc(x.fecha_entrega_prevista||'—')} ${x.entrega_compromiso_gnp?'<span class="badge rojo">GNP</span>':''}</td>
       <td class="subtle">${x.dias_en_taller!=null?x.dias_en_taller+' día(s)':'—'}</td>
       <td class="subtle">${esc(x.motivo)}</td>
     </tr>`).join('')}
@@ -1155,6 +1155,7 @@ async function viewSiniestro(id){
     </tbody></table>`}
     <table class="kv" style="margin-top:12px;"><tbody>
       <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
+      <tr><td>Fecha de entrega prevista</td><td>${esc(s.fecha_entrega_prevista||'—')} ${s.entrega_compromiso_gnp?'<span class="badge rojo">Compromiso obligatorio GNP</span>':''}</td></tr>
     </tbody></table>
     ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEtapaProduccion(${id})">Actualizar etapa</button></div>`:''}
 
@@ -1214,6 +1215,10 @@ async function viewSiniestro(id){
     ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoRetrabajo(${id})">+ Agregar retrabajo</button></div>`:''}`;
   } else if(state.subtabSiniestro==='calidad'){
     const puedeCalidad = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    // Flujo de reparación (31-ago-2026), punto 5 autorizado por Roberto: "el checklist lo puede hacer
+    // cualquiera de oficina" -- Beto sigue siendo el responsable principal, pero ya no es el único que
+    // puede capturar los 7 rubros (a diferencia de "Actualizar estado de calidad", que sigue restringido).
+    const puedeChecklist = currentUser && ['beto','orlando','atencion_cliente','operativo','vanessa','admin','jefe'].includes(currentUser.rol);
     const puedeEntregaDetalle = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
     const puedeFiniquito = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
     const checklist = await api('GET','/api/checklist-calidad?siniestro_id='+id);
@@ -1238,10 +1243,10 @@ async function viewSiniestro(id){
       <td><span class="badge ${c.resultado==='aprobado'?'verde':c.resultado==='rechazado'?'rojo':'gris'}">${LABEL_RES[c.resultado]||c.resultado}</span></td>
       <td>${esc(c.hallazgo||'—')}</td>
       <td class="subtle">${esc(c.inspector_nombre||'—')}</td>
-      <td>${puedeCalidad?`<button class="btn small secondary" onclick="abrirFormEditarChecklistCalidad(${c.id})">Editar</button>`:''}</td>
+      <td>${puedeChecklist?`<button class="btn small secondary" onclick="abrirFormEditarChecklistCalidad(${c.id})">Editar</button>`:''}</td>
     </tr>`).join('')}
     </tbody></table>`}
-    ${puedeCalidad?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoChecklistCalidad(${id})">+ Agregar rubro</button></div>`:''}
+    ${puedeChecklist?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoChecklistCalidad(${id})">+ Agregar rubro</button></div>`:''}
 
     <h3 style="margin-top:20px;">Entrega</h3>
     <table class="kv"><tbody>
@@ -1877,6 +1882,13 @@ async function guardarAutorizacion(siniestroId){
 
 function abrirFormEtapaProduccion(siniestroId){
   api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    // Flujo de reparación (31-ago-2026), punto 6 autorizado por Roberto: en GNP + unidad en piso, la
+    // fecha de entrega la fija el supervisor de la aseguradora y "se debe cumplir sí o sí". Se sugiere
+    // marcado por default en ese caso (editable), pero una vez guardado el candado lo aplica el backend.
+    const yaComprometida = s.entrega_compromiso_gnp === 1;
+    const sugerirGnpPiso = s.aseguradora === 'GNP' && !!s.fecha_admision;
+    const esRoberto = currentUser && ['admin','jefe'].includes(currentUser.rol);
+    const fechaBloqueada = yaComprometida && !esRoberto;
     showModal(`
       <h3>Actualizar etapa de producción</h3>
       <div class="field"><label>Etapa</label><select id="fprod_estado">
@@ -1893,13 +1905,21 @@ function abrirFormEtapaProduccion(siniestroId){
         <option value="terminado" ${s.estado_produccion==='terminado'?'selected':''}>Terminado</option>
       </select></div>
       <p class="subtle" style="margin-top:4px;">Orden confirmado por Roberto: mecánica → hojalatería → pintura → armado → pulido → lavado → entrega.</p>
+      <div class="field" style="margin-top:12px;"><label>Fecha de entrega prevista</label><input id="fprod_fecha_entrega" type="date" value="${esc(s.fecha_entrega_prevista||'')}" ${fechaBloqueada?'disabled':''}></div>
+      ${fechaBloqueada?`<p class="subtle" style="color:#b91c1c;">Compromiso obligatorio de GNP establecido el ${esc((s.entrega_compromiso_establecido_en||'').slice(0,10))}. Solo Roberto puede moverla.</p>`:`
+      <label style="display:flex;align-items:center;gap:6px;margin-top:6px;"><input type="checkbox" id="fprod_compromiso_gnp" ${(yaComprometida||sugerirGnpPiso)?'checked':''}> Compromiso obligatorio de GNP (fecha fijada por el supervisor, no se debe mover)</label>`}
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEtapaProduccion(${siniestroId})">Guardar</button></div>
     `);
   });
 }
 async function guardarEtapaProduccion(siniestroId){
   try{
-    await api('PATCH','/api/siniestros/'+siniestroId, { estado_produccion: document.getElementById('fprod_estado').value });
+    const body = { estado_produccion: document.getElementById('fprod_estado').value };
+    const fechaInput = document.getElementById('fprod_fecha_entrega');
+    if(fechaInput && !fechaInput.disabled) body.fecha_entrega_prevista = fechaInput.value;
+    const compromisoInput = document.getElementById('fprod_compromiso_gnp');
+    if(compromisoInput) body.entrega_compromiso_gnp = compromisoInput.checked ? 1 : 0;
+    await api('PATCH','/api/siniestros/'+siniestroId, body);
     toast('Etapa de producción actualizada.', 'success');
     closeModal(); render();
   }catch(e){}
@@ -1951,6 +1971,38 @@ async function guardarEdicionOt(otId){
   }catch(e){}
 }
 
+// Flujo de reparación (31-ago-2026), punto 7 autorizado por Roberto: catálogo fijo de técnicos por área
+// (en vez de texto libre), y el mismo hojalatero pasa a armado / el mismo pintor pasa a pulido de forma
+// automática (sugerida, siempre editable por si de verdad lo hizo alguien más).
+const TECNICOS_POR_AREA = {
+  'Mecánica': ['Jesús Palomares','Proveedor externo'],
+  'Hojalatería': ['Marcelo','José','Vicente','Fernando','Fidel','Jaime'],
+  'Armado': ['Marcelo','José','Vicente','Fernando','Fidel','Jaime'],
+  'Pintura': ['Adrián','Gerardo','Antonio','Ángel','Marco','Ramiro'],
+  'Pulido': ['Adrián','Gerardo','Antonio','Ángel','Marco','Ramiro'],
+  'Lavado': []
+};
+const AREA_HEREDA_TECNICO_DE = { 'Armado':'Hojalatería', 'Pulido':'Pintura' };
+function opcionesTecnicoHtml(area, seleccionado){
+  const lista = TECNICOS_POR_AREA[area] || [];
+  if(!area) return '<option value="">Elige primero el área</option>';
+  if(lista.length===0) return '<option value="">No aplica</option>';
+  const extra = (seleccionado && !lista.includes(seleccionado)) ? `<option value="${esc(seleccionado)}" selected>${esc(seleccionado)} (capturado antes)</option>` : '';
+  return '<option value="">Selecciona…</option>' + extra + lista.map(t=>`<option value="${esc(t)}" ${seleccionado===t?'selected':''}>${esc(t)}</option>`).join('');
+}
+async function actualizarTecnicoPorArea(otId){
+  const area = document.getElementById('fop_area').value;
+  let heredado = '';
+  const areaOrigen = AREA_HEREDA_TECNICO_DE[area];
+  if(areaOrigen && otId){
+    const ops = await api('GET','/api/ot-operaciones?ot_id='+otId);
+    const previa = [...ops].reverse().find(o=>o.area===areaOrigen && o.tecnico);
+    if(previa) heredado = previa.tecnico;
+  }
+  document.getElementById('fop_tecnico').innerHTML = opcionesTecnicoHtml(area, heredado);
+  const aviso = document.getElementById('fop_tecnico_aviso');
+  if(aviso) aviso.textContent = heredado ? `Sugerido: ${heredado} hizo ${areaOrigen.toLowerCase()} en esta misma OT.` : '';
+}
 function abrirFormNuevaOperacion(){
   const otId = document.getElementById('opOtSel').value;
   showModal(`
@@ -1958,10 +2010,15 @@ function abrirFormNuevaOperacion(){
     <div class="field"><label>Descripción</label><input id="fop_desc" placeholder="Ej. cambio de puerta delantera"></div>
     <div class="row-flex">
       <div class="field"><label>Pieza</label><input id="fop_pieza"></div>
-      <div class="field"><label>Área</label><input id="fop_area" placeholder="Laminado / pintura / mecánica / armado"></div>
+      <div class="field"><label>Área</label><select id="fop_area" onchange="actualizarTecnicoPorArea(${otId})">
+        <option value="">Selecciona…</option>
+        ${Object.keys(TECNICOS_POR_AREA).map(a=>`<option value="${a}">${a}</option>`).join('')}
+      </select></div>
     </div>
     <div class="row-flex">
-      <div class="field"><label>Técnico</label><input id="fop_tecnico"></div>
+      <div class="field"><label>Técnico</label><select id="fop_tecnico">${opcionesTecnicoHtml('', '')}</select>
+        <div id="fop_tecnico_aviso" class="subtle"></div>
+      </div>
       <div class="field"><label>Secuencia</label><input id="fop_secuencia" type="number" min="1"></div>
     </div>
     <div class="row-flex">

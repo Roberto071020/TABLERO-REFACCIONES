@@ -1059,6 +1059,17 @@ if(!tieneColumna('siniestros', 'deducible_aplica')){
   db.exec(`ALTER TABLE siniestros ADD COLUMN deducible_aplica INTEGER;`);
 }
 
+/* ===================== Flujo de reparación (31-ago-2026), puntos 3 y 6 autorizados por Roberto =====================
+   Punto 6: "los de GNP que se quedan en piso siempre tienen una fecha de entrega establecida por el
+   supervisor de la misma compañía que se debe cumplir sí o sí" -- se marca explícitamente como compromiso
+   obligatorio; una vez marcada, solo admin/jefe (Roberto) puede volver a mover esa fecha. */
+if(!tieneColumna('siniestros', 'entrega_compromiso_gnp')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN entrega_compromiso_gnp INTEGER NOT NULL DEFAULT 0;`);
+}
+if(!tieneColumna('siniestros', 'entrega_compromiso_establecido_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN entrega_compromiso_establecido_en TEXT;`);
+}
+
 module.exports = db;
 
 
