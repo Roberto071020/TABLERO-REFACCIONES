@@ -121,7 +121,7 @@ async function guardarPassword(){
 }
 
 /* ===================== ESTADO / NAV ===================== */
-let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{} };
+let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{}, filtrosHistorial:{} };
 
 // Triage documento de Daniela (DEF-023/REQ-022): traducir los códigos internos de auditoría a texto
 // legible en la línea de tiempo, en vez de mostrar el nombre técnico crudo (alta_carga_masiva, etc.).
@@ -160,11 +160,16 @@ const TABS = [
   {k:'incidencias', label:'Incidencias', roles:['operativo','admin','jefe']},
   {k:'correos', label:'Correos pendientes', roles:['operativo','admin']},
   {k:'lista', label:'Lista maestra', roles:['operativo','admin','jefe']},
+  // Depuración SC Control (31-ago-2026, autorizado por Roberto): expedientes Cerrados salen de
+  // inmediato de las bandejas operativas (ver PATCH /:id y /:id/cerrar); esta pantalla es el punto de
+  // acceso explícito a ese historial completo, sin límite de 90 días, para consultas de garantía o
+  // quejas posteriores que pida la aseguradora.
+  {k:'historial', label:'Historial / Terminados', roles:['atencion_cliente','operativo','admin','jefe']},
   {k:'recibidas', label:'Piezas recibidas', roles:['operativo','admin','jefe']},
   {k:'proveedores', label:'Proveedores'},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
   {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
-  {k:'expediente', label:'Armado de expediente', roles:['vanessa','operativo','admin','jefe']},
+  {k:'expediente', label:'Armado de expediente', roles:['vanessa','orlando','operativo','admin','jefe']},
   {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
   {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
   {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
@@ -228,6 +233,7 @@ async function render(){
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
     else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
     else if(state.view==='lista') app.innerHTML = await viewLista();
+    else if(state.view==='historial') app.innerHTML = await viewHistorial();
     else if(state.view==='recibidas') app.innerHTML = await viewPiezasRecibidas();
     else if(state.view==='proveedores') app.innerHTML = await viewProveedores();
     else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
@@ -795,6 +801,46 @@ function exportarExpedientesCSV(){
   window.location.href = '/api/reportes/siniestros.csv?'+params.toString();
 }
 
+/* ===================== VISTA: HISTORIAL / TERMINADOS ===================== */
+// Depuración SC Control (31-ago-2026, autorizado por Roberto): un expediente Cerrado ya no aparece en
+// ninguna bandeja operativa (queda archivado=1 de inmediato, ver server/routes/siniestros.js). Esta
+// pantalla es el único lugar donde se sigue pudiendo buscar/consultar esos expedientes sin límite de
+// tiempo -- para cuando la aseguradora pida algo de garantía o el cliente tenga una queja meses después.
+// No borra nada ni cambia el archivo automático a 90 días; solo reutiliza GET /api/siniestros?archivado=1.
+async function viewHistorial(){
+  const f = state.filtrosHistorial;
+  const params = new URLSearchParams();
+  params.set('archivado','1');
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.q) params.set('q', f.q);
+  const filas = await api('GET','/api/siniestros?'+params.toString());
+  return `
+  <h2>Historial / Terminados</h2>
+  <p class="subtle">Expedientes ya cerrados o archivados. No aparecen en ninguna bandeja de trabajo diario, pero quedan disponibles aquí sin límite de tiempo para consultas de garantía o quejas posteriores.</p>
+  <div class="filters no-print">
+    <input placeholder="Buscar por número, placas o vehículo" value="${esc(f.q||'')}" oninput="state.filtrosHistorial.q=this.value" onkeydown="if(event.key==='Enter')render()" style="min-width:220px">
+    <select onchange="state.filtrosHistorial.aseguradora=this.value;render()">
+      <option value="">Todas las aseguradoras</option>
+      ${ASEGURADORAS.map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosHistorial={};render()">Limpiar filtros</button>
+  </div>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Estatus</th><th>Fecha de entrega</th><th>En historial desde</th></tr></thead>
+  <tbody>
+  ${filas.length===0?'<tr><td colspan="6" class="empty">Sin expedientes en el historial con estos filtros.</td></tr>':filas.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td><span class="badge ${s.estatus_general==='Cerrado'?'verde':'gris'}">${esc(s.estatus_general)}</span></td>
+      <td>${esc(s.fecha_entrega_real||'—')}</td>
+      <td>${esc((s.archivado_en||'').slice(0,10)||'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${filas.length} expediente(s) en el historial.</p>`;
+}
+
 /* ===================== VISTA: PROVEEDORES ===================== */
 // Hallazgo M-02 (Informe Daniela): la lista de proveedores no tenía forma de acotarse -- se agrega
 // búsqueda (razón social/contacto/correo) y filtro de activo/inactivo (el catálogo es chico, se filtra en pantalla).
@@ -1005,7 +1051,7 @@ async function viewSiniestro(id){
     ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormCapturaEnvio(${id})">Actualizar captura / envío</button></div>`:''}`;
   } else if(state.subtabSiniestro==='expediente'){
     const documentos = await api('GET','/api/documentos-expediente?siniestro_id='+id);
-    const puedeExpediente = currentUser && ['vanessa','admin','jefe'].includes(currentUser.rol);
+    const puedeExpediente = currentUser && ['vanessa','orlando','admin','jefe'].includes(currentUser.rol);
     const LABEL_EXP = { en_captura:'En captura', incompleto:'Incompleto', listo_para_valuacion:'Listo para valuación' };
     const LABEL_DOC = { faltante:'Faltante', recibido:'Recibido', no_legible:'No legible', no_aplica:'No aplica' };
     const BADGE_DOC = { faltante:'rojo', recibido:'verde', no_legible:'ambar', no_aplica:'gris' };

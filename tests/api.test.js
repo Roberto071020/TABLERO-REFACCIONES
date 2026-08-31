@@ -3297,3 +3297,69 @@ test('SYNC-6: un pedido Recibido parcial NO fuerza a Recibida físicamente las p
   const zPendienteDespues = (await req('GET', '/api/piezas/' + zPendiente.id)).data;
   assert.equal(zPendienteDespues.estatus, 'Asignada', 'la pieza realmente pendiente no debe tocarse solo porque el pedido quedó parcial');
 });
+
+/* ===================== Depuración SC Control (31-ago-2026, autorizado por Roberto) ===================== */
+
+test('DEP-1: Orlando gana acceso a "Expediente digital" (absorbe temporalmente a Vanessa) sin quitarle nada a ella', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'DEP1-SIN', aseguradora: 'GNP' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const rOrlandoPatch = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'en_captura', sistema_valuacion: 'ACG' });
+  assert.equal(rOrlandoPatch.status, 200, 'Orlando ya debe poder capturar los campos de expediente digital');
+  assert.equal(rOrlandoPatch.data.estado_expediente, 'en_captura');
+
+  const rOrlandoDoc = await req('POST', '/api/documentos-expediente', { siniestro_id: s.id, tipo_documento: 'Póliza' });
+  assert.equal(rOrlandoDoc.status, 201, 'Orlando ya debe poder capturar documentos del checklist documental');
+
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const rVanessaPatch = await req('PATCH', '/api/siniestros/' + s.id, { expediente_folio: 'F-001' });
+  assert.equal(rVanessaPatch.status, 200, 'Vanessa conserva su acceso de siempre, no se le quitó nada');
+  const rVanessaDoc = await req('POST', '/api/documentos-expediente', { siniestro_id: s.id, tipo_documento: 'Factura' });
+  assert.equal(rVanessaDoc.status, 201);
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const rBetoPatch = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'incompleto' });
+  assert.equal(rBetoPatch.status, 403, 'Beto sigue sin acceso a expediente digital (no se abrió a todos los roles)');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('DEP-2: cerrar un siniestro (endpoint /cerrar) lo saca de inmediato de las bandejas operativas; sigue disponible en el historial', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'DEP2-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'DEP2-PED', siniestro_id: s.id, fecha_prevista: '2026-09-01' })).data;
+  await req('PATCH', '/api/pedidos/' + p.id, { estatus_operativo: 'Recibido completo' });
+  // fecha_entrega_real no se acepta en el POST de alta (es un campo general, se captura después vía PATCH).
+  await req('PATCH', '/api/siniestros/' + s.id, { fecha_entrega_real: '2026-08-31' });
+
+  const antes = await req('GET', '/api/siniestros');
+  assert.ok(antes.data.some(x => x.numero === 'DEP2-SIN'), 'sanity: antes de cerrar sí aparece en la bandeja por default');
+
+  const cierre = await req('PATCH', '/api/siniestros/' + s.id + '/cerrar');
+  assert.equal(cierre.status, 200);
+  assert.equal(cierre.data.estatus_general, 'Cerrado');
+  assert.equal(cierre.data.archivado, 1, 'cerrar debe archivar de inmediato, no esperar los 90 días');
+
+  const despues = await req('GET', '/api/siniestros');
+  assert.ok(!despues.data.some(x => x.numero === 'DEP2-SIN'), 'ya no debe aparecer en la bandeja por default tras cerrarse');
+
+  const lista = await req('GET', '/api/reportes/lista-maestra?q=DEP2-PED');
+  assert.ok(!lista.data.filas.some(f => f.pedido_numero === 'DEP2-PED'), 'tampoco debe aparecer en Lista maestra por default');
+
+  const historial = await req('GET', '/api/siniestros?archivado=1&q=DEP2-SIN');
+  assert.ok(historial.data.some(x => x.numero === 'DEP2-SIN'), 'debe seguir disponible en el historial sin límite de tiempo');
+});
+
+test('DEP-3: marcar estatus_general=Cerrado por el PATCH general (sin pasar por /cerrar) también archiva de inmediato', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'DEP3-SIN', aseguradora: 'GNP' })).data;
+  const r = await req('PATCH', '/api/siniestros/' + s.id, { estatus_general: 'Cerrado' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.archivado, 1, 'la ruta alterna (PATCH general) debe archivar igual que /cerrar');
+
+  const despues = await req('GET', '/api/siniestros');
+  assert.ok(!despues.data.some(x => x.numero === 'DEP3-SIN'), 'no debe aparecer en la bandeja por default');
+
+  // Un PATCH posterior que no cambia estatus_general no debe pisar archivado_en ya puesto.
+  const archivadoEnOriginal = r.data.archivado_en;
+  const r2 = await req('PATCH', '/api/siniestros/' + s.id, { notas: 'nota de prueba' });
+  assert.equal(r2.data.archivado_en, archivadoEnOriginal, 'no debe recalcular archivado_en en cada PATCH posterior');
+});

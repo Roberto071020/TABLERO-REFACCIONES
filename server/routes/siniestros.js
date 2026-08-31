@@ -25,7 +25,8 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
   { campos:['fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'],
     roles:['orlando','vanessa','admin','jefe'], nombre:'captura y envío' },
   { campos:['estado_expediente','sistema_valuacion','expediente_folio','expediente_listo_fecha'],
-    roles:['vanessa','admin','jefe'], nombre:'expediente digital' },
+    // Orlando absorbe temporalmente la captura de Vanessa (incapacidad, 31-ago-2026).
+    roles:['vanessa','orlando','admin','jefe'], nombre:'expediente digital' },
   { campos:['valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
       'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
       'piezas_autorizadas_cambio','estado_valuacion'],
@@ -248,6 +249,15 @@ router.patch('/:id', requireAuth, (req, res)=>{
   // refacciones_completas: cuando la autorización se resuelve, se crea una tarea de aviso al cliente.
   const autorizacionReciénResuelta = ['autorizada','parcial'].includes(nuevo.estado_autorizacion) && !['autorizada','parcial'].includes(anterior.estado_autorizacion);
 
+  // Depuración SC Control (31-ago-2026, autorizado por Roberto): si este PATCH general es el que marca
+  // estatus_general='Cerrado' (en vez de pasar por /cerrar), aplica el mismo efecto -- sale de inmediato
+  // de las bandejas operativas reutilizando `archivado`, igual que el endpoint dedicado. No lo desarchiva
+  // si ya lo estaba (nunca revierte un archivado_en existente).
+  if(nuevo.estatus_general === 'Cerrado' && anterior.estatus_general !== 'Cerrado' && !anterior.archivado){
+    nuevo.archivado = 1;
+    nuevo.archivado_en = new Date().toISOString().replace('T',' ').slice(0,19);
+  }
+
   // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
   // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
   const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
@@ -268,6 +278,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
       finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,postventa_resultado=?,deducible_pagado_confirmado_en=?,entrega_encuesta_gnp_solicitada=?,
       fecha_borrador_captura=?,excel_capturado=?,excel_capturado_fecha=?,fotos_completas=?,fotos_completas_fecha=?,enviado_propietario=?,enviado_propietario_fecha=?,
+      archivado=?,archivado_en=?,
       actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
@@ -283,6 +294,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
       nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios, nuevo.postventa_resultado, nuevo.deducible_pagado_confirmado_en, (nuevo.entrega_encuesta_gnp_solicitada===undefined||nuevo.entrega_encuesta_gnp_solicitada===null||nuevo.entrega_encuesta_gnp_solicitada==='')?null:(nuevo.entrega_encuesta_gnp_solicitada?1:0),
       nuevo.fecha_borrador_captura, nuevo.excel_capturado, nuevo.excel_capturado_fecha, nuevo.fotos_completas, nuevo.fotos_completas_fecha, nuevo.enviado_propietario, nuevo.enviado_propietario_fecha,
+      nuevo.archivado, nuevo.archivado_en,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   if(nuevaInconformidad){
@@ -425,7 +437,14 @@ router.patch('/:id/cerrar', requireAuth, requireRole('operativo','jefe','admin')
     return res.status(400).json({ error:'No se puede cerrar el siniestro todavía.', detalle: problemas });
   }
 
-  db.prepare("UPDATE siniestros SET estatus_general='Cerrado', actualizado_en=datetime('now') WHERE id=?").run(s.id);
+  // Depuración SC Control (31-ago-2026, autorizado por Roberto): un expediente Cerrado debe salir de
+  // inmediato de todas las bandejas operativas (Kanban, lista maestra, panorama de Beto, bandejas de
+  // Orlando/Vanessa, resumen de Inicio, etc.), no hasta que se cumplan los 90 días del archivo automático.
+  // Se reutiliza el mecanismo de `archivado` ya existente (mismo campo que usa archivarSiniestrosVencidos)
+  // en vez de tocar cada consulta por separado: todas esas bandejas ya filtran por archivado=0, así que
+  // marcarlo aquí las saca de operación en el acto sin duplicar lógica. El historial completo sigue
+  // disponible sin límite de tiempo vía GET /api/siniestros?archivado=1 (pantalla "Historial / Terminados").
+  db.prepare("UPDATE siniestros SET estatus_general='Cerrado', archivado=1, archivado_en=datetime('now'), actualizado_en=datetime('now') WHERE id=?").run(s.id);
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'cierre', campo:'estatus_general',
     valor_anterior: s.estatus_general, valor_nuevo: 'Cerrado', usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));

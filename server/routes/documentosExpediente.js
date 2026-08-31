@@ -7,7 +7,10 @@ const { requireAuth, requireRole } = require('../auth');
 const { registrarAuditoria, auditarCambios } = require('../utils');
 const router = express.Router();
 
-const ROLES_EDICION = ['vanessa','admin','jefe'];
+// Orlando absorbe temporalmente la captura de Vanessa (incapacidad, 31-ago-2026): mismo criterio
+// que la fusion Orlando/Vanessa anterior en produccion -- se le da acceso de escritura sin quitarle
+// nada a ella, para que ambos puedan capturar mientras dure su ausencia.
+const ROLES_EDICION = ['vanessa','orlando','admin','jefe'];
 
 router.get('/', requireAuth, (req, res)=>{
   const { siniestro_id } = req.query;
