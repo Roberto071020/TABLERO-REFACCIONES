@@ -647,8 +647,14 @@ function sincronizarPiezasConEstatusPedido(db, pedidoId, usuario){
     const incidenciaAbierta = db.prepare(`SELECT id FROM incidencias WHERE pieza_id=? AND estado IN ('abierta','en_proceso') LIMIT 1`).get(z.id);
     if(incidenciaAbierta) continue;
     if(nuevoEstatusPieza === 'Recibida físicamente'){
+      // Punto 6 (reporte Daniela 31-ago-2026): esta sincronización automática marcaba la pieza como
+      // recibida pero nunca llenaba recibido_por, así que "Piezas recibidas" mostraba "--" aunque sí hubo
+      // una acción humana detrás (quien cerró el pedido). Cuando la llamada viene de una acción con sesión
+      // (PATCH de pedido o confirmación de carga masiva) se atribuye a ese usuario; el barrido periódico sin
+      // sesión (verificarPiezasPedidosExistentes desde /resumen) sigue sin atribuir a nadie, correctamente.
       db.prepare(`UPDATE piezas SET estatus='Recibida físicamente', fecha_recepcion=COALESCE(NULLIF(fecha_recepcion,''), datetime('now')),
-        observaciones = TRIM(COALESCE(observaciones,'') || ' [Auto: pedido ya recibido completo]'), actualizado_en=datetime('now') WHERE id=?`).run(z.id);
+        recibido_por=COALESCE(recibido_por, ?),
+        observaciones = TRIM(COALESCE(observaciones,'') || ' [Auto: pedido ya recibido completo]'), actualizado_en=datetime('now') WHERE id=?`).run(usuario ? usuario.id : null, z.id);
     } else {
       db.prepare(`UPDATE piezas SET estatus='Cancelada',
         observaciones = TRIM(COALESCE(observaciones,'') || ' [Auto: pedido cancelado]'), actualizado_en=datetime('now') WHERE id=?`).run(z.id);

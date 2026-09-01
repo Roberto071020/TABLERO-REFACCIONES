@@ -395,11 +395,16 @@ router.get('/piezas-recibidas', requireAuth, (req, res)=>{
 });
 
 // Vista enriquecida para el Kanban: todos los pedidos (F-03: ningún estatus se excluye) con resumen de piezas.
+// Punto 3 (reporte Daniela 31-ago-2026): antes ordenaba por p.creado_en (fecha en que quedó insertado el
+// registro en nuestra base, no la fecha real del pedido) -- con la carga inicial de 111 expedientes eso
+// mezclaba pedidos viejos (jun/jul) con recientes de forma que no correspondía a la fecha real del pedido,
+// y esa fecha real no era visible en la tarjeta para poder auditar el orden. Ahora ordena por la fecha real
+// del pedido (fecha_creacion, la que trae Inpart/el CSV) y esa fecha se manda al frontend para mostrarla.
 router.get('/kanban', requireAuth, (req, res)=>{
   archivarSiniestrosVencidos(db);
   const conVentanaKanban = aplicaVentanaOperativa(req.query);
   const pedidos = db.prepare(`SELECT p.*, s.numero as siniestro_numero, s.aseguradora, s.vehiculo, s.id as siniestro_id
-                               FROM pedidos p JOIN siniestros s ON s.id = p.siniestro_id WHERE s.archivado = 0${conVentanaKanban ? ' AND p.fecha_creacion >= ?' : ''} ORDER BY p.creado_en DESC`).all(...(conVentanaKanban ? [VENTANA_OPERATIVA_DESDE] : []));
+                               FROM pedidos p JOIN siniestros s ON s.id = p.siniestro_id WHERE s.archivado = 0${conVentanaKanban ? ' AND p.fecha_creacion >= ?' : ''} ORDER BY p.fecha_creacion IS NULL, p.fecha_creacion DESC, p.creado_en DESC`).all(...(conVentanaKanban ? [VENTANA_OPERATIVA_DESDE] : []));
   const hoy = new Date().toISOString().slice(0,10);
   const out = pedidos.map(p=>{
     const piezas = db.prepare('SELECT z.*, pv.razon_social as proveedor_nombre FROM piezas z LEFT JOIN proveedores pv ON pv.id = z.proveedor_id WHERE z.pedido_id = ?').all(p.id);

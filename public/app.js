@@ -420,6 +420,7 @@ async function viewKanban(){
         <div class="sin">${esc(p.siniestro_numero)} <span class="ase">${esc(p.aseguradora)}</span></div>
         <div class="subtle">Pedido ${esc(p.numero)} · ${esc(p.vehiculo||'')}</div>
         <div class="subtle">Prov.: ${esc(p.proveedores.join(', ')||'—')}</div>
+        <div class="subtle" style="font-size:11px;">Pedido creado: ${esc(p.fecha_creacion||'—')}</div>
         <div class="row">
           <span class="badge ${p.vencidas>0?'rojo':'azul'}">${p.pendientes} pend.</span>
           ${p.incidenciasAbiertas>0?`<span class="badge morado">${p.incidenciasAbiertas} inc.</span>`:`<span class="subtle">${esc(p.fecha_prevista||'')}</span>`}
@@ -440,6 +441,10 @@ async function viewCorreos(){
   if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
   if(f.incompleto) params.set('incompleto', f.incompleto);
   if(f.orden) params.set('orden', f.orden);
+  if(f.disparador) params.set('disparador', f.disparador);
+  if(f.desde) params.set('desde', f.desde);
+  if(f.hasta) params.set('hasta', f.hasta);
+  if(f.q) params.set('q', f.q);
   params.set('page', f.page||1);
   params.set('pageSize', 25);
   const [r, proveedores, estadoGmail] = await Promise.all([
@@ -473,6 +478,14 @@ async function viewCorreos(){
       <option value="">Más reciente primero</option>
       <option value="antiguo" ${f.orden==='antiguo'?'selected':''}>Más antiguo primero</option>
     </select>
+    <select onchange="state.filtrosCorreos.disparador=this.value;state.filtrosCorreos.page=1;render()" title="Punto 5 (reporte Daniela 31-ago-2026)">
+      <option value="">Todos los motivos</option>
+      ${Object.entries(LABEL_DISPARADOR).map(([k,label])=>`<option value="${k}" ${f.disparador===k?'selected':''}>${label}</option>`).join('')}
+    </select>
+    <input type="date" title="Fecha de envío desde" value="${esc(f.desde||'')}" onchange="state.filtrosCorreos.desde=this.value;state.filtrosCorreos.page=1;render()">
+    <input type="date" title="Fecha de envío hasta" value="${esc(f.hasta||'')}" onchange="state.filtrosCorreos.hasta=this.value;state.filtrosCorreos.page=1;render()">
+    <input placeholder="Buscar por siniestro, pedido o asunto" value="${esc(f.q||'')}" oninput="state.filtrosCorreos.q=this.value" onkeydown="if(event.key==='Enter'){state.filtrosCorreos.page=1;render();}" style="min-width:200px">
+    <button class="btn small" onclick="state.filtrosCorreos.page=1;render()">Buscar</button>
     <button class="btn secondary small" onclick="state.filtrosCorreos={page:1};render()">Limpiar filtros</button>
   </div>`;
   if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación con estos filtros.</div>'; return html; }
@@ -561,8 +574,17 @@ let cargaMasivaValidada = null;
 async function viewCargaMasiva(){
   cargaMasivaValidada = null;
   const lotes = await api('GET','/api/carga-masiva/lotes');
+  // Punto 2 (reporte Daniela 31-ago-2026): no había, a simple vista, una fecha de "última sincronización"
+  // -- existía la tabla de lotes recientes pero había que interpretarla. Se agrega un aviso explícito arriba
+  // con la fecha/usuario del último lote confirmado y su resumen de nuevos vs. actualizados.
+  const ultimoConfirmado = lotes.find(l=>l.estado!=='revertida');
+  let resumenUltimo = null;
+  if(ultimoConfirmado){ try{ resumenUltimo = JSON.parse(ultimoConfirmado.resumen||'{}'); }catch(e){ resumenUltimo = {}; } }
   return `
   <h2>Carga masiva</h2>
+  ${ultimoConfirmado
+    ? `<p class="subtle"><span class="badge azul">Última sincronización: ${esc(ultimoConfirmado.creado_en)}</span> por ${esc(ultimoConfirmado.usuario_nombre||'—')} — ${resumenUltimo.pedidosCreados||0} pedido(s) nuevo(s), ${resumenUltimo.pedidosActualizados||0} actualizado(s), ${resumenUltimo.piezasCreadas||0} pieza(s) nueva(s).</p>`
+    : `<p class="subtle"><span class="badge gris">Todavía no hay ninguna carga masiva registrada.</span></p>`}
   <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar o actualizar expedientes, pedidos, piezas y proveedores. Cada fila puede traer una pieza; varias filas con el mismo numero_pedido se agrupan en un solo pedido. Primero se valida, después confirmas antes de registrar.</p>
   <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, vin, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, numero_parte, descripcion_pieza, tipo_pieza, cantidad, precio, estatus_inpart_pieza, fecha_prometida_pieza, proveedor, contacto_proveedor, telefono_proveedor, correo_proveedor</p>
   <div class="field"><textarea id="fcm_csv" style="min-height:180px;font-family:monospace;" placeholder="numero_siniestro,aseguradora,...,fecha_prevista,..."></textarea></div>
@@ -722,6 +744,7 @@ async function viewLista(){
   if(f.estatus) params.set('estatus', f.estatus);
   if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
   if(f.q) params.set('q', f.q);
+  if(f.orden) params.set('orden', f.orden);
   params.set('page', f.page||1);
   params.set('pageSize', 50);
   const r = await api('GET','/api/reportes/lista-maestra?'+params.toString());
@@ -753,6 +776,10 @@ async function viewLista(){
     <select onchange="setFiltroListaMaestra('proveedor_id', this.value)">
       <option value="">Todos los proveedores</option>
       ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
+    </select>
+    <select onchange="setFiltroListaMaestra('orden', this.value)" title="Punto 4 (reporte Daniela 31-ago-2026): el backend ya soportaba ordenar por fecha prometida (A-01), pero no había control en pantalla para elegirlo.">
+      <option value="" ${!f.orden?'selected':''}>Orden: más reciente primero (fecha de creación)</option>
+      <option value="prometida" ${f.orden==='prometida'?'selected':''}>Orden: fecha prometida más próxima primero</option>
     </select>
     <button class="btn small" onclick="state.filtros.page=1;render()">Buscar</button>
     <button class="btn secondary small" onclick="state.filtros={};render()">Limpiar filtros</button>
@@ -789,6 +816,7 @@ function exportarCSV(){
   if(f.estatus) params.set('estatus', f.estatus);
   if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
   if(f.q) params.set('q', f.q);
+  if(f.orden) params.set('orden', f.orden);
   window.location.href = '/api/reportes/lista-maestra.csv?'+params.toString();
 }
 // Incluye TODOS los expedientes (con o sin pedido capturado), a diferencia del CSV de Lista maestra
@@ -851,6 +879,7 @@ async function viewProveedores(){
   const proveedores = todos.filter(pv=>{
     if(f.activo === '1' && !pv.activo) return false;
     if(f.activo === '0' && pv.activo) return false;
+    if(f.sinCorreo === '1' && pv.correo && pv.correo.trim()) return false;
     if(!qNorm) return true;
     return [pv.razon_social, pv.contacto, pv.correo].some(v=>String(v||'').toLowerCase().includes(qNorm));
   });
@@ -862,6 +891,10 @@ async function viewProveedores(){
       <option value="">Activos e inactivos</option>
       <option value="1" ${f.activo==='1'?'selected':''}>Solo activos</option>
       <option value="0" ${f.activo==='0'?'selected':''}>Solo inactivos</option>
+    </select>
+    <select onchange="state.filtrosProveedores.sinCorreo=this.value;render()" title="Punto 7 (reporte Daniela 31-ago-2026)">
+      <option value="">Con y sin correo</option>
+      <option value="1" ${f.sinCorreo==='1'?'selected':''}>Solo sin correo</option>
     </select>
     <button class="btn small" onclick="render()">Buscar</button>
     <button class="btn secondary small" onclick="state.filtrosProveedores={};render()">Limpiar filtros</button>

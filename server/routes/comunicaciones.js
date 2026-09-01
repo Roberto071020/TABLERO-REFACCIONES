@@ -130,7 +130,12 @@ router.get('/pendientes', requireAuth, (req, res)=>{
   const conVentana = aplicaVentanaOperativa(req.query);
   // Hallazgo A-02 (Informe Daniela): filtros por aseguradora/proveedor/incompleto, orden reciente/antiguo
   // y paginación -- antes la bandeja completa (cientos de filas) se cargaba de un jalón sin forma de acotarla.
-  const { aseguradora, proveedor_id, incompleto, orden } = req.query;
+  // Punto 5 (reporte Daniela 31-ago-2026): se agregan búsqueda de texto (siniestro/pedido/asunto), filtro
+  // por motivo (disparador: pedido nuevo, vencimiento, seguimiento, manual) y por rango de fecha de envío.
+  // El filtro por "estado" no se agrega aquí porque esta bandeja es, por diseño, solo lo pendiente de
+  // aprobar (una vez aprobado/enviado sale de esta lista); Roberto debe confirmar si además quiere una
+  // vista de historial de correos ya aprobados/enviados.
+  const { aseguradora, proveedor_id, incompleto, orden, q, disparador, desde, hasta } = req.query;
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize, 10) || 50));
   let sql = `SELECT c.*, s.numero as siniestro_numero, s.aseguradora, p.numero as pedido_numero
@@ -144,6 +149,13 @@ router.get('/pendientes', requireAuth, (req, res)=>{
   if(proveedor_id){ sql += ' AND c.proveedor_id = ?'; params.push(proveedor_id); }
   if(incompleto === '1'){ sql += ' AND c.incompleto = 1'; }
   else if(incompleto === '0'){ sql += ' AND c.incompleto = 0'; }
+  if(disparador){ sql += ' AND c.disparador = ?'; params.push(disparador); }
+  if(desde){ sql += ' AND c.fecha_envio >= ?'; params.push(desde); }
+  if(hasta){ sql += ' AND c.fecha_envio <= ?'; params.push(hasta + ' 23:59:59'); }
+  if(q){
+    sql += ' AND (s.numero LIKE ? OR p.numero LIKE ? OR c.asunto LIKE ?)';
+    const like = `%${q}%`; params.push(like, like, like);
+  }
   const total = db.prepare(`SELECT COUNT(*) n FROM (${sql})`).get(...params).n;
   sql += orden === 'antiguo' ? ' ORDER BY c.fecha_envio ASC' : ' ORDER BY c.fecha_envio DESC';
   sql += ' LIMIT ? OFFSET ?';
