@@ -27,11 +27,19 @@ const upload = multer({
 // F-19: guarda el archivo real en disco (no solo el nombre) con metadatos en base de datos.
 router.post('/', requireAuth, upload.single('archivo'), (req, res)=>{
   if(!req.file) return res.status(400).json({ error:'No se recibió ningún archivo.' });
-  const { entidad_tipo, entidad_id, tipo } = req.body;
+  const { entidad_tipo, entidad_id, tipo, ot_operacion_id } = req.body;
   if(!['siniestro','pedido','pieza','incidencia'].includes(entidad_tipo)) return res.status(400).json({ error:'entidad_tipo inválido.' });
-  const info = db.prepare(`INSERT INTO archivos (entidad_tipo,entidad_id,tipo,nombre_original,nombre_almacenado,mime,tamano,subido_por)
-    VALUES (?,?,?,?,?,?,?,?)`)
-    .run(entidad_tipo, entidad_id, tipo||'Evidencia', req.file.originalname, req.file.filename, req.file.mimetype, req.file.size, req.session.user.id);
+  // Fotos obligatorias por etapa (2-sep-2026): si la foto viene ligada a una operación de producción
+  // concreta (ot_operacion_id), se valida que exista antes de guardarla, para no dejar huérfanas.
+  let otOperacionId = null;
+  if(ot_operacion_id){
+    const op = db.prepare('SELECT id FROM ot_operaciones WHERE id = ?').get(ot_operacion_id);
+    if(!op) return res.status(400).json({ error:'La operación de producción indicada no existe.' });
+    otOperacionId = op.id;
+  }
+  const info = db.prepare(`INSERT INTO archivos (entidad_tipo,entidad_id,tipo,nombre_original,nombre_almacenado,mime,tamano,subido_por,ot_operacion_id)
+    VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(entidad_tipo, entidad_id, tipo||'Evidencia', req.file.originalname, req.file.filename, req.file.mimetype, req.file.size, req.session.user.id, otOperacionId);
   registrarAuditoria(db, { entidad_tipo:'archivo', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user, valor_nuevo:req.file.originalname });
 
   // Propuesta de Orlando (sección 3.1): la orden de admisión y el inventario fotográfico/físico son,
@@ -44,10 +52,11 @@ router.post('/', requireAuth, upload.single('archivo'), (req, res)=>{
 });
 
 router.get('/', requireAuth, (req, res)=>{
-  const { entidad_tipo, entidad_id, incluir_eliminados } = req.query;
+  const { entidad_tipo, entidad_id, incluir_eliminados, ot_operacion_id } = req.query;
   let sql = 'SELECT * FROM archivos WHERE 1=1'; const params=[];
   if(entidad_tipo){ sql += ' AND entidad_tipo=?'; params.push(entidad_tipo); }
   if(entidad_id){ sql += ' AND entidad_id=?'; params.push(entidad_id); }
+  if(ot_operacion_id){ sql += ' AND ot_operacion_id=?'; params.push(ot_operacion_id); }
   // Item 7 del triage (REQ-018): por default no se muestran los archivos eliminados (papelera),
   // igual que "archivado" en siniestros — siguen existiendo, solo no estorban la vista normal.
   if(!incluir_eliminados) sql += ' AND eliminado = 0';

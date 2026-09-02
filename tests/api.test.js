@@ -1304,7 +1304,7 @@ test('DOC-MAESTRO-E-1: crear una OT y agregar operaciones; solo beto/orlando/adm
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
-test('DOC-MAESTRO-E-2: detener una operación exige causa de bloqueo normalizada; terminarla fija avance en 100', async () => {
+test('DOC-MAESTRO-E-2: detener una operación exige causa de bloqueo normalizada; terminarla (con foto) fija avance en 100', async () => {
   await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'FASEE-OT2', aseguradora: 'GNP' })).data;
   const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-002' })).data;
@@ -1316,11 +1316,73 @@ test('DOC-MAESTRO-E-2: detener una operación exige causa de bloqueo normalizada
   assert.equal(conCausa.status, 200);
   assert.equal(conCausa.data.causa_bloqueo, 'pieza_faltante');
 
+  // Fotos obligatorias por etapa (2-sep-2026): hace falta al menos una foto ligada a la operación antes
+  // de poder terminarla.
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', String(s.id)); fd.append('tipo', 'Evidencia');
+  fd.append('ot_operacion_id', String(op.id));
+  fd.append('archivo', new Blob([Buffer.from('foto de prueba')], { type: 'image/jpeg' }), 'etapa.jpg');
+  const subida = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  assert.equal(subida.status, 201);
+
   const terminada = await req('PATCH', '/api/ot-operaciones/' + op.id, { estado: 'terminado' });
   assert.equal(terminada.status, 200);
   assert.equal(terminada.data.avance, 100);
   assert.ok(terminada.data.fecha_fin_real);
 
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('FOTOS-ETAPA-1: no se puede marcar una operación como terminada sin al menos una foto real ligada a ella', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FOTOS1-SIN', aseguradora: 'GNP' })).data;
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-FOTOS1' })).data;
+  const op = (await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Hojalatería puerta' })).data;
+
+  const bloqueado = await req('PATCH', '/api/ot-operaciones/' + op.id, { estado: 'terminado' });
+  assert.equal(bloqueado.status, 409, 'sin foto ligada a la operación no debe poder terminarse');
+  assert.match(bloqueado.data.error, /foto/i);
+
+  const sinCambio = (await req('GET', '/api/ot-operaciones?ot_id=' + ot.id)).data.find(o => o.id === op.id);
+  assert.equal(sinCambio.estado, 'programado', 'el estado no debe haber cambiado tras el bloqueo');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('FOTOS-ETAPA-2: la foto de la etapa queda ligada a la operación y también visible en la galería general del siniestro', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FOTOS2-SIN', aseguradora: 'GNP' })).data;
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-FOTOS2' })).data;
+  const op = (await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Armado defensa' })).data;
+
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', String(s.id)); fd.append('tipo', 'Evidencia');
+  fd.append('ot_operacion_id', String(op.id));
+  fd.append('archivo', new Blob([Buffer.from('foto etapa 2')], { type: 'image/jpeg' }), 'armado.jpg');
+  const subida = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  assert.equal(subida.status, 201);
+  const archivo = await subida.json();
+  assert.equal(archivo.ot_operacion_id, op.id);
+
+  const porOperacion = (await req('GET', '/api/archivos?ot_operacion_id=' + op.id)).data;
+  assert.equal(porOperacion.length, 1);
+  assert.equal(porOperacion[0].id, archivo.id);
+
+  const galeriaSiniestro = (await req('GET', '/api/archivos?entidad_tipo=siniestro&entidad_id=' + s.id)).data;
+  assert.ok(galeriaSiniestro.some(a => a.id === archivo.id), 'la foto también debe verse en la galería general del expediente');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('FOTOS-ETAPA-3: subir una foto ligada a una operación inexistente se rechaza', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FOTOS3-SIN', aseguradora: 'GNP' })).data;
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', String(s.id)); fd.append('tipo', 'Evidencia');
+  fd.append('ot_operacion_id', '999999');
+  fd.append('archivo', new Blob([Buffer.from('x')], { type: 'image/jpeg' }), 'x.jpg');
+  const res = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  assert.equal(res.status, 400);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 

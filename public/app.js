@@ -2080,6 +2080,11 @@ async function abrirFormEditarOperacion(operacionId){
   const todas = await api('GET','/api/ot-operaciones');
   const op = todas.find(x=>x.id===operacionId);
   if(!op){ toast('Operación no encontrada.', 'error'); return; }
+  // Fotos obligatorias por etapa (2-sep-2026): se necesita el siniestro_id de la OT para poder subir
+  // la foto ligada tanto al siniestro (aparece en su galería general) como a esta operación concreta.
+  const ots = await api('GET','/api/ordenes-trabajo');
+  const ot = ots.find(o=>o.id===op.ot_id);
+  const fotos = await api('GET', '/api/archivos?ot_operacion_id=' + operacionId);
   showModal(`
     <h3>Editar operación</h3>
     <div class="field"><label>Descripción</label><input id="fope_desc" value="${esc(op.descripcion)}"></div>
@@ -2102,8 +2107,31 @@ async function abrirFormEditarOperacion(operacionId){
       <option value="retrabajo" ${op.causa_bloqueo==='retrabajo'?'selected':''}>Retrabajo</option>
     </select></div>
     <div class="field"><label>Siguiente acción</label><input id="fope_siguiente" value="${esc(op.siguiente_accion||'')}"></div>
+    <div class="field">
+      <label>Fotos de esta etapa ${fotos.length===0?'<span class="badge rojo">Sin fotos — no se podrá marcar Terminado</span>':`<span class="badge verde">${fotos.length}</span>`}</label>
+      <p class="subtle" style="margin:2px 0 6px;">Las aseguradoras las piden para pagar la factura. Súbelas aquí en el momento, no al final.</p>
+      ${fotos.length>0?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">${fotos.map(f=>`<a class="link" href="/api/archivos/${f.id}/descargar" target="_blank" style="font-size:12px;">${esc(f.nombre_original)}</a>`).join(' · ')}</div>`:''}
+      <input type="file" id="fope_foto" accept=".jpg,.jpeg,.png,.webp,.heic">
+      <button type="button" class="btn small secondary" onclick="subirFotoOperacion(${operacionId}, ${ot?ot.siniestro_id:'null'})">Subir foto</button>
+    </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionOperacion(${operacionId})">Guardar</button></div>
   `);
+}
+async function subirFotoOperacion(operacionId, siniestroId){
+  const input = document.getElementById('fope_foto');
+  if(!input.files[0]){ toast('Selecciona una foto primero.', 'error'); return; }
+  if(!siniestroId){ toast('No se encontró el expediente de esta operación.', 'error'); return; }
+  const fd = new FormData();
+  fd.append('archivo', input.files[0]);
+  fd.append('entidad_tipo', 'siniestro');
+  fd.append('entidad_id', siniestroId);
+  fd.append('tipo', 'Evidencia');
+  fd.append('ot_operacion_id', operacionId);
+  const res = await fetch('/api/archivos', { method:'POST', body: fd });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(data.error || 'No se pudo subir la foto.', 'error'); return; }
+  toast('Foto subida.', 'success');
+  abrirFormEditarOperacion(operacionId);
 }
 async function guardarEdicionOperacion(operacionId){
   try{

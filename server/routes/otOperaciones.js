@@ -49,6 +49,16 @@ router.patch('/:id', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
   if(nuevo.estado === 'detenido' && !nuevo.causa_bloqueo){
     return res.status(400).json({ error:'Indica la causa de bloqueo al detener una operación.' });
   }
+  // Fotos obligatorias por etapa (2-sep-2026, pedido de Roberto): las aseguradoras piden evidencia
+  // fotográfica del proceso para pagar la factura, y cuando falta el taller termina reconstruyéndola al
+  // final -- eso retrasa el cobro. Bloqueo duro: no se puede cerrar una operación sin al menos una foto
+  // real ligada a ella (archivos.ot_operacion_id), subida en cualquier momento mientras estuvo abierta.
+  if(nuevo.estado === 'terminado' && anterior.estado !== 'terminado'){
+    const fotos = db.prepare('SELECT COUNT(*) n FROM archivos WHERE ot_operacion_id = ? AND eliminado = 0').get(req.params.id).n;
+    if(fotos === 0){
+      return res.status(409).json({ error:'Sube al menos una foto real de esta etapa antes de marcarla como terminada (la piden las aseguradoras para pagar la factura).' });
+    }
+  }
   if(nuevo.estado === 'terminado'){ nuevo.avance = 100; if(!nuevo.fecha_fin_real) nuevo.fecha_fin_real = new Date().toISOString().slice(0,10); }
   if(nuevo.avance !== undefined) nuevo.avance = Math.max(0, Math.min(100, Number(nuevo.avance)||0));
 

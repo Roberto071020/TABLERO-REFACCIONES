@@ -1070,6 +1070,17 @@ if(!tieneColumna('siniestros', 'entrega_compromiso_establecido_en')){
   db.exec(`ALTER TABLE siniestros ADD COLUMN entrega_compromiso_establecido_en TEXT;`);
 }
 
+/* ===================== Fotos obligatorias por etapa de producción (2-sep-2026, pedido de Roberto) =====================
+   Las aseguradoras piden fotos del proceso de reparación para pagar las facturas, y muchas veces faltan
+   porque no se tomaron durante la etapa correspondiente -- el taller termina reconstruyendo/editando algo
+   al final, lo que retrasa el pago. Roberto pidió bloqueo duro: no se puede marcar una operación de
+   producción (ot_operaciones) como 'terminado' sin al menos una foto real ligada a esa etapa concreta.
+   Columna aditiva y nullable: no afecta ningún archivo ya subido (quedan con ot_operacion_id = NULL, tal
+   como estaban, ligados solo a entidad_tipo='siniestro'). */
+if(!tieneColumna('archivos', 'ot_operacion_id')){
+  db.exec(`ALTER TABLE archivos ADD COLUMN ot_operacion_id INTEGER REFERENCES ot_operaciones(id);`);
+}
+
 module.exports = db;
 
 
