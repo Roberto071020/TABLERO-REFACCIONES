@@ -166,7 +166,7 @@ const TABS = [
   // quejas posteriores que pida la aseguradora.
   {k:'historial', label:'Historial / Terminados', roles:['atencion_cliente','operativo','admin','jefe']},
   {k:'recibidas', label:'Piezas recibidas', roles:['operativo','admin','jefe']},
-  {k:'proveedores', label:'Proveedores'},
+  {k:'proveedores', label:'Proveedores', roles:['operativo','admin','jefe']},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
   {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
   {k:'expediente', label:'Armado de expediente', roles:['vanessa','orlando','operativo','admin','jefe']},
@@ -190,7 +190,10 @@ function toggleMenuMovil(){
   const nav = document.getElementById('mainTabs');
   if(nav) nav.classList.toggle('open');
 }
-function goSiniestro(id){ state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render(); }
+function goSiniestro(id){
+  if(state.view !== 'siniestro') state.origenSiniestro = state.view;
+  state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render();
+}
 function goProveedor(id){ state.view='proveedor'; state.proveedorId=id; render(); }
 function setSubtabSiniestro(tab){ state.subtabSiniestro = tab; render(); }
 function setFiltroListaMaestra(campo, valor){ state.filtros[campo] = valor; state.filtros.page = 1; render(); }
@@ -231,6 +234,7 @@ async function render(){
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
     else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
+    else if(state.view==='ov-pendientes-revision') app.innerHTML = await viewOvPendientesRevision();
     else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
     else if(state.view==='lista') app.innerHTML = await viewLista();
     else if(state.view==='historial') app.innerHTML = await viewHistorial();
@@ -259,13 +263,16 @@ async function viewInicio(){
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
   const verBeto = currentUser && ['beto','admin','jefe'].includes(currentUser.rol);
   const verRoberto = currentUser && ['admin','jefe'].includes(currentUser.rol);
+  // Punto 1 del documento de Orlando (2-sep-2026): la información de piezas/pedidos (refacciones) no debe
+  // mostrarse en la pantalla principal de quien no la opera -- se acota a quien sí la usa (Daniela/refacciones).
+  const verRefacciones = currentUser && ['operativo','admin','jefe'].includes(currentUser.rol);
   const colaBeto = verBeto ? await api('GET','/api/reportes/panorama-beto') : [];
   const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
   return `
   <h2>Resumen diario</h2>
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
-  ${r.pendientesCompletar>0?`<div class="banner ambar">${r.pendientesCompletar} siniestro(s) están "Pendiente de completar" — les falta vehículo o placas. Complétalos desde su ficha.</div>`:''}
-  <div class="grid-cards">
+  ${verRefacciones && r.pendientesCompletar>0?`<div class="banner ambar">${r.pendientesCompletar} siniestro(s) están "Pendiente de completar" — les falta vehículo o placas. Complétalos desde su ficha.</div>`:''}
+  ${verRefacciones?`<div class="grid-cards">
     <div class="card azul" onclick="abrirDetalleTarjeta('pedidosNuevos','Pedidos nuevos')"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
     <div class="card rojo" onclick="abrirDetalleTarjeta('piezasVencidas','Piezas vencidas')"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
     <div class="card ambar" onclick="abrirListaSinProveedor()"><div class="num">${r.sinProveedor}</div><div class="label">Piezas sin proveedor</div></div>
@@ -280,13 +287,13 @@ async function viewInicio(){
     <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}" onclick="abrirDetalleTarjeta('valesPendientesSinSurtir','Vales pendientes de surtir')"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
     <div class="card ${r.correosIncompletos>0?'rojo':'verde'}" onclick="abrirCorreosIncompletos()"><div class="num">${r.correosIncompletos}</div><div class="label">Correos incompletos por completar</div></div>
     <div class="card ${r.complementosReautorizacionVencidos>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('complementosReautorizacionVencidos','Reautorizaciones vencidas (24h)')"><div class="num">${r.complementosReautorizacionVencidos}</div><div class="label">Reautorizaciones vencidas (24h)</div></div>
-  </div>
+  </div>`:''}
   ${verOrlandoVanessa ? `
   <div class="section">
     <h3>Revisión técnica y captura (Orlando + Vanessa)</h3>
     <p class="subtle">Panorama único que cubre revisión de daños y captura del expediente, para operar ambas partes sin cambiar de usuario.</p>
     <div class="grid-cards">
-      <div class="card ambar" onclick="abrirDetalleTarjeta('ovPendientesRevision','Pendientes de revisión')"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
+      <div class="card ambar" onclick="goTo('ov-pendientes-revision')"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
       <div class="card azul" onclick="abrirDetalleTarjeta('ovEnRevision','En revisión')"><div class="num">${r.ovEnRevision}</div><div class="label">En revisión</div></div>
       <div class="card rojo" onclick="abrirDetalleTarjeta('ovEsperandoDesarme','Esperando apoyo/desarme')"><div class="num">${r.ovEsperandoDesarme}</div><div class="label">Esperando apoyo/desarme</div></div>
       <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('ovComplementosPendientes','Complementos pendientes')"><div class="num">${r.ovComplementosPendientes}</div><div class="label">Complementos pendientes</div></div>
@@ -405,6 +412,27 @@ async function abrirListaPedidosSinPiezas(){
     </tbody></table>`}
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
   `, true);
+}
+
+/* ===================== VISTA: PENDIENTES DE REVISIÓN (Orlando/Vanessa) ===================== */
+// Punto 2 del documento de Orlando (2-sep-2026): pantalla propia por columnas, ya no popup, con las
+// columnas que pidió (siniestro, detalle del vehículo, placa, fecha de pase a expediente) y la etiqueta
+// de "Complemento piezas" (punto 5) cuando el expediente ya venía de revisión y regresa con un complemento.
+async function viewOvPendientesRevision(){
+  const filas = await api('GET','/api/reportes/pendientes-revision');
+  return `
+  <h2>Pendientes de revisión</h2>
+  <p class="subtle">Expedientes con la información de admisión ya cargada por Alejandra, disponibles para revisar, y que siguen pendientes por parte de Orlando y/o Vanessa antes de enviarse a Roberto a valuación.</p>
+  ${filas.length===0?'<div class="empty">Ninguno pendiente por ahora.</div>':`
+  <table><thead><tr><th>Siniestro</th><th>Detalle</th><th>Placa</th><th>Fecha de pase a expediente</th><th></th></tr></thead><tbody>
+  ${filas.map(f=>`<tr>
+    <td>${esc(f.numero)}</td>
+    <td>${esc(f.vehiculo||'Sin vehículo')} ${f.anio_modelo?('· '+esc(f.anio_modelo)):''} ${f.tiene_complemento_pendiente?'<span class="badge morado">Complemento piezas</span>':''}</td>
+    <td>${esc(f.placas||'—')}</td>
+    <td>${esc(f.fecha_hora_disponible_revision||'—')}</td>
+    <td><button class="btn small secondary" onclick="goSiniestro(${f.id})">Ver expediente</button></td>
+  </tr>`).join('')}
+  </tbody></table>`}`;
 }
 
 /* ===================== VISTA: KANBAN ===================== */
@@ -1048,6 +1076,12 @@ async function viewSiniestro(id){
     </tbody></table>
     ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button> <button class="btn small secondary" onclick="abrirMensajeBienvenida(${id})">Mensaje de bienvenida (WhatsApp)</button> <button class="btn small secondary" onclick="imprimirInventarioFisico(${id})">Imprimir inventario para el cliente</button></div>`:''}
 
+    <h4 style="margin-top:14px;">Inventario y orden de admisión cargados</h4>
+    ${(()=>{ const docsAdmision = archivosDisp.filter(a=>['inventario_fisico','orden_admision'].includes(a.tipo)); return docsAdmision.length===0 ? '<div class="empty">Sin inventario ni orden de admisión cargados todavía.</div>' :
+      `<table><thead><tr><th>Documento</th><th>Archivo</th><th>Subido</th></tr></thead><tbody>
+      ${docsAdmision.map(a=>`<tr><td>${esc({inventario_fisico:'Inventario físico/fotográfico',orden_admision:'Orden de admisión'}[a.tipo]||a.tipo)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">${esc(a.nombre_original)}</a></td><td class="subtle">${esc(a.creado_en||'—')}</td></tr>`).join('')}
+      </tbody></table>`; })()}
+
     <h3 style="margin-top:20px;">Revisión técnica (Orlando)</h3>
     <p class="subtle">Secciones 5.3/5.4 del documento maestro: daño relacionado/no relacionado, visible/oculto, y si requiere desarme.</p>
     <table class="kv"><tbody>
@@ -1088,9 +1122,17 @@ async function viewSiniestro(id){
     const LABEL_EXP = { en_captura:'En captura', incompleto:'Incompleto', listo_para_valuacion:'Listo para valuación' };
     const LABEL_DOC = { faltante:'Faltante', recibido:'Recibido', no_legible:'No legible', no_aplica:'No aplica' };
     const BADGE_DOC = { faltante:'rojo', recibido:'verde', no_legible:'ambar', no_aplica:'gris' };
+    const LABEL_REV_RESUMEN = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
     body = `
     <h3>Expediente digital</h3>
     <p class="subtle">Sección 5.5 del documento maestro: checklist documental, versiones, legibilidad y sistema de valuación (módulo de Vanessa).</p>
+    <h4>Proceso de revisión y captura</h4>
+    <table class="kv"><tbody>
+      <tr><td>Revisión técnica</td><td><span class="badge ${s.estado_revision_tecnica==='revision_terminada'?'verde':s.estado_revision_tecnica==='requiere_desarme'?'ambar':'gris'}">${LABEL_REV_RESUMEN[s.estado_revision_tecnica]||'Sin iniciar'}</span></td></tr>
+      <tr><td>Fotos de revisión entregadas</td><td>${s.fotos_completas?'<span class="badge verde">Sí</span>':'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Envío del expediente al propietario</td><td>${s.enviado_propietario?'<span class="badge verde">Sí</span>':'<span class="badge gris">No</span>'}</td></tr>
+    </tbody></table>
+    <h4 style="margin-top:14px;">Expediente digital</h4>
     <table class="kv"><tbody>
       <tr><td>Estado del expediente</td><td><span class="badge ${s.estado_expediente==='listo_para_valuacion'?'verde':s.estado_expediente==='incompleto'?'rojo':'ambar'}">${LABEL_EXP[s.estado_expediente]||'Sin iniciar'}</span></td></tr>
       <tr><td>Sistema de valuación</td><td>${esc(s.sistema_valuacion||'—')}</td></tr>
@@ -1432,7 +1474,7 @@ async function viewSiniestro(id){
   const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
   const puedeEntregar = currentUser && ['operativo','atencion_cliente','admin'].includes(currentUser.rol);
   return `
-  <button class="btn ghost small no-print" onclick="goTo('kanban')">← Volver</button>
+  <button class="btn ghost small no-print" onclick="goTo(state.origenSiniestro||'inicio')">← Volver</button>
   <div class="section" style="margin-top:10px;">
     ${s.completo===0?`<div class="banner ambar">Este siniestro está <b>Pendiente de completar</b> (faltan vehículo o placas). <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Completar datos</button></div>`:''}
     ${s.estatus_general==='Cerrado'?`<div class="banner verde">Siniestro cerrado.</div>`:''}

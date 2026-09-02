@@ -147,7 +147,13 @@ router.get('/resumen', requireAuth, (req, res)=>{
 
   // Propuesta Orlando/Vanessa fusionados: panorama único que cubre revisión de daños + captura, para
   // que Orlando pueda operar ambas partes sin cambiar de usuario (Vanessa sigue activa mientras esté).
-  const ovPendientesRevision = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica IS NULL`).get().n;
+  // Punto 4 y 5 del documento de Orlando (2-sep-2026): "Pendientes de revisión" solo debe listar lo que
+  // ya está disponible para revisar (info de admisión completa, ver fecha_hora_disponible_revision) y que
+  // siga pendiente por parte de Orlando/Vanessa antes de enviarse a Roberto -- incluye los que regresan con
+  // un complemento de piezas abierto, aunque ya hubieran pasado la revisión inicial.
+  const ovPendientesRevision = db.prepare(`SELECT COUNT(*) n FROM siniestros s WHERE s.archivado=0 AND s.fecha_hora_disponible_revision IS NOT NULL
+    AND (s.valuacion_fecha_envio IS NULL OR s.valuacion_fecha_envio='')
+    AND (s.estado_revision_tecnica IS NULL OR EXISTS (SELECT 1 FROM complementos c WHERE c.siniestro_id=s.id AND c.decision='pendiente'))`).get().n;
   const ovEnRevision = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='en_revision'`).get().n;
   const ovEsperandoDesarme = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='requiere_desarme'`).get().n;
   const ovComplementosPendientes = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE decision='pendiente'`).get().n;
@@ -314,7 +320,10 @@ const DETALLE_TARJETAS = {
     WHERE c.tipo='no_autorizado_inicial' AND c.decision='pendiente' AND c.fecha_limite < ? ORDER BY c.fecha_limite ASC`).all(new Date().toISOString()),
 
   ovPendientesRevision: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo') || (CASE WHEN placas!='' THEN ' · '||placas ELSE '' END)) detalle
-    FROM siniestros WHERE archivado=0 AND estado_revision_tecnica IS NULL ORDER BY creado_en ASC`).all(),
+    FROM siniestros s WHERE archivado=0 AND fecha_hora_disponible_revision IS NOT NULL
+    AND (valuacion_fecha_envio IS NULL OR valuacion_fecha_envio='')
+    AND (estado_revision_tecnica IS NULL OR EXISTS (SELECT 1 FROM complementos c WHERE c.siniestro_id=s.id AND c.decision='pendiente'))
+    ORDER BY creado_en ASC`).all(),
   ovEnRevision: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo') || (CASE WHEN placas!='' THEN ' · '||placas ELSE '' END)) detalle
     FROM siniestros WHERE archivado=0 AND estado_revision_tecnica='en_revision' ORDER BY creado_en ASC`).all(),
   ovEsperandoDesarme: (db) => db.prepare(`SELECT id, numero, (COALESCE(vehiculo,'Sin vehículo') || (CASE WHEN placas!='' THEN ' · '||placas ELSE '' END)) detalle
@@ -365,6 +374,20 @@ router.get('/detalle/:clave', requireAuth, (req, res)=>{
   const hoy = new Date().toISOString().slice(0,10);
   const ctx = { hoy, desdeVentana: aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01' };
   res.json(fn(db, ctx));
+});
+
+// Punto 2 del documento de Orlando (2-sep-2026): "Pendientes de revisión" pasa de un popup a una pantalla
+// propia, con columnas homologadas (siniestro, detalle del vehículo, placa, fecha de pase a expediente) y
+// la etiqueta de complemento de piezas cuando aplica (punto 5), en vez del popup genérico de dos columnas.
+router.get('/pendientes-revision', requireAuth, (req, res)=>{
+  const filas = db.prepare(`SELECT s.id, s.numero, s.vehiculo, s.anio_modelo, s.placas, s.fecha_hora_disponible_revision,
+      EXISTS (SELECT 1 FROM complementos c WHERE c.siniestro_id=s.id AND c.decision='pendiente') AS tiene_complemento_pendiente
+    FROM siniestros s
+    WHERE s.archivado=0 AND s.fecha_hora_disponible_revision IS NOT NULL
+      AND (s.valuacion_fecha_envio IS NULL OR s.valuacion_fecha_envio='')
+      AND (s.estado_revision_tecnica IS NULL OR EXISTS (SELECT 1 FROM complementos c WHERE c.siniestro_id=s.id AND c.decision='pendiente'))
+    ORDER BY s.fecha_hora_disponible_revision ASC`).all();
+  res.json(filas.map(f=>({ ...f, tiene_complemento_pendiente: !!f.tiene_complemento_pendiente })));
 });
 
 // Hallazgo A-06 (Informe Daniela): vista dedicada de piezas ya recibidas físicamente, con quién y cuándo

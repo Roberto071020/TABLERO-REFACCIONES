@@ -1201,6 +1201,8 @@ test('DOC-MAESTRO-C-2: no se puede marcar el expediente como listo para valuaci�
   assert.equal(editado.status, 200);
   assert.equal(editado.data.estado, 'recibido');
 
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1, enviado_propietario: 1 });
   const listo = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
   assert.equal(listo.status, 200, 'ya sin faltantes debe permitirse marcarlo listo');
   assert.equal(listo.data.estado_expediente, 'listo_para_valuacion');
@@ -1220,6 +1222,8 @@ test('DOC-MAESTRO-C-4: bandeja de expediente de Vanessa lista pendientes y los e
   let bandeja = await req('GET', '/api/reportes/bandeja-expediente');
   assert.ok(bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'debe aparecer pendiente de armar expediente');
 
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1, enviado_propietario: 1 });
   await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
   bandeja = await req('GET', '/api/reportes/bandeja-expediente');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEC-BANDEJA1'), 'ya no debe aparecer una vez listo para valuación');
@@ -1273,6 +1277,8 @@ test('DOC-MAESTRO-D-4: bandeja de valuación solo incluye expedientes con checkl
   let bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'no debe aparecer sin expediente listo para valuación');
 
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1, enviado_propietario: 1 });
   await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
   bandeja = await req('GET', '/api/reportes/bandeja-valuacion');
   assert.ok(bandeja.data.some(x => x.numero === 'FASED-BANDEJA1'), 'debe aparecer una vez listo para valuación');
@@ -1523,6 +1529,8 @@ test('DOC-MAESTRO-F-4: bandeja de calidad incluye producción terminada pendient
 test('PENDIENTE-1: la bandeja de valuación marca "sin respuesta" a los 3 días hábiles de enviada la autorización, igual para cualquier aseguradora', async () => {
   await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'SLA-AUT1', aseguradora: 'Mapfre' })).data;
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1, enviado_propietario: 1 });
   await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
 
   // Envío reciente (hoy): no debe marcarse vencida.
@@ -1878,6 +1886,8 @@ test('TRIAGE-ROLES-2: el rol dueño de cada módulo (y admin/jefe) sí puede esc
   assert.equal(tecnica.status, 200, 'Orlando sí debe poder actualizar revisión técnica');
 
   await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1, enviado_propietario: 1 });
   const expediente = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
   assert.equal(expediente.status, 200, 'Vanessa sí debe poder actualizar el expediente');
 
@@ -2452,6 +2462,8 @@ test('ALE-3: "Pendientes de hoy" clasifica correctamente en rojo/ámbar/verde us
 
   // ROJO: expediente listo para valuación pero autorización aún sin enviar.
   const sRojo2 = (await req('POST', '/api/siniestros', { numero: 'ALE3-ROJO-AUT', aseguradora: 'GNP' })).data;
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + sRojo2.id, { fotos_completas: 1, enviado_propietario: 1 });
   await req('PATCH', '/api/siniestros/' + sRojo2.id, { estado_expediente: 'listo_para_valuacion' });
 
   // ROJO: cita de entrega lista, requiere confirmarse con el cliente.
@@ -3042,6 +3054,8 @@ test('ROBERTO-1: expediente_listo_fecha se sella sola la primera vez que estado_
   await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'RB1-SIN', aseguradora: 'GNP' })).data;
   assert.ok(!s.expediente_listo_fecha);
+  // Punto 10 de Orlando (2-sep-2026): la captura/envío ya debe estar completa antes de poder marcar listo_para_valuacion.
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1, enviado_propietario: 1 });
   const r1 = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
   assert.ok(r1.data.expediente_listo_fecha, 'debe sellarse sola al quedar listo para valuar');
   const sellada = r1.data.expediente_listo_fecha;
@@ -3253,12 +3267,20 @@ test('ALEJ-5: deducible_aplica (alta) es independiente de cubre_deducible (entre
 });
 
 test('ALEJ-6: el detalle genérico de ovPendientesRevision devuelve exactamente lo que cuenta la tarjeta del resumen', async () => {
+  // Punto 4 de Orlando (2-sep-2026): ya no basta con no tener revisión técnica -- debe estar "disponible
+  // para revisión" (admisión completa por Alejandra). Un siniestro recién creado, sin nada capturado, NO
+  // debe aparecer todavía.
+  const sinAdmision = (await req('POST', '/api/siniestros', { numero: 'ALEJ6-SIN-ADM', aseguradora: 'GNP' })).data;
   const s = (await req('POST', '/api/siniestros', { numero: 'ALEJ6-SIN', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', fecha_admision: '2026-08-27' });
   const resumen = await req('GET', '/api/reportes/resumen');
   const lista = await req('GET', '/api/reportes/detalle/ovPendientesRevision');
   assert.equal(lista.status, 200);
   assert.equal(lista.data.length, resumen.data.ovPendientesRevision, 'la lista debe tener el mismo total que la tarjeta del resumen');
-  assert.ok(lista.data.some(x => x.numero === 'ALEJ6-SIN'), 'un siniestro recién creado sin revisión técnica debe aparecer en la lista');
+  assert.ok(lista.data.some(x => x.numero === 'ALEJ6-SIN'), 'un siniestro con admisión completa (disponible para revisión) debe aparecer en la lista');
+  assert.ok(!lista.data.some(x => x.numero === 'ALEJ6-SIN-ADM'), 'un siniestro sin admisión completa todavía no debe aparecer como pendiente de revisión');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
 test('ALEJ-7: todas las claves de detalle de tarjetas del resumen diario responden 200 (sin errores de SQL)', async () => {
@@ -3618,4 +3640,75 @@ test('FRONT-1 (bug real hallado en el ejercicio GNP autosurtido del 2-sep-2026):
   assert.ok(inicio !== -1, 'abrirFormCapturaEnvio debe seguir existiendo');
   const fragmento = appJs.slice(inicio, inicio + 400);
   assert.ok(/showModal\(/.test(fragmento), 'abrirFormCapturaEnvio debe abrir su formulario con showModal()');
+});
+
+/* ===================== Documento de Orlando "CAMBIOS TABLERO ORLANDO.docx" (2-sep-2026) ===================== */
+
+test('ORL-1: "Pendientes de revisión" solo lista lo disponible (admisión completa), lo saca al terminarse revisión, y lo regresa con la etiqueta de complemento si vuelve con uno pendiente', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
+  const sinAdmision = (await req('POST', '/api/siniestros', { numero: 'ORL1-SIN-ADM', aseguradora: 'GNP' })).data;
+  const s = (await req('POST', '/api/siniestros', { numero: 'ORL1-CON-ADM', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { ingreso_tipo: 'circulando', fecha_admision: '2026-08-27' });
+
+  let lista = (await req('GET', '/api/reportes/pendientes-revision')).data;
+  assert.ok(!lista.some(x => x.numero === 'ORL1-SIN-ADM'), 'sin admisión completa no debe aparecer como disponible para revisión');
+  let fila = lista.find(x => x.numero === 'ORL1-CON-ADM');
+  assert.ok(fila, 'con admisión completa sí debe aparecer');
+  assert.equal(fila.tiene_complemento_pendiente, false);
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  lista = (await req('GET', '/api/reportes/pendientes-revision')).data;
+  assert.ok(!lista.some(x => x.numero === 'ORL1-CON-ADM'), 'ya con revisión terminada y sin complemento, debe salir de pendientes');
+
+  const comp = (await req('POST', '/api/complementos', { siniestro_id: s.id, causa: 'Pieza adicional detectada al desarmar' })).data;
+  lista = (await req('GET', '/api/reportes/pendientes-revision')).data;
+  fila = lista.find(x => x.numero === 'ORL1-CON-ADM');
+  assert.ok(fila, 'con un complemento pendiente, debe regresar a la lista aunque la revisión ya estuviera terminada');
+  assert.equal(fila.tiene_complemento_pendiente, true, 'debe traer la etiqueta de complemento de piezas');
+
+  await req('PATCH', '/api/complementos/' + comp.id, { decision: 'autorizado' });
+  lista = (await req('GET', '/api/reportes/pendientes-revision')).data;
+  assert.ok(!lista.some(x => x.numero === 'ORL1-CON-ADM'), 'resuelto el complemento, debe volver a salir de pendientes');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('ORL-2: no se puede marcar el expediente listo para valuación sin fotos de revisión entregadas y envío al propietario', async () => {
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'ORL2-SIN', aseguradora: 'GNP' })).data;
+
+  const sinNada = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.equal(sinNada.status, 400);
+  assert.ok(sinNada.data.detalle.includes('Fotos/carpeta completas'));
+  assert.ok(sinNada.data.detalle.includes('Enviado al propietario'));
+
+  await req('PATCH', '/api/siniestros/' + s.id, { fotos_completas: 1 });
+  const soloFotos = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.equal(soloFotos.status, 400, 'con fotos pero sin envío al propietario, sigue bloqueado');
+  assert.ok(soloFotos.data.detalle.includes('Enviado al propietario'));
+  assert.ok(!soloFotos.data.detalle.includes('Fotos/carpeta completas'));
+
+  await req('PATCH', '/api/siniestros/' + s.id, { enviado_propietario: 1 });
+  const completo = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'listo_para_valuacion' });
+  assert.equal(completo.status, 200, 'con ambos completos, ya se puede marcar listo para valuación');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('FRONT-2 (documento de Orlando, 2-sep-2026): menú, pantalla principal y botón "Volver" corregidos', () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  // Punto 7: "Proveedores" ya no debe verse en el menú de Orlando/Vanessa/Beto/atención a clientes.
+  assert.match(appJs, /\{k:'proveedores', label:'Proveedores', roles:\['operativo','admin','jefe'\]\}/,
+    'la pestaña Proveedores debe quedar restringida a operativo/admin/jefe, igual que Kanban/Correos/Lista maestra');
+  // Punto 1: la información de piezas/refacciones de "Resumen diario" no debe mostrarse a quien no la opera.
+  assert.match(appJs, /verRefacciones\s*=\s*currentUser/, 'debe existir una bandera que acote la sección de piezas/refacciones por rol');
+  // Punto 3: "Volver" ya no debe regresar siempre al Kanban.
+  assert.ok(!/onclick="goTo\('kanban'\)">← Volver</.test(appJs), '"Volver" ya no debe estar fijo a goTo(\'kanban\')');
+  assert.match(appJs, /onclick="goTo\(state\.origenSiniestro\|\|'inicio'\)">← Volver</, '"Volver" debe regresar a la pantalla de origen (o Inicio si no hay ninguna)');
+  // Punto 2: "Pendientes de revisión" ya no debe abrir un popup genérico.
+  assert.ok(!appJs.includes(`abrirDetalleTarjeta('ovPendientesRevision','Pendientes de revisión')`),
+    'la tarjeta "Pendientes de revisión" ya no debe abrir el popup genérico');
+  assert.match(appJs, /async function viewOvPendientesRevision\(\)/, 'debe existir la pantalla dedicada de Pendientes de revisión');
 });

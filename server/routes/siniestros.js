@@ -226,6 +226,18 @@ router.patch('/:id', requireAuth, (req, res)=>{
         detalle: pendientes.map(p=>p.tipo_documento) });
     }
   }
+  // Punto 10 del documento de Orlando (2-sep-2026): la condición para que el expediente pase de
+  // Orlando/Vanessa a Roberto (valuación) exige los 3 checks completos -- fotos de revisión entregadas,
+  // expediente digital armado y envío del expediente al propietario -- no solo la bandera manual.
+  if(nuevo.estado_expediente === 'listo_para_valuacion'){
+    const faltan = [];
+    if(!anterior.fotos_completas) faltan.push('Fotos/carpeta completas');
+    if(!anterior.enviado_propietario) faltan.push('Enviado al propietario');
+    if(faltan.length){
+      return res.status(400).json({ error:'No se puede marcar el expediente como listo para valuación: falta completar captura y envío.',
+        detalle: faltan });
+    }
+  }
 
   // Documento Maestro / Fase D, tabla 10: "criterio de salida: valuación enviada y resolución registrada."
   const ESTADOS_VALUACION_CON_ENVIO = ['enviada','observada','ajustada','autorizada_parcial','autorizada_total','rechazada'];
