@@ -1165,6 +1165,11 @@ async function viewSiniestro(id){
     </tbody></table>`;
   } else if(state.subtabSiniestro==='produccion'){
     const puedeProduccion = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    // Pedido de Roberto (2-sep-2026): Alejandra también necesita poder subir la foto obligatoria de cada
+    // etapa (llega a recibir fotos de los técnicos, o está presente en el taller), sin darle el resto de
+    // permisos de producción (no debe poder cambiar estado/avance/técnico de la operación, eso lo dejamos
+    // igual de restringido para beto/orlando/admin/jefe).
+    const puedeFotosOperacion = puedeProduccion || (currentUser && currentUser.rol === 'atencion_cliente');
     // Propuesta Orlando/Vanessa/Beto: Daniela/Alejandra adjuntan la OT (papel escaneado o digital) desde
     // la pestaña Archivos con tipo "Orden de trabajo"; aqui se muestra de una vez para que Beto no tenga
     // que ir a buscarla a otra pestaña.
@@ -1215,7 +1220,10 @@ async function viewSiniestro(id){
       <td><span class="badge ${o.op.estado==='terminado'?'verde':o.op.estado==='detenido'?'rojo':'ambar'}">${LABEL_OP[o.op.estado]||o.op.estado}</span></td>
       <td>${o.op.avance}%</td>
       <td>${esc(o.op.causa_bloqueo||'—')}</td>
-      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarOperacion(${o.op.id})">Editar</button>`:''}</td>
+      <td>
+        ${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarOperacion(${o.op.id})">Editar</button>`:''}
+        ${puedeFotosOperacion?`<button class="btn small secondary" onclick="abrirFotosOperacion(${o.op.id})">Fotos</button>`:''}
+      </td>
     </tr>`).join('')}
     </tbody></table>`}
     ${puedeProduccion && ots.length>0?`<div style="margin-top:8px;"><select id="opOtSel">${ots.map(ot=>`<option value="${ot.id}">OT ${esc(ot.numero)} v${ot.version}</option>`).join('')}</select> <button class="btn small" onclick="abrirFormNuevaOperacion()">+ Agregar operación</button></div>`:''}
@@ -2111,15 +2119,35 @@ async function abrirFormEditarOperacion(operacionId){
       <label>Fotos de esta etapa ${fotos.length===0?'<span class="badge rojo">Sin fotos — no se podrá marcar Terminado</span>':`<span class="badge verde">${fotos.length}</span>`}</label>
       <p class="subtle" style="margin:2px 0 6px;">Las aseguradoras las piden para pagar la factura. Súbelas aquí en el momento, no al final.</p>
       ${fotos.length>0?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">${fotos.map(f=>`<a class="link" href="/api/archivos/${f.id}/descargar" target="_blank" style="font-size:12px;">${esc(f.nombre_original)}</a>`).join(' · ')}</div>`:''}
-      <input type="file" id="fope_foto" accept=".jpg,.jpeg,.png,.webp,.heic">
-      <button type="button" class="btn small secondary" onclick="subirFotoOperacion(${operacionId}, ${ot?ot.siniestro_id:'null'})">Subir foto</button>
+      <input type="file" id="fope_foto" accept=".jpg,.jpeg,.png,.webp,.heic" capture="environment">
+      <button type="button" class="btn small secondary" onclick="subirFotoOperacion(${operacionId}, ${ot?ot.siniestro_id:'null'}, 'fope_foto', ()=>abrirFormEditarOperacion(${operacionId}))">Subir foto</button>
     </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionOperacion(${operacionId})">Guardar</button></div>
   `);
 }
-async function subirFotoOperacion(operacionId, siniestroId){
-  const input = document.getElementById('fope_foto');
-  if(!input.files[0]){ toast('Selecciona una foto primero.', 'error'); return; }
+// Pedido de Roberto (2-sep-2026): modal ligero solo para subir/ver fotos de la etapa, sin exponer el
+// resto del formulario de edición de la operación (Alejandra no debe poder cambiar estado/avance/técnico).
+async function abrirFotosOperacion(operacionId){
+  const todas = await api('GET','/api/ot-operaciones');
+  const op = todas.find(x=>x.id===operacionId);
+  if(!op){ toast('Operación no encontrada.', 'error'); return; }
+  const ots = await api('GET','/api/ordenes-trabajo');
+  const ot = ots.find(o=>o.id===op.ot_id);
+  const fotos = await api('GET', '/api/archivos?ot_operacion_id=' + operacionId);
+  showModal(`
+    <h3>Fotos de la etapa: ${esc(op.descripcion)}</h3>
+    <p class="subtle">${fotos.length===0?'Sin fotos todavía. Las aseguradoras las piden para pagar la factura -- súbelas en el momento, no al final.':`${fotos.length} foto(s) subida(s).`}</p>
+    ${fotos.length>0?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${fotos.map(f=>`<a class="link" href="/api/archivos/${f.id}/descargar" target="_blank" style="font-size:12px;">${esc(f.nombre_original)}</a>`).join(' · ')}</div>`:''}
+    <div class="field">
+      <input type="file" id="fotop_foto" accept=".jpg,.jpeg,.png,.webp,.heic" capture="environment">
+      <button type="button" class="btn small" onclick="subirFotoOperacion(${operacionId}, ${ot?ot.siniestro_id:'null'}, 'fotop_foto', ()=>abrirFotosOperacion(${operacionId}))">Subir foto</button>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `);
+}
+async function subirFotoOperacion(operacionId, siniestroId, inputId, alTerminar){
+  const input = document.getElementById(inputId);
+  if(!input.files[0]){ toast('Selecciona o toma una foto primero.', 'error'); return; }
   if(!siniestroId){ toast('No se encontró el expediente de esta operación.', 'error'); return; }
   const fd = new FormData();
   fd.append('archivo', input.files[0]);
@@ -2131,7 +2159,7 @@ async function subirFotoOperacion(operacionId, siniestroId){
   const data = await res.json().catch(()=>({}));
   if(!res.ok){ toast(data.error || 'No se pudo subir la foto.', 'error'); return; }
   toast('Foto subida.', 'success');
-  abrirFormEditarOperacion(operacionId);
+  if(alTerminar) alTerminar(); else render();
 }
 async function guardarEdicionOperacion(operacionId){
   try{

@@ -3578,3 +3578,35 @@ test('DANIELA3-3 (punto 6): al sincronizar piezas automáticamente por PATCH de 
   assert.equal(fila.recibido_por_nombre, 'Beto', 'debe quedar atribuida a quien cerró el pedido, no en blanco');
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('FOTOS-ETAPA-4 (pedido de Roberto 2-sep-2026): Alejandra puede subir/ver la foto de una etapa, pero sigue sin poder editar la operación', async () => {
+  // Nota: no se usa la cuenta real "alejandra@serviciocristian.mx" porque REQ-DANIELA-19 le resetea la
+  // contraseña más arriba en esta misma suite (mismo motivo documentado en PROCESO-WHATSAPP-1); se crea
+  // una cuenta de prueba propia con el rol atencion_cliente, para no depender del orden de las demás pruebas.
+  const dbFotos4 = require('../server/db');
+  const bcryptFotos4 = require('bcryptjs');
+  dbFotos4.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba FOTOS4', 'atencion.fotos4.test@serviciocristian.mx', bcryptFotos4.hashSync('x',4), 'atencion_cliente');
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'FOTOS4-SIN', aseguradora: 'GNP' })).data;
+  const ot = (await req('POST', '/api/ordenes-trabajo', { siniestro_id: s.id, numero: 'OT-FOTOS4' })).data;
+  const op = (await req('POST', '/api/ot-operaciones', { ot_id: ot.id, descripcion: 'Pintura puerta' })).data;
+
+  const loginAlejandra = await req('POST', '/api/auth/login', { email: 'atencion.fotos4.test@serviciocristian.mx', password: 'x' });
+  assert.equal(loginAlejandra.status, 200);
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', String(s.id)); fd.append('tipo', 'Evidencia');
+  fd.append('ot_operacion_id', String(op.id));
+  fd.append('archivo', new Blob([Buffer.from('foto de Alejandra')], { type: 'image/jpeg' }), 'alejandra.jpg');
+  const subida = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  assert.equal(subida.status, 201, 'Alejandra debe poder subir la foto de la etapa');
+
+  const porOperacion = (await req('GET', '/api/archivos?ot_operacion_id=' + op.id)).data;
+  assert.equal(porOperacion.length, 1, 'Alejandra debe poder ver la foto que acaba de subir');
+
+  const sinPermiso = await req('PATCH', '/api/ot-operaciones/' + op.id, { descripcion: 'Intento de Alejandra' });
+  assert.equal(sinPermiso.status, 403, 'Alejandra no debe poder editar la operación, solo subir/ver fotos');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
