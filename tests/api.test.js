@@ -3712,3 +3712,51 @@ test('FRONT-2 (documento de Orlando, 2-sep-2026): menú, pantalla principal y bo
     'la tarjeta "Pendientes de revisión" ya no debe abrir el popup genérico');
   assert.match(appJs, /async function viewOvPendientesRevision\(\)/, 'debe existir la pantalla dedicada de Pendientes de revisión');
 });
+
+/* ===================== Documento de Alejandra "CAMBIOS TABLERO ALE.docx" (2-sep-2026) ===================== */
+
+test('ALE2026-1: al crear un siniestro sin especificar fecha_admision, queda null (no se autocompleta en el alta genérica, para no romper "reingreso citado")', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALE26-1', aseguradora: 'GNP' })).data;
+  assert.equal(s.fecha_admision, null);
+  const conValor = (await req('POST', '/api/siniestros', { numero: 'ALE26-1B', aseguradora: 'GNP', fecha_admision: '2026-08-01' })).data;
+  assert.equal(conValor.fecha_admision, '2026-08-01', 'si se manda explícita, sí se respeta');
+});
+
+test('ALE2026-2: nuevo tipo de ingreso "permanece" exige los mismos requisitos de admisión que grúa (llaves, inventario, orden), no los de circulando', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'ALE26-2', aseguradora: 'GNP', ingreso_tipo: 'permanece' })).data;
+  const detalle1 = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.ok(detalle1.admision_faltantes.includes('Llaves entregadas'));
+  assert.ok(detalle1.admision_faltantes.includes('Inventario físico/fotográfico'));
+  assert.ok(detalle1.admision_faltantes.includes('Orden de admisión'));
+  assert.ok(!detalle1.admision_faltantes.includes('Fecha de admisión'), 'permanece no debe pedir fecha de admisión como circulando');
+
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { llaves_entregadas: 1 });
+  const fd1 = new FormData();
+  fd1.append('entidad_tipo', 'siniestro'); fd1.append('entidad_id', String(s.id)); fd1.append('tipo', 'inventario_fisico');
+  fd1.append('archivo', new Blob([Buffer.from('inv')], { type: 'image/jpeg' }), 'inv.jpg');
+  await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd1 });
+  const fd2 = new FormData();
+  fd2.append('entidad_tipo', 'siniestro'); fd2.append('entidad_id', String(s.id)); fd2.append('tipo', 'orden_admision');
+  fd2.append('archivo', new Blob([Buffer.from('oa')], { type: 'image/jpeg' }), 'oa.jpg');
+  await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd2 });
+
+  const detalle2 = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(detalle2.admision_faltantes.length, 0, 'con llaves, inventario y orden, "permanece" ya queda completo, igual que grúa');
+  assert.ok(detalle2.fecha_hora_disponible_revision, 'debe sellarse disponible para revisión');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('FRONT-3 (documento de Alejandra, 2-sep-2026): formulario de admisión sin campos redundantes, dado de seguridad colapsado, y "permanece" disponible', () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const inicio = appJs.indexOf('function abrirFormAdmision');
+  const fin = appJs.indexOf('async function guardarAdmision');
+  const fragmento = appJs.slice(inicio, fin);
+  assert.ok(!/fad_llaves/.test(fragmento), '"Llaves entregadas" ya no debe pedirse en Admisión/técnica -- se captura en Nuevo expediente');
+  assert.ok(!/fad_requiere_dado/.test(fragmento) && !/fad_dado_colocado/.test(fragmento), 'los 2 campos viejos de dado de seguridad ya no deben existir');
+  assert.match(fragmento, /fad_dado_seguridad/, 'debe existir 1 solo campo de dado de seguridad con 3 opciones');
+  assert.match(fragmento, /value="permanece"/, 'debe existir la opción "Se queda todo el proceso"');
+  assert.match(appJs, /function dentroHorarioHabilGrua/, 'debe existir la función que decide si pedir operador/hora de grúa');
+  assert.match(appJs, /fecha_admision:\s*new Date\(\)\.toISOString\(\)\.slice\(0,10\)/, '"Nuevo expediente" debe mandar la fecha de admisión ya resuelta (hoy)');
+});

@@ -474,7 +474,9 @@ router.get('/bandeja-tecnica', requireAuth, (req, res)=>{
     // Indicador de tiempo (sección 4.3): 72 horas hábiles solo aplica -- y con mayor relevancia -- a los
     // que llegan en grúa; para "circulando" se muestra el tiempo transcurrido sin marcar vencimiento.
     let limiteRevision = null, vencido = false;
-    if(s.ingreso_tipo === 'grua'){
+    // "permanece" (documento de Alejandra, 2-sep-2026): se queda todo el proceso, no se mueve del
+    // taller -- misma urgencia de revisión que grúa.
+    if(s.ingreso_tipo === 'grua' || s.ingreso_tipo === 'permanece'){
       limiteRevision = limiteRevisionGrua(s.fecha_hora_disponible_revision);
       vencido = !!limiteRevision && ahoraISO > limiteRevision;
     }

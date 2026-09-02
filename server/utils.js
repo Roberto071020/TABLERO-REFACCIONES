@@ -91,7 +91,9 @@ function crearTareaFechaPromesaModificada(db, { siniestroId, pedidoNumero, fecha
 // tienen listas de requisitos distintas y no se mezclan: un vehículo circulando NUNCA debe pedir
 // llaves, inventario físico ni dado de seguridad -- esos tres son exclusivos de grúa.
 function requisitosAdmisionFaltantes(db, siniestro){
-  if(siniestro.ingreso_tipo === 'grua'){
+  // Documento de Alejandra (2-sep-2026): nuevo tipo de ingreso "permanece" (se queda todo el proceso,
+  // no se mueve del taller) se trata igual que grúa para efectos de requisitos de admisión.
+  if(siniestro.ingreso_tipo === 'grua' || siniestro.ingreso_tipo === 'permanece'){
     const faltan = [];
     const tieneInventario = !!db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='inventario_fisico' AND eliminado=0`).get(siniestro.id);
     const tieneOrdenAdmision = !!db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='orden_admision' AND eliminado=0`).get(siniestro.id);

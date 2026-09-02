@@ -1061,12 +1061,11 @@ async function viewSiniestro(id){
     <h3>Recepción y admisión</h3>
     <p class="subtle">Secciones 5.1/5.2 y regla de circulando vs. grúa del documento maestro.</p>
     <table class="kv"><tbody>
-      <tr><td>Ingreso</td><td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo==='grua'?'ambar':'gris'}">${s.ingreso_tipo==='grua'?'Grúa':'Circulando'}</span>${s.ingreso_seguro===0?' <span class="badge rojo">No seguro</span>':''}`:'—'}</td></tr>
+      <tr><td>Ingreso</td><td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo==='grua'?'ambar':s.ingreso_tipo==='permanece'?'ambar':'gris'}">${esc({ grua:'Grúa', circulando:'Circulando', permanece:'Se queda todo el proceso' }[s.ingreso_tipo]||s.ingreso_tipo)}</span>${s.ingreso_seguro===0?' <span class="badge rojo">No seguro</span>':''}`:'—'}</td></tr>
       <tr><td>Cita</td><td>${esc(s.cita_fecha||'—')}</td></tr>
       ${s.ingreso_tipo==='grua'?`<tr><td>Grúa</td><td>${esc(s.grua_operador||'—')} ${s.grua_hora?('· '+esc(s.grua_hora)):''}</td></tr>`:''}
       <tr><td>Fecha de admisión</td><td>${esc(s.fecha_admision||'—')}</td></tr>
       <tr><td>Kilometraje / combustible</td><td>${esc(s.kilometraje||'—')} ${s.combustible_nivel?('· '+esc(s.combustible_nivel)):''}</td></tr>
-      <tr><td>Llaves entregadas</td><td>${s.llaves_entregadas?'Sí':'No'}</td></tr>
       ${s.requiere_dado_seguridad?`<tr><td>Dado de seguridad</td><td>${s.dado_seguridad_colocado?'<span class="badge verde">Colocado</span>':'<span class="badge rojo">Falta colocar</span>'}</td></tr>`:''}
       <tr><td>¿Aplica deducible?</td><td>${s.deducible_aplica==null?'<span class="badge gris">Sin definir</span>':(s.deducible_aplica?'<span class="badge ambar">Sí aplica</span>':'<span class="badge gris">No aplica</span>')}</td></tr>
       <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
@@ -1536,7 +1535,7 @@ async function imprimirInventarioFisico(siniestroId){
       <tr><th>Siniestro</th><td>${esc(s.numero)} · ${esc(s.aseguradora)}</td></tr>
       <tr><th>Vehículo</th><td>${esc(s.vehiculo||'—')} ${s.anio_modelo?('· '+esc(s.anio_modelo)):''}</td></tr>
       <tr><th>Placas / VIN</th><td>${esc(s.placas||'—')} ${s.vin?('· VIN '+esc(s.vin)):''}</td></tr>
-      <tr><th>Tipo de ingreso</th><td>${s.ingreso_tipo==='grua'?'Grúa (no circula)':s.ingreso_tipo==='circulando'?'Circulando':'Sin definir'}</td></tr>
+      <tr><th>Tipo de ingreso</th><td>${s.ingreso_tipo==='grua'?'Grúa (no circula)':s.ingreso_tipo==='circulando'?'Circulando':s.ingreso_tipo==='permanece'?'Se queda todo el proceso':'Sin definir'}</td></tr>
       <tr><th>Fecha de admisión</th><td>${esc(s.fecha_admision||'—')}</td></tr>
       <tr><th>Kilometraje</th><td>${esc(s.kilometraje||'—')}</td></tr>
       <tr><th>Nivel de combustible</th><td>${esc(s.combustible_nivel||'—')}</td></tr>
@@ -1556,8 +1555,20 @@ async function imprimirInventarioFisico(siniestroId){
   ventana.focus();
   setTimeout(()=>ventana.print(), 300);
 }
+// Documento de Alejandra (2-sep-2026): "Operador de grúa"/"Hora de grúa" solo se piden si la unidad
+// llega en horario hábil (L-V 9:00-18:00, sábado 9:00-14:00, domingo cerrado).
+function dentroHorarioHabilGrua(){
+  const d = new Date();
+  const dia = d.getDay(); // 0=domingo ... 6=sábado
+  const hora = d.getHours() + d.getMinutes()/60;
+  if(dia === 0) return false;
+  if(dia === 6) return hora >= 9 && hora < 14;
+  return dia >= 1 && dia <= 5 && hora >= 9 && hora < 18;
+}
 function abrirFormAdmision(siniestroId){
   api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    const dadoValor = !s.requiere_dado_seguridad ? 'no_lleva' : (s.dado_seguridad_colocado ? 'si' : 'no');
+    const mostrarGrua = s.ingreso_tipo === 'grua' && dentroHorarioHabilGrua();
     showModal(`
       <h3>Recepción y admisión</h3>
       <div class="row-flex">
@@ -1565,6 +1576,7 @@ function abrirFormAdmision(siniestroId){
           <option value="" ${!s.ingreso_tipo?'selected':''}>Sin definir</option>
           <option value="circulando" ${s.ingreso_tipo==='circulando'?'selected':''}>Circulando</option>
           <option value="grua" ${s.ingreso_tipo==='grua'?'selected':''}>Grúa</option>
+          <option value="permanece" ${s.ingreso_tipo==='permanece'?'selected':''}>Se queda todo el proceso</option>
         </select></div>
         <div class="field"><label>¿Es seguro que circule?</label><select id="fad_ingreso_seguro">
           <option value="" ${s.ingreso_seguro===null||s.ingreso_seguro===undefined?'selected':''}>Sin definir</option>
@@ -1574,9 +1586,11 @@ function abrirFormAdmision(siniestroId){
       </div>
       <div class="row-flex">
         <div class="field"><label>Cita</label><input id="fad_cita_fecha" type="date" value="${esc(s.cita_fecha||'')}"></div>
-        <div class="field"><label>Fecha de admisión</label><input id="fad_fecha_admision" type="date" value="${esc(s.fecha_admision||'')}"></div>
+        <div class="field"><label>Fecha de admisión</label>${s.fecha_admision
+          ? `<div>${esc(s.fecha_admision)} <span class="subtle">(ya registrada)</span></div>`
+          : `<button type="button" class="btn small secondary" onclick="marcarFechaAdmisionHoy(${siniestroId})">Marcar como recibido hoy</button>`}</div>
       </div>
-      <div class="row-flex">
+      <div class="row-flex" id="fad_grua_wrap" style="display:${mostrarGrua?'flex':'none'}">
         <div class="field"><label>Operador de grúa</label><input id="fad_grua_operador" value="${esc(s.grua_operador||'')}"></div>
         <div class="field"><label>Hora de grúa</label><input id="fad_grua_hora" type="time" value="${esc(s.grua_hora||'')}"></div>
       </div>
@@ -1584,20 +1598,11 @@ function abrirFormAdmision(siniestroId){
         <div class="field"><label>Kilometraje</label><input id="fad_kilometraje" value="${esc(s.kilometraje||'')}"></div>
         <div class="field"><label>Nivel de combustible</label><input id="fad_combustible" value="${esc(s.combustible_nivel||'')}" placeholder="Ej. 1/2"></div>
       </div>
-      <div class="field"><label>¿Llaves entregadas?</label><select id="fad_llaves">
-        <option value="1" ${s.llaves_entregadas?'selected':''}>Sí</option>
-        <option value="0" ${!s.llaves_entregadas?'selected':''}>No</option>
+      <div class="field"><label>Dado de seguridad</label><select id="fad_dado_seguridad">
+        <option value="no_lleva" ${dadoValor==='no_lleva'?'selected':''}>No lleva</option>
+        <option value="si" ${dadoValor==='si'?'selected':''}>Sí (colocado)</option>
+        <option value="no" ${dadoValor==='no'?'selected':''}>No (falta colocar)</option>
       </select></div>
-      <div class="row-flex">
-        <div class="field"><label>¿Requiere dado de seguridad?</label><select id="fad_requiere_dado">
-          <option value="0" ${!s.requiere_dado_seguridad?'selected':''}>No</option>
-          <option value="1" ${s.requiere_dado_seguridad?'selected':''}>Sí</option>
-        </select></div>
-        <div class="field"><label>¿Dado de seguridad colocado?</label><select id="fad_dado_colocado">
-          <option value="0" ${!s.dado_seguridad_colocado?'selected':''}>No</option>
-          <option value="1" ${s.dado_seguridad_colocado?'selected':''}>Sí</option>
-        </select></div>
-      </div>
       <div class="field"><label>Pertenencias del vehículo</label><textarea id="fad_pertenencias">${esc(s.pertenencias||'')}</textarea></div>
       <div class="field"><label>Estado de admisión</label><select id="fad_estado_admision" onchange="document.getElementById('fad_motivo_wrap').style.display=(this.value==='condicionado'||this.value==='no_admitido')?'block':'none'">
         <option value="" ${!s.estado_admision?'selected':''}>Pendiente</option>
@@ -1611,19 +1616,27 @@ function abrirFormAdmision(siniestroId){
     `);
   });
 }
+async function marcarFechaAdmisionHoy(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { fecha_admision: new Date().toISOString().slice(0,10) });
+    toast('Fecha de admisión registrada.', 'success');
+    abrirFormAdmision(siniestroId);
+  }catch(e){}
+}
 async function guardarAdmision(siniestroId){
+  const dadoSeguridad = document.getElementById('fad_dado_seguridad').value;
   const payload = {
     ingreso_tipo: document.getElementById('fad_ingreso_tipo').value,
     ingreso_seguro: document.getElementById('fad_ingreso_seguro').value === '' ? null : Number(document.getElementById('fad_ingreso_seguro').value),
     cita_fecha: document.getElementById('fad_cita_fecha').value,
-    fecha_admision: document.getElementById('fad_fecha_admision').value,
-    grua_operador: document.getElementById('fad_grua_operador').value,
-    grua_hora: document.getElementById('fad_grua_hora').value,
+    grua_operador: document.getElementById('fad_grua_operador') ? document.getElementById('fad_grua_operador').value : '',
+    grua_hora: document.getElementById('fad_grua_hora') ? document.getElementById('fad_grua_hora').value : '',
     kilometraje: document.getElementById('fad_kilometraje').value,
     combustible_nivel: document.getElementById('fad_combustible').value,
-    llaves_entregadas: Number(document.getElementById('fad_llaves').value),
-    requiere_dado_seguridad: Number(document.getElementById('fad_requiere_dado').value),
-    dado_seguridad_colocado: Number(document.getElementById('fad_dado_colocado').value),
+    // Dado de seguridad (documento de Alejandra, 2-sep-2026): 1 campo de 3 opciones en la pantalla, que
+    // aquí se traduce a las 2 columnas reales que ya existían (requiere_dado_seguridad + dado_seguridad_colocado).
+    requiere_dado_seguridad: dadoSeguridad === 'no_lleva' ? 0 : 1,
+    dado_seguridad_colocado: dadoSeguridad === 'si' ? 1 : 0,
     pertenencias: document.getElementById('fad_pertenencias').value,
     estado_admision: document.getElementById('fad_estado_admision').value,
     motivo_admision: document.getElementById('fad_motivo_admision').value,
@@ -3045,6 +3058,7 @@ function formNuevoExpediente(){
         <option value="">Sin definir</option>
         <option value="circulando">Circulando</option>
         <option value="grua">Grúa</option>
+        <option value="permanece">Se queda todo el proceso</option>
       </select></div>
       <div class="field">
         <label>¿Aplica deducible?</label>
@@ -3076,7 +3090,8 @@ function toggleFxParticular(){
   document.getElementById('fx_orden_admision_file').disabled = p;
 }
 function toggleFxGrua(){
-  const esGrua = document.getElementById('fx_ingreso_tipo').value === 'grua';
+  // "permanece" (documento de Alejandra, 2-sep-2026) se trata igual que grúa para requisitos de admisión.
+  const esGrua = ['grua','permanece'].includes(document.getElementById('fx_ingreso_tipo').value);
   document.getElementById('fx_grua_hint').style.display = esGrua ? 'block' : 'none';
 }
 async function guardarExpediente(){
@@ -3091,13 +3106,13 @@ async function guardarExpediente(){
   const llaves = document.getElementById('fx_llaves').checked;
   const ordenFile = document.getElementById('fx_orden_admision_file').files[0];
   const inventarioFile = document.getElementById('fx_inventario_file').files[0];
-  if(ingresoTipo === 'grua'){
+  if(ingresoTipo === 'grua' || ingresoTipo === 'permanece'){
     const faltan = [];
     if(!llaves) faltan.push('Llaves entregadas');
     if(!inventarioFile) faltan.push('Inventario físico/fotográfico');
     if(!particular && !ordenFile) faltan.push('Orden de admisión');
     if(faltan.length){
-      toast('Para ingreso por grúa falta: ' + faltan.join(', ') + '.', 'error');
+      toast('Para este tipo de ingreso falta: ' + faltan.join(', ') + '.', 'error');
       return;
     }
   }
@@ -3117,7 +3132,8 @@ async function guardarExpediente(){
       deducible_aplica: document.getElementById('fx_deducible_aplica').value,
       llaves_entregadas: llaves ? 1 : 0,
       dado_seguridad_colocado: document.getElementById('fx_dado').checked ? 1 : 0,
-      es_particular: particular ? 1 : 0
+      es_particular: particular ? 1 : 0,
+      fecha_admision: new Date().toISOString().slice(0,10)
     });
   }catch(e){
     if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.id); }
@@ -3346,7 +3362,7 @@ async function viewTecnica(){
       <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
       <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
       <td>${esc(s.aseguradora)}</td>
-      <td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo==='grua'?'ambar':'gris'}">${s.ingreso_tipo==='grua'?'Grúa':'Circulando'}</span>`:'—'}</td>
+      <td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo!=='circulando'?'ambar':'gris'}">${s.ingreso_tipo==='grua'?'Grúa':s.ingreso_tipo==='permanece'?'Permanece':'Circulando'}</span>`:'—'}</td>
       <td>${esc(s.estado_admision||'Pendiente')}</td>
       <td><span class="badge ${BADGE_REV[s.estado_revision_tecnica]||'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span></td>
       <td>${s.hallazgos>0?`${s.hallazgos}${s.hallazgos_ocultos>0?` (${s.hallazgos_ocultos} oculto${s.hallazgos_ocultos>1?'s':''})`:''}`:'—'}</td>

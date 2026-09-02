@@ -100,18 +100,25 @@ router.post('/', requireAuth, (req, res)=>{
   // pregunta aparte, en la entrega, cuando ya quedó validado con la aseguradora y en firme).
   const deducibleAplicaIni = (b.deducible_aplica===''||b.deducible_aplica===undefined||b.deducible_aplica===null) ? null
     : ((b.deducible_aplica===1||b.deducible_aplica===true||b.deducible_aplica==='1') ? 1 : 0);
+  // Documento de Alejandra (2-sep-2026): "Fecha de admisión" ya no se captura a mano en el alta normal
+  // -- el formulario "Nuevo expediente" la manda ya resuelta (hoy) porque ahí sí representa que la unidad
+  // está físicamente presente. Aquí solo se respeta lo que venga en el body (o queda null si no viene),
+  // para no romper el patrón de "reingreso citado" (un expediente que se cita a futuro sin que el
+  // vehículo haya llegado todavía no debe traer fecha_admision).
+  const fechaAdmisionIni = (b.fecha_admision!==undefined && b.fecha_admision!==null && String(b.fecha_admision).trim()!=='')
+    ? b.fecha_admision : null;
   const info = db.prepare(`INSERT INTO siniestros (numero,aseguradora,vehiculo,anio_modelo,placas,vin,fecha_ingreso,ubicacion,responsable,estatus_general,notas,completo,creado_por,
       cliente_nombre,cliente_telefono,cliente_correo,cliente_notas,orden_admision,canal_origen,etapa_actual,prioridad,requiere_refacciones,
       ingreso_tipo,ingreso_seguro,piezas_autorizadas_cambio,aseguradora_ruta_refacciones,aseguradora_regla_aplicada,sistema_valuacion,
-      es_particular,llaves_entregadas,dado_seguridad_colocado,deducible_aplica)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?)`)
+      es_particular,llaves_entregadas,dado_seguridad_colocado,deducible_aplica,fecha_admision)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?)`)
     .run(String(b.numero).trim(), b.aseguradora, b.vehiculo||'', b.anio_modelo||'', b.placas||'', b.vin||'',
          b.fecha_ingreso || new Date().toISOString().slice(0,10), b.ubicacion||'Piso', b.responsable||req.session.user.nombre,
          b.estatus_general||'Abierto', b.notas||'', completo, req.session.user.id,
          b.cliente_nombre||'', b.cliente_telefono||'', b.cliente_correo||'', b.cliente_notas||'', b.orden_admision||'',
          b.canal_origen||'', b.etapa_actual||'Preingreso', b.prioridad||'', requiereRefacciones,
          b.ingreso_tipo||'', b.ingreso_seguro!==undefined?(b.ingreso_seguro?1:0):null, piezasIniciales, rutaInicial.ruta, rutaInicial.regla, sistemaValuacionInicial,
-         esParticular, llavesEntregadasIni, dadoSeguridadIni, deducibleAplicaIni);
+         esParticular, llavesEntregadasIni, dadoSeguridadIni, deducibleAplicaIni, fechaAdmisionIni);
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user,
     valor_nuevo: `Siniestro ${b.numero} (${b.aseguradora})` });
 
