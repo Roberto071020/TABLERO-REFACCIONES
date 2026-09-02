@@ -2622,7 +2622,8 @@ async function guardarEdicionDiscrepancia(discrepanciaId){
 
 async function abrirFormCapturaEnvio(siniestroId){
   const s = await api('GET','/api/siniestros/'+siniestroId);
-  openModal('Captura y envío (Orlando + Vanessa)', `
+  showModal(`
+    <h3>Captura y envío (Orlando + Vanessa)</h3>
     <div class="field"><label>Fecha de borrador de captura</label><input id="fcap_borrador" type="date" value="${s.fecha_borrador_captura||''}" ${s.fecha_borrador_captura?'disabled':''}></div>
     ${s.fecha_borrador_captura?'<div class="subtle">Ya quedó registrada (gana el primer registro); no se puede cambiar.</div>':''}
     <div class="row-flex">

@@ -3610,3 +3610,12 @@ test('FOTOS-ETAPA-4 (pedido de Roberto 2-sep-2026): Alejandra puede subir/ver la
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('FRONT-1 (bug real hallado en el ejercicio GNP autosurtido del 2-sep-2026): abrirFormCapturaEnvio ya no llama a la función inexistente openModal() -- el botón "Actualizar captura / envío" de Admisión/técnica quedaba muerto en silencio (ReferenceError en consola, sin toast, sin modal) porque en todo el archivo solo existe showModal(), nunca openModal()', () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.ok(!/\bopenModal\s*\(/.test(appJs), 'No debe existir ninguna llamada a openModal(); la función real es showModal(). Si esto falla, el botón de "Actualizar captura / envío" (u otro que la haya copiado) volverá a quedar roto en silencio.');
+  const inicio = appJs.indexOf('async function abrirFormCapturaEnvio');
+  assert.ok(inicio !== -1, 'abrirFormCapturaEnvio debe seguir existiendo');
+  const fragmento = appJs.slice(inicio, inicio + 400);
+  assert.ok(/showModal\(/.test(fragmento), 'abrirFormCapturaEnvio debe abrir su formulario con showModal()');
+});
