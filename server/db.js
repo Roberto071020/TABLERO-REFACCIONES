@@ -1106,6 +1106,66 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_siniestro ON whatsapp_eventos_re
 CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_plantilla ON whatsapp_eventos_registrados(plantilla_codigo);
 `);
 
+
+/* ===================== WhatsApp Fase A -- correcciones de Roberto (3-sep-2026, cuarta entrega) =====================
+   Amplía el ciclo de vida de un evento bloqueado (ya no es un estado final: bloqueado -> pendiente_revision
+   -> descartado | liberado_para_programacion, con revisión humana explícita -- nunca se envía automáticamente
+   al liberar). Agrega tipo_bloqueo para saber CUÁL condición lo bloqueó (y así poder reevaluarla cuando
+   se resuelva). Agrega es_plantilla_meta para que las alertas internas (segundo periodo de continuidad sin
+   avance) queden claramente separadas de las 18 plantillas reales -- nunca deben ser consumidas por un
+   futuro servicio de envíos real. */
+const whatsappEventosSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='whatsapp_eventos_registrados'").get();
+if(whatsappEventosSql && !whatsappEventosSql.sql.includes('pendiente_revision')){
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    CREATE TABLE whatsapp_eventos_registrados_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+      plantilla_codigo TEXT NOT NULL,
+      estado TEXT NOT NULL DEFAULT 'registrado' CHECK(estado IN ('registrado','bloqueado','pendiente_revision','descartado','liberado_para_programacion')),
+      tipo_bloqueo TEXT CHECK(tipo_bloqueo IS NULL OR tipo_bloqueo IN ('incidencia_delicada','refacciones_no_disponibles','autorizacion_parcial','ubicacion_desconocida')),
+      motivo_bloqueo TEXT,
+      disparador TEXT,
+      variables_json TEXT,
+      programado_para TEXT,
+      dedup_key TEXT NOT NULL DEFAULT '',
+      es_plantilla_meta INTEGER NOT NULL DEFAULT 1,
+      revisado_por INTEGER REFERENCES usuarios(id),
+      revisado_en TEXT,
+      justificacion TEXT,
+      creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(siniestro_id, plantilla_codigo, dedup_key)
+    );
+    INSERT INTO whatsapp_eventos_registrados_new (id,siniestro_id,plantilla_codigo,estado,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,creado_en)
+      SELECT id,siniestro_id,plantilla_codigo,estado,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,creado_en FROM whatsapp_eventos_registrados;
+    DROP TABLE whatsapp_eventos_registrados;
+    ALTER TABLE whatsapp_eventos_registrados_new RENAME TO whatsapp_eventos_registrados;
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_siniestro ON whatsapp_eventos_registrados(siniestro_id);
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_plantilla ON whatsapp_eventos_registrados(plantilla_codigo);
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
+}
+
+// Registro persistente de errores del detector (punto 8): un error nunca debe quedar solo en el log del
+// servidor -- si se pierde el log, se pierde también la evidencia de que algo no se registró. Tabla nueva,
+// sin relación con ninguna tabla de Daniela.
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_errores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contexto TEXT NOT NULL,
+  siniestro_id INTEGER REFERENCES siniestros(id),
+  plantilla_codigo TEXT,
+  mensaje TEXT NOT NULL,
+  detalle TEXT,
+  intentos INTEGER NOT NULL DEFAULT 1,
+  primer_intento_en TEXT NOT NULL DEFAULT (datetime('now')),
+  ultimo_intento_en TEXT NOT NULL DEFAULT (datetime('now')),
+  resuelto INTEGER NOT NULL DEFAULT 0,
+  alerta_generada INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_errores_siniestro ON whatsapp_errores(siniestro_id);
+`);
+
 module.exports = db;
 
 

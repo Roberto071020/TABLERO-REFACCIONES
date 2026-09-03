@@ -112,10 +112,15 @@ router.get('/resumen', requireAuth, (req, res)=>{
   sincronizarPiezasPedidosExistentes(db);
   // Flujo de reparación (31-ago-2026), punto 3: aviso automático de "listo para agendar reingreso" al 90%.
   verificarReingreso90Porciento(db);
-  // WhatsApp Fase A (3-sep-2026), modo "solo registro": barrido de continuidad de 72h hábiles (6.1-6.6)
-  // y postventa a 48h reales de la entrega (5.12). Mismo patrón que los barridos de arriba -- solo
-  // registra internamente, no envía nada real.
+  // WhatsApp Fase A (3-sep-2026), modo "solo registro": barrido de continuidad de 72h NATURALES
+  // (6.1-6.6, corregido por Roberto el mismo día) y postventa a 48h reales de la entrega (5.12). Mismo
+  // patrón que los barridos de arriba -- solo registra internamente, no envía nada real.
   whatsappFaseA.barrerContinuidadYPostventa(db);
+  // Cuarta entrega: revisa si algún evento "bloqueado" ya puede pasar a "pendiente_revision" (la
+  // condición que lo bloqueó dejó de cumplirse), y reintenta de forma segura/idempotente cualquier
+  // detección del ciclo principal que se haya perdido (punto 8, reintento seguro).
+  whatsappFaseA.revisarBloqueadosResueltos(db);
+  whatsappFaseA.reconciliarEventosPrincipales(db);
   const hoy = new Date().toISOString().slice(0,10);
   // Ventana operativa (27-ago-2026): ?ventana=todas regresa los contadores sin el corte del 1-jun-2026.
   const desdeVentanaResumen = aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01';
