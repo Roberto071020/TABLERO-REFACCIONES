@@ -494,4 +494,79 @@ router.patch('/:id/desarchivar', requireAuth, requireRole('operativo','jefe','ad
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
 });
 
+// Reporte técnico de Roberto (2-sep-2026), punto 5: hasta hoy no existía ninguna forma de borrar
+// un expediente de forma permanente (solo "archivar", que lo saca de las bandejas pero conserva el
+// dato). Esto es EXCLUSIVO para depurar registros de prueba/verificación que nunca debieron quedar
+// en producción -- no reemplaza "archivar" ni "cerrar" para expedientes reales. Por eso exige escribir
+// el número exacto del expediente como confirmación (mismo patrón que "escribe el nombre del repo para
+// borrarlo"), es solo para rol admin, y borra en cascada TODO lo relacionado (pedidos, piezas,
+// incidencias, comunicaciones, órdenes de trabajo y sus operaciones, retrabajos, tareas, hitos,
+// mensajes de IA, evidencias, checklist de calidad, complementos, archivos adjuntos, etc.) dentro de
+// una sola transacción, para no dejar huérfanos.
+router.delete('/:id', requireAuth, requireRole('admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  const confirmacion = String(req.body && req.body.confirmar_numero || '').trim();
+  if(confirmacion !== s.numero){
+    return res.status(400).json({ error:'Para borrar de forma permanente escribe el número exacto del expediente como confirmación.', numero_esperado: s.numero });
+  }
+
+  // node:sqlite (DatabaseSync) no trae el helper db.transaction() de better-sqlite3 -- se maneja
+  // la transacción a mano con BEGIN/COMMIT/ROLLBACK.
+  db.exec('BEGIN');
+  try {
+    const pedidoIds = db.prepare('SELECT id FROM pedidos WHERE siniestro_id = ?').all(s.id).map(r => r.id);
+    const piezaIds = pedidoIds.length ? db.prepare(`SELECT id FROM piezas WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).all(...pedidoIds).map(r => r.id) : [];
+    const incidenciaIds = piezaIds.length ? db.prepare(`SELECT id FROM incidencias WHERE pieza_id IN (${piezaIds.map(()=>'?').join(',')})`).all(...piezaIds).map(r => r.id) : [];
+    const otIds = db.prepare('SELECT id FROM ordenes_trabajo WHERE siniestro_id = ?').all(s.id).map(r => r.id);
+    const opIds = otIds.length ? db.prepare(`SELECT id FROM ot_operaciones WHERE ot_id IN (${otIds.map(()=>'?').join(',')})`).all(...otIds).map(r => r.id) : [];
+
+    // Archivos adjuntos de todo lo que cuelga de este expediente (incluye los ligados a operaciones de la OT).
+    const entidadesArchivo = [['siniestro', [s.id]], ['pedido', pedidoIds], ['pieza', piezaIds], ['incidencia', incidenciaIds]];
+    for(const [tipo, ids] of entidadesArchivo){
+      if(ids.length) db.prepare(`DELETE FROM archivos WHERE entidad_tipo = ? AND entidad_id IN (${ids.map(()=>'?').join(',')})`).run(tipo, ...ids);
+    }
+    if(opIds.length) db.prepare(`DELETE FROM archivos WHERE ot_operacion_id IN (${opIds.map(()=>'?').join(',')})`).run(...opIds);
+
+    if(piezaIds.length){
+      db.prepare(`DELETE FROM incidencias WHERE pieza_id IN (${piezaIds.map(()=>'?').join(',')})`).run(...piezaIds);
+      db.prepare(`DELETE FROM discrepancias_proveedor WHERE pieza_id IN (${piezaIds.map(()=>'?').join(',')})`).run(...piezaIds);
+    }
+    if(pedidoIds.length){
+      db.prepare(`DELETE FROM comunicaciones WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).run(...pedidoIds);
+      db.prepare(`DELETE FROM exclusiones_envio WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).run(...pedidoIds);
+      db.prepare(`DELETE FROM piezas WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).run(...pedidoIds);
+    }
+    db.prepare('DELETE FROM pedidos WHERE siniestro_id = ?').run(s.id);
+
+    if(opIds.length){
+      db.prepare(`DELETE FROM retrabajos WHERE ot_operacion_id IN (${opIds.map(()=>'?').join(',')})`).run(...opIds);
+      db.prepare(`DELETE FROM ot_operaciones WHERE id IN (${opIds.map(()=>'?').join(',')})`).run(...opIds);
+    }
+    db.prepare('DELETE FROM retrabajos WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM ordenes_trabajo WHERE siniestro_id = ?').run(s.id);
+
+    db.prepare('DELETE FROM mensajes_ia WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM siniestro_hitos WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM eventos_cliente WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM tareas WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM danos_evidencia WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM documentos_expediente WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM complementos WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM checklist_calidad WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM discrepancias_proveedor WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM vales_pendientes WHERE siniestro_id = ?').run(s.id);
+
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'borrado_permanente', usuario:req.session.user,
+      valor_anterior:`${s.numero} (${s.aseguradora||'—'}) — ${pedidoIds.length} pedido(s), ${piezaIds.length} pieza(s)` });
+    db.prepare('DELETE FROM siniestros WHERE id = ?').run(s.id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  res.json({ ok: true, borrado: { id: s.id, numero: s.numero } });
+});
+
 module.exports = router;

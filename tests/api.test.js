@@ -3816,3 +3816,36 @@ test('REP2026-3: "Piezas recibidas" trae la observación de la pieza, para poder
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('REP2026-4: borrado permanente de expediente (punto 5) -- exige confirmar el número exacto, exige rol admin, y borra en cascada pedidos/piezas/incidencias', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'REP4-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REP4-PED', siniestro_id: s.id, fecha_prevista: '2026-09-10' })).data;
+  const pv = (await req('POST', '/api/proveedores', { razon_social: 'Proveedor REP4' })).data;
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Cofre', proveedor_id: pv.id })).data;
+  await req('POST', `/api/incidencias`, { pieza_id: z.id, tipo: 'incorrecta', descripcion: 'no corresponde' });
+
+  // Sin sesión de daniela (no-admin) no debe poder borrar.
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const rolIncorrecto = await req('DELETE', '/api/siniestros/' + s.id, { confirmar_numero: 'REP4-SIN' });
+  assert.equal(rolIncorrecto.status, 403, 'un rol distinto de admin no debe poder borrar de forma permanente');
+
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const sinConfirmar = await req('DELETE', '/api/siniestros/' + s.id, {});
+  assert.equal(sinConfirmar.status, 400, 'sin escribir el número exacto de confirmación, no debe borrar');
+
+  const confirmadoMal = await req('DELETE', '/api/siniestros/' + s.id, { confirmar_numero: 'REP4-SIN-MAL' });
+  assert.equal(confirmadoMal.status, 400, 'con el número de confirmación incorrecto, no debe borrar');
+
+  const borrado = await req('DELETE', '/api/siniestros/' + s.id, { confirmar_numero: 'REP4-SIN' });
+  assert.equal(borrado.status, 200);
+  assert.equal(borrado.data.borrado.numero, 'REP4-SIN');
+
+  const yaNoExiste = await req('GET', '/api/siniestros/' + s.id);
+  assert.equal(yaNoExiste.status, 404, 'el siniestro ya no debe existir');
+  const pedidoBorrado = await req('GET', '/api/pedidos/' + p.id);
+  assert.equal(pedidoBorrado.status, 404, 'el pedido ligado tampoco debe existir (cascada)');
+  const piezasDelPedido = (await req('GET', '/api/piezas?pedido_id=' + p.id)).data;
+  assert.equal(piezasDelPedido.length, 0, 'las piezas ligadas tampoco deben existir (cascada)');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
