@@ -3760,3 +3760,59 @@ test('FRONT-3 (documento de Alejandra, 2-sep-2026): formulario de admisión sin 
   assert.match(appJs, /function dentroHorarioHabilGrua/, 'debe existir la función que decide si pedir operador/hora de grúa');
   assert.match(appJs, /fecha_admision:\s*new Date\(\)\.toISOString\(\)\.slice\(0,10\)/, '"Nuevo expediente" debe mandar la fecha de admisión ya resuelta (hoy)');
 });
+
+/* ===================== Reporte de errores técnicos (2-sep-2026): carga masiva, caché, piezas recibidas ===================== */
+
+test('REP2026-1: carga masiva sin número de parte -- diferencias de espacios en la descripción entre cargas ya no crean una pieza duplicada', async () => {
+  const csv1 = [
+    'numero_siniestro,aseguradora,numero_pedido,fecha_prevista,descripcion_pieza,precio',
+    'REP1-SIN,GNP,REP1-PED,2026-09-10,Fascia  delantera   c/hoyos,1500',
+  ].join('\n');
+  const validado1 = (await req('POST', '/api/carga-masiva/validar', { csv: csv1 })).data;
+  const c1 = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado1.pedidos });
+  assert.equal(c1.data.piezasCreadas, 1);
+
+  // Reimportación con espacios distintos (uno solo entre palabras, espacio final) y mayúsculas distintas:
+  // antes de la corrección, esto creaba una pieza nueva en vez de actualizar la existente.
+  const csv2 = [
+    'numero_siniestro,aseguradora,numero_pedido,fecha_prevista,descripcion_pieza,precio',
+    'REP1-SIN,GNP,REP1-PED,2026-09-10,FASCIA DELANTERA C/HOYOS ,1550',
+  ].join('\n');
+  const validado2 = (await req('POST', '/api/carga-masiva/validar', { csv: csv2 })).data;
+  const c2 = await req('POST', '/api/carga-masiva/confirmar', { pedidos: validado2.pedidos });
+  assert.equal(c2.data.piezasCreadas, 0, 'no debe crear una pieza nueva solo por diferencias de espacios/mayúsculas');
+  assert.equal(c2.data.piezasActualizadas, 1, 'debe actualizar la pieza ya existente');
+
+  const siniestro = (await req('GET', '/api/siniestros?q=REP1-SIN')).data[0];
+  const pedido = (await req('GET', '/api/pedidos?siniestro_id=' + siniestro.id)).data[0];
+  const piezas = (await req('GET', '/api/piezas?pedido_id=' + pedido.id)).data;
+  assert.equal(piezas.length, 1, 'sigue habiendo una sola pieza para este pedido');
+  assert.equal(Number(piezas[0].precio), 1550, 'el precio se actualizó al de la segunda carga');
+});
+
+test('REP2026-2: los archivos estáticos (app.js, index.html) se sirven con Cache-Control: no-cache, para que un despliegue nuevo no se quede escondido detrás de la caché del navegador', async () => {
+  const r1 = await fetch(BASE + '/app.js');
+  assert.equal(r1.headers.get('cache-control'), 'no-cache');
+  const r2 = await fetch(BASE + '/');
+  assert.equal(r2.headers.get('cache-control'), 'no-cache');
+});
+
+test('REP2026-3: "Piezas recibidas" trae la observación de la pieza, para poder distinguir una sincronización automática (sin persona atribuible) de un dato realmente faltante', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REP3-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REP3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-10' })).data;
+  // El pedido queda "Recibido completo" ANTES de que exista la pieza (nadie confirmó esta pieza a mano);
+  // así se reproduce el caso real: la pieza solo se sincroniza más tarde, en el barrido periódico
+  // (sincronizarPiezasPedidosExistentes, disparado por /api/reportes/resumen), donde no hay usuario de sesión.
+  await req('PATCH', '/api/pedidos/' + p.id, { estatus_operativo: 'Recibido completo' });
+  const z = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Salpicadera' })).data;
+  await req('GET', '/api/reportes/resumen');
+
+  const lista = (await req('GET', '/api/reportes/piezas-recibidas')).data;
+  const fila = lista.find(x => x.id === z.id);
+  assert.ok(fila, 'la pieza sincronizada automáticamente debe aparecer en la lista');
+  assert.equal(fila.recibido_por_nombre, null, 'la sincronización automática (sin usuario de sesión) no atribuye a una persona, a propósito');
+  assert.match(fila.observaciones || '', /\[Auto:/, 'debe traer la marca de sincronización automática para poder explicarlo en pantalla');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

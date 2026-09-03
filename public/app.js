@@ -756,7 +756,7 @@ async function viewPiezasRecibidas(){
   ${filas.length===0?'<tr><td colspan="6" class="empty">Sin piezas recibidas con los filtros actuales.</td></tr>':filas.map(z=>`
     <tr>
       <td>${esc(z.fecha_recepcion||'')}</td>
-      <td>${esc(z.recibido_por_nombre||'—')}</td>
+      <td>${z.recibido_por_nombre?esc(z.recibido_por_nombre):(/\[Auto:/.test(z.observaciones||'')?'<span class="badge gris" title="Pedido marcado recibido completo; el sistema sincronizó sus piezas sin que una persona confirmara cada una a mano.">Automático (sistema)</span>':'—')}</td>
       <td>${esc(z.proveedor_nombre||'—')}</td>
       <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.pedido_numero)}</span></td>
       <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.siniestro_numero)}</span></td>

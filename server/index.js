@@ -73,7 +73,15 @@ app.use('/api/discrepancias-proveedor', require('./routes/discrepanciasProveedor
 app.use('/api/vales-pendientes', require('./routes/valesPendientes'));
 
 // ---- Frontend estático ----
-app.use(express.static(path.join(__dirname, '..', 'public')));
+// Reporte (2-sep-2026): varios "bugs" reportados ya estaban corregidos en el código pero el navegador
+// seguía sirviendo una copia vieja en caché de app.js/index.html, sobre todo en equipos que no hacen
+// recarga forzada. Cache-Control: no-cache obliga a revalidar con el servidor en cada carga (rápido,
+// vía 304 si no cambió) en vez de servir ciegamente lo que ya tenía guardado.
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  setHeaders: (res, filePath) => {
+    if(/\.(js|html|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+  }
+}));
 app.use((req, res, next)=>{
   if(req.method !== 'GET') return next();
   if(req.path.startsWith('/api/')) return next();

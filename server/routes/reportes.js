@@ -396,7 +396,7 @@ router.get('/pendientes-revision', requireAuth, (req, res)=>{
 router.get('/piezas-recibidas', requireAuth, (req, res)=>{
   const { desde, hasta, proveedor_id, q } = req.query;
   const conVentana = aplicaVentanaOperativa(req.query);
-  let sql = `SELECT z.id, z.descripcion, z.numero_parte, z.fecha_recepcion,
+  let sql = `SELECT z.id, z.descripcion, z.numero_parte, z.fecha_recepcion, z.observaciones,
                     u.nombre as recibido_por_nombre,
                     pr.id as proveedor_id, pr.razon_social as proveedor_nombre,
                     p.id as pedido_id, p.numero as pedido_numero,

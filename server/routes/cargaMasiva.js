@@ -293,7 +293,15 @@ router.post('/confirmar', requireAuth, requireRole('operativo','admin'), (req, r
         piezaExistente = db.prepare('SELECT * FROM piezas WHERE pedido_id = ? AND numero_parte = ? AND numero_parte != \'\'').get(pedido.id, zDato.numero_parte);
       }
       if(!piezaExistente){
-        piezaExistente = db.prepare('SELECT * FROM piezas WHERE pedido_id = ? AND descripcion = ? COLLATE NOCASE').get(pedido.id, zDato.descripcion);
+        // Reporte (2-sep-2026): sin número de parte, un match EXACTO de descripción (ni siquiera con
+        // COLLATE NOCASE) fallaba con diferencias mínimas de espacios entre la carga original y la
+        // reimportación desde Inpart (p. ej. doble espacio, espacios al final), y eso creaba una pieza
+        // nueva en vez de actualizar la existente. Se compara normalizado (espacios colapsados, sin
+        // mayúsculas/minúsculas) contra las piezas ya existentes del mismo pedido, en vez de un match
+        // SQL exacto.
+        const normaliza = (t)=> String(t||'').trim().replace(/\s+/g,' ').toLowerCase();
+        const piezasDelPedido = db.prepare('SELECT * FROM piezas WHERE pedido_id = ?').all(pedido.id);
+        piezaExistente = piezasDelPedido.find(pz => normaliza(pz.descripcion) === normaliza(zDato.descripcion)) || null;
       }
 
       if(!piezaExistente){
