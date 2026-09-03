@@ -3849,3 +3849,16 @@ test('REP2026-4: borrado permanente de expediente (punto 5) -- exige confirmar e
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+test('FRONT-4 (reporte de Roberto, 3-sep-2026): las horas de la Línea de tiempo y otras pantallas ya no se muestran 6h adelantadas (UTC crudo) -- se convierten a hora de Ciudad de México', () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(appJs, /function fmtFechaHora\(s\)/, 'debe existir el helper que convierte timestamps UTC de SQLite a hora de CDMX');
+  assert.match(appJs, /timeZone:\s*'America\/Mexico_City'/, 'el helper debe formatear explícitamente en la zona horaria de Ciudad de México');
+  // La Línea de tiempo (auditoría) es la pantalla que reportó Roberto: debe usar el helper, no esc() crudo.
+  assert.match(appJs, /<li><b>\$\{fmtFechaHora\(e\.fecha\)\}<\/b>/, 'la Línea de tiempo debe convertir e.fecha con fmtFechaHora, no mostrarlo crudo con esc()');
+  assert.ok(!/<li><b>\$\{esc\(e\.fecha\)\}<\/b>/.test(appJs), 'no debe quedar el render crudo anterior de e.fecha en la Línea de tiempo');
+  // Otras pantallas con timestamps que el mismo reporte identificó como afectadas.
+  assert.match(appJs, /fmtFechaHora\(c\.fecha_envio\)/, 'comunicaciones (fecha de envío) debe usar fmtFechaHora');
+  assert.match(appJs, /fmtFechaHora\(a\.creado_en\)/, 'archivos (fecha de carga) debe usar fmtFechaHora');
+  assert.match(appJs, /fmtFechaHora\(z\.fecha_recepcion\)/, 'piezas recibidas (fecha de recepción) debe usar fmtFechaHora');
+});

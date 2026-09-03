@@ -5,6 +5,21 @@ function esc(s){
 }
 function fmtMoney(n){ return '$'+Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:2}); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Reporte de Roberto (3-sep-2026): la Línea de tiempo (y otras pantallas con hora) mostraban los eventos
+// 6 horas adelantados -- ej. algo que pasó a las 14:01 hora de CDMX se veía como "20:01". Causa: SQLite
+// guarda datetime('now') en UTC crudo, sin marca de zona, y se imprimía tal cual en el navegador. México
+// ya no tiene horario de verano (se eliminó en 2022), así que Ciudad de México es UTC-6 fijo todo el año.
+// Este helper interpreta el string del servidor como UTC y lo muestra en hora de CDMX.
+function fmtFechaHora(s){
+  if(!s) return '';
+  let iso = String(s).trim();
+  if(!iso) return '';
+  if(iso.includes(' ') && !iso.includes('T')) iso = iso.replace(' ', 'T');
+  if(!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return esc(s);
+  return d.toLocaleString('es-MX', { timeZone:'America/Mexico_City', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+}
 function uidLocal(){ return 'tmp'+Math.random().toString(36).slice(2); }
 
 let currentUser = null;
@@ -628,7 +643,7 @@ async function viewCargaMasiva(){
     <table><thead><tr><th>Fecha</th><th>Usuario</th><th>Estado</th><th>Resumen</th><th></th></tr></thead><tbody>
     ${lotes.map(l=>{ let r={}; try{ r=JSON.parse(l.resumen||'{}'); }catch(e){}
       return `<tr>
-      <td>${esc(l.creado_en)}</td><td>${esc(l.usuario_nombre||'—')}</td>
+      <td>${fmtFechaHora(l.creado_en)}</td><td>${esc(l.usuario_nombre||'—')}</td>
       <td><span class="badge ${l.estado==='revertida'?'rojo':'verde'}">${l.estado==='revertida'?'Revertida':'Confirmada'}</span></td>
       <td class="subtle">${r.pedidosCreados||0} pedidos nuevos, ${r.pedidosActualizados||0} actualizados, ${r.piezasCreadas||0} piezas nuevas</td>
       <td>${l.estado!=='revertida'?`<button class="btn small danger" onclick="revertirLoteCargaMasiva(${l.id})">Revertir</button>`:''}</td>
@@ -755,7 +770,7 @@ async function viewPiezasRecibidas(){
   <tbody>
   ${filas.length===0?'<tr><td colspan="6" class="empty">Sin piezas recibidas con los filtros actuales.</td></tr>':filas.map(z=>`
     <tr>
-      <td>${esc(z.fecha_recepcion||'')}</td>
+      <td>${fmtFechaHora(z.fecha_recepcion)}</td>
       <td>${z.recibido_por_nombre?esc(z.recibido_por_nombre):(/\[Auto:/.test(z.observaciones||'')?'<span class="badge gris" title="Pedido marcado recibido completo; el sistema sincronizó sus piezas sin que una persona confirmara cada una a mano.">Automático (sistema)</span>':'—')}</td>
       <td>${esc(z.proveedor_nombre||'—')}</td>
       <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.pedido_numero)}</span></td>
@@ -966,7 +981,7 @@ async function viewProveedorDetalle(id){
     <h3>Correos (filtrados por este proveedor — corrección F-15)</h3>
     ${pv.comunicaciones.length===0?'<div class="empty">Sin correos registrados.</div>':`
     <table><thead><tr><th>Fecha</th><th>Asunto</th><th>Respuesta</th></tr></thead><tbody>
-    ${pv.comunicaciones.map(c=>`<tr><td>${esc(c.fecha_envio)}</td><td>${esc(c.asunto)}</td><td>${c.respuesta_texto?esc(c.respuesta_texto):'<span class="badge ambar">Pendiente</span>'}</td></tr>`).join('')}
+    ${pv.comunicaciones.map(c=>`<tr><td>${fmtFechaHora(c.fecha_envio)}</td><td>${esc(c.asunto)}</td><td>${c.respuesta_texto?esc(c.respuesta_texto):'<span class="badge ambar">Pendiente</span>'}</td></tr>`).join('')}
     </tbody></table>`}
   </div>`;
 }
@@ -1028,7 +1043,7 @@ async function viewSiniestro(id){
     <h3 style="margin-top:18px;">Bitácora de comunicaciones con el cliente</h3>
     <div style="margin-bottom:8px;"><button class="btn small" onclick="abrirFormNuevoEvento(${id})">+ Registrar comunicación</button></div>
     ${eventos.length===0?'<div class="empty">Sin comunicaciones registradas todavía.</div>':`<ul class="timeline">
-    ${eventos.map(e=>`<li><b>${esc(e.creado_en)}</b> — <span class="badge ${e.direccion==='entrante'?'azul':'ambar'}">${e.direccion==='entrante'?'Cliente → taller':'Taller → cliente'}</span>
+    ${eventos.map(e=>`<li><b>${fmtFechaHora(e.creado_en)}</b> — <span class="badge ${e.direccion==='entrante'?'azul':'ambar'}">${e.direccion==='entrante'?'Cliente → taller':'Taller → cliente'}</span>
       ${e.canal?` · ${esc(e.canal)}`:''}${e.tipo_evento?` · ${esc(e.tipo_evento)}`:''}<br>${esc(e.mensaje)}
       ${e.compromiso?`<br><span class="subtle">Compromiso: ${esc(e.compromiso)}</span>`:''}
       <span class="subtle"> (${esc(e.autor_nombre||'—')})</span></li>`).join('')}
@@ -1191,7 +1206,7 @@ async function viewSiniestro(id){
     <table><thead><tr><th>Piezas no autorizadas</th><th>Plazo</th><th>Decisión</th><th></th></tr></thead><tbody>
     ${reautorizaciones.map(rc=>`<tr>
       <td>${esc(rc.pieza_operacion)}${rc.causa?`<div class="subtle">${esc(rc.causa)}</div>`:''}</td>
-      <td>${rc.decision==='pendiente'?(rc.vencido?`<span class="badge rojo">Vencido (${esc((rc.fecha_limite||'').slice(0,16).replace('T',' '))})</span>`:`<span class="badge ambar">Antes de ${esc((rc.fecha_limite||'').slice(0,16).replace('T',' '))}</span>`):'—'}</td>
+      <td>${rc.decision==='pendiente'?(rc.vencido?`<span class="badge rojo">Vencido (${fmtFechaHora(rc.fecha_limite)})</span>`:`<span class="badge ambar">Antes de ${fmtFechaHora(rc.fecha_limite)}</span>`):'—'}</td>
       <td><span class="badge ${rc.decision==='autorizado'?'verde':rc.decision==='rechazado'?'rojo':rc.decision==='parcial'?'ambar':'gris'}">${esc(rc.decision)}</span></td>
       <td>${puedeValuacion?`<button class="btn small secondary" onclick="abrirFormEditarComplemento(${rc.id})">Actualizar</button>`:''}</td>
     </tr>`).join('')}
@@ -1230,7 +1245,7 @@ async function viewSiniestro(id){
     <h4>Documentos de OT adjuntos</h4>
     ${documentosOt.length===0?'<div class="empty">Sin documentos de OT adjuntos. Daniela o Alejandra pueden subir la foto o el PDF desde la pestaña "Archivos" con tipo "Orden de trabajo".</div>':`
     <table><thead><tr><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
-    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${esc(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Ver / descargar</a></td></tr>`).join('')}
+    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Ver / descargar</a></td></tr>`).join('')}
     </tbody></table>`}
     <table class="kv" style="margin-top:12px;"><tbody>
       <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
@@ -1379,7 +1394,7 @@ async function viewSiniestro(id){
     <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoVale(${id})">+ Registrar vale pendiente</button></div>`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th></th></tr></thead><tbody>
-    ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}<div class="subtle" style="font-size:11px;">${p.estatus_inpart_actualizado_en?'Actualizado: '+esc(p.estatus_inpart_actualizado_en):'Sin fecha de última actualización de Inpart'}</div></td><td>
+    ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}<div class="subtle" style="font-size:11px;">${p.estatus_inpart_actualizado_en?'Actualizado: '+fmtFechaHora(p.estatus_inpart_actualizado_en):'Sin fecha de última actualización de Inpart'}</div></td><td>
       <select onchange="cambiarEstatusOperativo(${p.id}, this.value, '${esc(p.estatus_operativo)}', this)">${ESTATUS_OPERATIVO.map(e=>`<option ${e===p.estatus_operativo?'selected':''}>${e}</option>`).join('')}</select>
     </td>
     <td><button class="btn small" onclick="abrirGenerador(${p.id})">Generar correo</button></td></tr>`).join('')}
@@ -1397,7 +1412,7 @@ async function viewSiniestro(id){
       <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Sin proveedor</span>'}</td>
       <td>${esc(o.z.fecha_prometida||'')}</td>
       <td>${esc(o.z.estatus)}</td>
-      <td>${o.z.fecha_recepcion?esc(o.z.fecha_recepcion):'—'}</td>
+      <td>${o.z.fecha_recepcion?fmtFechaHora(o.z.fecha_recepcion):'—'}</td>
       <td>
         ${!['Recibida físicamente','Cancelada'].includes(o.z.estatus)?`<button class="btn small secondary" onclick="marcarRecibida(${o.z.id})">Marcar recibida</button>`:''}
         <button class="btn small secondary" onclick="abrirFormIncidencia(${o.z.id})">Incidencia</button>
@@ -1437,7 +1452,7 @@ async function viewSiniestro(id){
     for(const p of peds){ const cs = await api('GET','/api/comunicaciones?pedido_id='+p.id); cs.forEach(c=>todas.push(c)); }
     body = `<table><thead><tr><th>Fecha</th><th>Asunto</th><th>Destinatario</th><th>Respuesta</th><th></th></tr></thead><tbody>
     ${todas.length===0?'<tr><td colspan="5" class="empty">Sin comunicaciones registradas.</td></tr>':todas.map(c=>`<tr>
-      <td>${esc(c.fecha_envio)}</td><td>${esc(c.asunto)}</td><td>${esc(c.destinatarios)}</td>
+      <td>${fmtFechaHora(c.fecha_envio)}</td><td>${esc(c.asunto)}</td><td>${esc(c.destinatarios)}</td>
       <td>${c.respuesta_texto?esc(c.respuesta_texto):'<span class="badge ambar">Pendiente</span>'}</td>
       <td>${!c.respuesta_texto?`<button class="btn small secondary" onclick="abrirFormRespuesta(${c.id})">Registrar respuesta</button>`:''}</td>
     </tr>`).join('')}
@@ -1447,7 +1462,7 @@ async function viewSiniestro(id){
     const papelera = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id+'&incluir_eliminados=1');
     const enPapelera = papelera.filter(a=>a.eliminado);
     body = `<table><thead><tr><th>Tipo</th><th>Nombre</th><th>Versión</th><th>Fecha</th><th></th></tr></thead><tbody>
-    ${archivos.length===0?'<tr><td colspan="5" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>v${a.version}</td><td>${esc(a.creado_en)}</td><td>
+    ${archivos.length===0?'<tr><td colspan="5" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>v${a.version}</td><td>${fmtFechaHora(a.creado_en)}</td><td>
       <a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Descargar</a>
       <button class="btn small secondary" onclick="abrirFormSustituirArchivo(${a.id})">Sustituir</button>
       <button class="btn small danger" onclick="eliminarArchivo(${a.id})">Eliminar</button>
@@ -1460,14 +1475,14 @@ async function viewSiniestro(id){
     </form>
     ${enPapelera.length>0?`<h4 style="margin-top:16px;">Papelera (${enPapelera.length})</h4>
     <table><thead><tr><th>Nombre</th><th>Eliminado</th><th></th></tr></thead><tbody>
-    ${enPapelera.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${esc(a.eliminado_en)}</td><td><button class="btn small secondary" onclick="restaurarArchivo(${a.id})">Restaurar</button></td></tr>`).join('')}
+    ${enPapelera.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.eliminado_en)}</td><td><button class="btn small secondary" onclick="restaurarArchivo(${a.id})">Restaurar</button></td></tr>`).join('')}
     </tbody></table>`:''}`;
   } else if(state.subtabSiniestro==='timeline'){
     const eventos = await api('GET','/api/auditoria?entidad_tipo=siniestro&entidad_id='+id);
     let pedEventos = [];
     for(const p of peds){ const e = await api('GET','/api/auditoria?entidad_tipo=pedido&entidad_id='+p.id); pedEventos.push(...e); }
     const todos = [...eventos, ...pedEventos].sort((a,b)=> b.id - a.id);
-    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${esc(e.fecha)}</b> — ${esc(LABEL_ACCION[e.accion]||e.accion)}${e.campo?` (${esc(LABEL_CAMPO[e.campo]||e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
+    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${fmtFechaHora(e.fecha)}</b> — ${esc(LABEL_ACCION[e.accion]||e.accion)}${e.campo?` (${esc(LABEL_CAMPO[e.campo]||e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
   }
 
   const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
@@ -2288,7 +2303,7 @@ async function abrirFormEditarComplemento(complementoId){
   const esReautorizacion = c.tipo === 'no_autorizado_inicial';
   showModal(`
     <h3>${esReautorizacion?'Actualizar reautorización':'Editar complemento'}</h3>
-    ${esReautorizacion?`<p class="subtle">Piezas: ${esc(c.pieza_operacion||'—')}. ${c.decision==='pendiente'?(c.vencido?`<span style="color:#b91c1c;">Plazo vencido (${esc((c.fecha_limite||'').slice(0,16).replace('T',' '))}).</span>`:`Plazo hasta ${esc((c.fecha_limite||'').slice(0,16).replace('T',' '))}.`):''}</p>`:''}
+    ${esReautorizacion?`<p class="subtle">Piezas: ${esc(c.pieza_operacion||'—')}. ${c.decision==='pendiente'?(c.vencido?`<span style="color:#b91c1c;">Plazo vencido (${fmtFechaHora(c.fecha_limite)}).</span>`:`Plazo hasta ${fmtFechaHora(c.fecha_limite)}.`):''}</p>`:''}
     <div class="field"><label>Causa / hallazgo</label><textarea id="fcompe_causa">${esc(c.causa)}</textarea></div>
     <div class="row-flex">
       <div class="field"><label>Decisión</label><select id="fcompe_decision">
@@ -3800,7 +3815,7 @@ async function viewRespaldos(){
     ${lista.map(r=>`<tr>
       <td>${esc(r.nombre)}</td>
       <td>${fmtBytes(r.tamano_bytes)}</td>
-      <td>${esc(r.creado_en)}</td>
+      <td>${fmtFechaHora(r.creado_en)}</td>
       <td><a class="link" href="/api/respaldos/${encodeURIComponent(r.nombre)}/descargar" target="_blank">Descargar</a></td>
     </tr>`).join('')}
     </tbody></table>`}
