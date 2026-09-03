@@ -2,7 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
 const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSiniestrosVencidos, sumarDiasHabiles, VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, limiteRevisionGrua, esquemaSurtidoLabel, porcentajePiezasRecibidas, sincronizarPiezasPedidosExistentes, verificarReingreso90Porciento } = require('../utils');
-const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "solo registro"
+const whatsappScheduler = require('../whatsappScheduler'); // punto 1 (quinta revisión): barrido programado independiente (whatsappFaseA.js ya no se llama directo aquí)
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -112,15 +112,17 @@ router.get('/resumen', requireAuth, (req, res)=>{
   sincronizarPiezasPedidosExistentes(db);
   // Flujo de reparación (31-ago-2026), punto 3: aviso automático de "listo para agendar reingreso" al 90%.
   verificarReingreso90Porciento(db);
-  // WhatsApp Fase A (3-sep-2026), modo "solo registro": barrido de continuidad de 72h NATURALES
-  // (6.1-6.6, corregido por Roberto el mismo día) y postventa a 48h reales de la entrega (5.12). Mismo
-  // patrón que los barridos de arriba -- solo registra internamente, no envía nada real.
-  whatsappFaseA.barrerContinuidadYPostventa(db);
-  // Cuarta entrega: revisa si algún evento "bloqueado" ya puede pasar a "pendiente_revision" (la
-  // condición que lo bloqueó dejó de cumplirse), y reintenta de forma segura/idempotente cualquier
-  // detección del ciclo principal que se haya perdido (punto 8, reintento seguro).
-  whatsappFaseA.revisarBloqueadosResueltos(db);
-  whatsappFaseA.reconciliarEventosPrincipales(db);
+  // WhatsApp Fase A -- quinta revisión, punto 1 (3-sep-2026): el MECANISMO PRINCIPAL ya no es abrir esta
+  // pantalla -- es el barrido programado independiente de whatsappScheduler.js (setInterval, arranca solo
+  // con el servidor). Esta llamada es SOLO un respaldo adicional (Roberto: "el resumen diario puede
+  // solicitar una reconciliación adicional como respaldo, pero no debe ser el mecanismo principal") --
+  // queda registrada en whatsapp_scheduler_ejecuciones igual que cualquier otra corrida, con
+  // disparado_por='resumen_diario', así que el historial deja evidencia de cuál fue cuál.
+  whatsappScheduler.ejecutarBarridoProgramado(db, { disparadoPor:'resumen_diario' });
+  // Respaldo de la detección de atraso (punto 1: "alerta si el proceso deja de ejecutarse") -- ver el
+  // comentario de detectarYAlertarAtraso() en whatsappScheduler.js sobre por qué esto no puede ser 100%
+  // autónomo sin un servicio de monitoreo externo, que este módulo tiene prohibido llamar.
+  whatsappScheduler.detectarYAlertarAtraso(db);
   const hoy = new Date().toISOString().slice(0,10);
   // Ventana operativa (27-ago-2026): ?ventana=todas regresa los contadores sin el corte del 1-jun-2026.
   const desdeVentanaResumen = aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01';

@@ -9,6 +9,7 @@ require('./seed'); // idempotente: crea usuarios/proveedores/caso de prueba solo
 require('./enriquecerDesdeLibreta').enriquecerDesdeLibreta(); // idempotente: solo rellena campos vacíos en expedientes ya existentes
 require('./resetEmergenciaDaniela').resetEmergenciaDaniela(); // idempotente: corre una sola vez
 require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: respaldo diario + rotación; no-op en pruebas
+require('./whatsappScheduler').iniciarSchedulerWhatsApp(db); // punto 1 (quinta revisión, 3-sep-2026): barrido independiente, no-op en pruebas
 if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendientesExistentes(db); } // hallazgo de Daniela 26-ago-2026: limpieza unica de correos automaticos duplicados ya acumulados
 if(!process.env.TEST_DB_PATH){ require('./utils').corregirBorradoresAutomaticosExistentes(db); } // hallazgo de Daniela 27-ago-2026: corrige destinatario/copia/cuerpo de los borradores automaticos ya existentes
 if(!process.env.TEST_DB_PATH){ require('./utils').normalizarFechasCreacionPedidosExistentes(db); } // hallazgo real 27-ago-2026: normaliza fecha_creacion de pedidos importados en DD/MM/AAAA a ISO (la ventana operativa del 1-jun-2026 los ocultaba por error de formato)

@@ -50,9 +50,25 @@ const PLANTILLAS = {
   '6.5': { nombre:'Continuidad - pintura', categoria:'Utility', ciclo:'continuidad' },
   '6.6': { nombre:'Continuidad - revisión de calidad', categoria:'Utility', ciclo:'continuidad' },
 };
-// ----- Catálogo de eventos INTERNOS (punto 2): nunca van a Meta, nunca los consume un servicio de envíos. -----
+// ----- Catálogo de eventos INTERNOS (punto 2 de la cuarta revisión, y punto 2 de la quinta): nunca van a
+// Meta, nunca los consume un servicio de envíos. Son DOS tipos completamente separados a propósito (no se
+// reutiliza uno para el otro): un expediente estancado no es lo mismo que un fallo técnico del detector.
+// Cada uno trae su propia prioridad y responsable sugerido -- el "historial" y la "deduplicación" ya los
+// da gratis la infraestructura general de whatsapp_eventos_registrados (estado, dedup_key, revisado_por/
+// revisado_en/justificacion); no hace falta una tabla aparte por tipo de alerta.
 const EVENTOS_INTERNOS = {
-  'ALERTA-72H-X2': { nombre:'Alerta interna: segundo periodo de 72h consecutivo sin avance real' },
+  'ALERTA-72H-X2': {
+    nombre:'Alerta interna: segundo periodo de 72h consecutivo sin avance real',
+    prioridad:'media',
+    responsableSugerido:'Daniela y el responsable operativo del expediente',
+    reglaCierre:'Se cierra (descartado) cuando un humano revisa el expediente y decide la siguiente comunicación manual, o confirma que ya hubo avance real. Nunca se cierra sola.',
+  },
+  'ALERTA-WA-ERROR': {
+    nombre:'Alerta interna: error técnico persistente en la detección de WhatsApp Fase A',
+    prioridad:'alta',
+    responsableSugerido:'Soporte técnico / Roberto',
+    reglaCierre:'Se cierra (descartado) cuando el error deja de repetirse tras una corrección técnica y un humano lo confirma; el renglón de origen en whatsapp_errores debe marcarse resuelto=1 por separado.',
+  },
 };
 
 // ----- Horario hábil confirmado por Roberto: L-V 9:00-18:00, Sáb 9:00-14:00, domingo cerrado. -----
@@ -180,6 +196,36 @@ function refaccionesRealmenteDisponibles(db, siniestroId){
   return { disponible:true, motivo:null };
 }
 
+// ----- Validación de destino (punto 4, quinta revisión) -----
+// Ninguna plantilla de cliente (5.1 a 6.6) puede registrarse como lista para programar si no hay un
+// destino válido. Regla simple y explícita, sin heurísticas de "adivinar" un número mal capturado:
+//   - Vacío -> 'destino_no_vinculado' (nunca se capturó ningún teléfono).
+//   - Con valor pero que no corresponde a un teléfono mexicano de 10 dígitos (con o sin +52/52 de
+//     código de país), o que es un valor claramente de prueba (mismo dígito repetido 10 veces) ->
+//     'destino_invalido'.
+// Nota de diseño: que el MISMO teléfono esté vinculado a otro siniestro activo distinto NO se bloquea
+// aquí -- es una situación operativa legítima (un mismo cliente con dos vehículos en el taller a la vez),
+// no un error de captura. Ese es un problema distinto (a quién se le atribuye un mensaje ENTRANTE), ya
+// resuelto por resolverExpedientePorTelefono(), que nunca asigna automáticamente un caso ambiguo.
+function validarDestino(db, siniestroId){
+  const s = db.prepare('SELECT cliente_telefono FROM siniestros WHERE id = ?').get(siniestroId);
+  const telefono = s && s.cliente_telefono;
+  if(!telefono || !String(telefono).trim()){
+    return { valido:false, motivo:'destino_no_vinculado', detalle:'No hay ningún teléfono capturado para este expediente; no se puede enviar ninguna comunicación individual todavía.' };
+  }
+  const digitos = String(telefono).replace(/\D/g, '');
+  let local = digitos;
+  if(digitos.length === 12 && digitos.startsWith('52')) local = digitos.slice(2);
+  else if(digitos.length === 13 && digitos.startsWith('521')) local = digitos.slice(3);
+  if(local.length !== 10){
+    return { valido:false, motivo:'destino_invalido', detalle:`El teléfono capturado ("${telefono}") no tiene un formato mexicano válido (se esperan 10 dígitos locales, con o sin +52/52 de código de país).` };
+  }
+  if(/^(\d)\1{9}$/.test(local)){
+    return { valido:false, motivo:'destino_invalido', detalle:`El teléfono capturado ("${telefono}") parece un valor de prueba o placeholder (mismo dígito repetido), no un número real.` };
+  }
+  return { valido:true, telefonoNormalizado: local };
+}
+
 // ===================== Registro persistente de errores (punto 8) =====================
 // Un error del detector NUNCA debe quedar solo en el log del servidor: si se pierde el log, se pierde
 // también la evidencia de que algo no se registró. Esta función nunca lanza (doble try/catch) para no
@@ -198,11 +244,13 @@ function registrarError(db, { contexto, siniestroId=null, plantillaCodigo=null, 
         .run(nuevosIntentos, mensaje, detalle, existente.id);
       if(nuevosIntentos >= UMBRAL_ALERTA_ERROR && !existente.alerta_generada){
         db.prepare(`UPDATE whatsapp_errores SET alerta_generada=1 WHERE id=?`).run(existente.id);
-        if(siniestroId){
-          registrarEventoInterno(db, { siniestroId, codigo:'ALERTA-72H-X2', // reutiliza el mismo canal de alertas internas
-            disparador:`Error persistente en la detección de WhatsApp Fase A (contexto: ${contexto}, ${nuevosIntentos} intentos) -- requiere revisión técnica.`,
-            variables:{}, dedupKey:'error:'+contexto+':'+plantillaCodigo });
-        }
+        // Punto 2 (quinta revisión): código PROPIO para errores técnicos (ALERTA-WA-ERROR), nunca
+        // ALERTA-72H-X2 -- un fallo del detector no es lo mismo que un expediente sin avance real, y no
+        // debe aparecer mezclado con esas alertas. Funciona con o sin siniestroId (un error puede ser de
+        // sistema, p. ej. el barrido programado atrasado, sin pertenecer a ningún expediente concreto).
+        registrarEventoInterno(db, { siniestroId: siniestroId || null, codigo:'ALERTA-WA-ERROR',
+          disparador:`Error persistente en la detección de WhatsApp Fase A (contexto: ${contexto}${plantillaCodigo ? ', plantilla '+plantillaCodigo : ''}, ${nuevosIntentos} intentos) -- requiere revisión técnica.`,
+          variables:{}, dedupKey:'error:'+contexto+':'+plantillaCodigo });
       }
     } else {
       db.prepare(`INSERT INTO whatsapp_errores (contexto,siniestro_id,plantilla_codigo,mensaje,detalle) VALUES (?,?,?,?,?)`)
@@ -212,28 +260,48 @@ function registrarError(db, { contexto, siniestroId=null, plantillaCodigo=null, 
 }
 
 // ----- Registro central: aplica dedup, calcula horario o marca bloqueado. Nunca envía nada real. -----
+// siniestroId puede ser null (alerta de sistema, sin expediente asociado -- punto 1/2 de la quinta
+// revisión). Por eso el chequeo de deduplicación usa "IS ?" en vez de "= ?": en SQL, "columna = NULL"
+// nunca es verdadero (ni siquiera comparando NULL contra NULL), así que con "=" el mismo evento de
+// sistema se habría vuelto a insertar cada vez, sin deduplicar nunca.
 function registrarEvento(db, { siniestroId, plantillaCodigo, disparador, variables, dedupKey, bloqueadoPorMotivo=null, tipoBloqueo=null, esPlantillaMeta=1, ahoraUTC=null }){
   const dedup = String(dedupKey || '');
-  const existente = db.prepare(`SELECT id, estado FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND plantilla_codigo=? AND dedup_key=?`)
-    .get(siniestroId, plantillaCodigo, dedup);
+  const sid = (siniestroId === undefined || siniestroId === null) ? null : siniestroId;
+  const existente = db.prepare(`SELECT id, estado FROM whatsapp_eventos_registrados WHERE siniestro_id IS ? AND plantilla_codigo=? AND dedup_key=?`)
+    .get(sid, plantillaCodigo, dedup);
   if(existente) return { creado:false, id: existente.id, motivo:'ya registrado (deduplicado); su ciclo de vida se actualiza con UPDATE, no se pierde al re-detectarse' };
+
+  // Punto 4 (quinta revisión): ninguna plantilla de CLIENTE puede registrarse como lista si el destino no
+  // es válido -- esta comprobación tiene prioridad sobre cualquier otro motivo de bloqueo que se le haya
+  // pasado a la función, porque sin destino ningún otro chequeo importa todavía. No aplica a los eventos
+  // internos (es_plantilla_meta=0): esos nunca se envían a un cliente, así que no necesitan un teléfono.
+  let tipoBloqueoFinal = tipoBloqueo;
+  let bloqueadoPorMotivoFinal = bloqueadoPorMotivo;
+  if(esPlantillaMeta && sid){
+    const destino = validarDestino(db, sid);
+    if(!destino.valido){
+      tipoBloqueoFinal = destino.motivo;
+      bloqueadoPorMotivoFinal = destino.detalle;
+    }
+  }
 
   const ahora = ahoraUTC ? dayjs.utc(ahoraUTC) : dayjs.utc();
   let estado = 'registrado';
   let motivoBloqueo = null;
   let programadoPara = null;
-  if(bloqueadoPorMotivo){
+  if(bloqueadoPorMotivoFinal){
     estado = 'bloqueado';
-    motivoBloqueo = bloqueadoPorMotivo;
+    motivoBloqueo = bloqueadoPorMotivoFinal;
   } else {
     const local = ahora.tz(TZ);
     const momentoHabil = esHorarioHabil(local) ? local : siguienteMomentoHabil(local);
     programadoPara = momentoHabil.utc().format('YYYY-MM-DD HH:mm:ss');
   }
+  const prioridad = (!esPlantillaMeta && EVENTOS_INTERNOS[plantillaCodigo]) ? EVENTOS_INTERNOS[plantillaCodigo].prioridad : null;
   const info = db.prepare(`INSERT INTO whatsapp_eventos_registrados
-      (siniestro_id,plantilla_codigo,estado,tipo_bloqueo,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(siniestroId, plantillaCodigo, estado, tipoBloqueo, motivoBloqueo, disparador, JSON.stringify(variables||{}), programadoPara, dedup, esPlantillaMeta?1:0);
+      (siniestro_id,plantilla_codigo,estado,tipo_bloqueo,prioridad,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(sid, plantillaCodigo, estado, tipoBloqueoFinal, prioridad, motivoBloqueo, disparador, JSON.stringify(variables||{}), programadoPara, dedup, esPlantillaMeta?1:0);
   return { creado:true, id: info.lastInsertRowid, estado };
 }
 
@@ -270,6 +338,12 @@ function condicionDeBloqueoSigueActiva(db, evento){
     const s = db.prepare('SELECT estado_autorizacion FROM siniestros WHERE id=?').get(evento.siniestro_id);
     return !!s && s.estado_autorizacion === 'parcial';
   }
+  // Punto 4 (quinta revisión): mientras el teléfono siga vacío o con formato inválido, el bloqueo sigue
+  // vigente. En cuanto se corrige, revisarBloqueadosResueltos() lo mueve a pendiente_revision -- nunca se
+  // libera ni se envía solo (ver resolverPendienteRevision: siempre exige revisión y justificación humana).
+  if(evento.tipo_bloqueo === 'destino_invalido' || evento.tipo_bloqueo === 'destino_no_vinculado'){
+    return !validarDestino(db, evento.siniestro_id).valido;
+  }
   return true; // tipo_bloqueo desconocido/nulo: por seguridad, no se mueve solo -- requiere revisión manual directa.
 }
 function revisarBloqueadosResueltos(db){
@@ -286,6 +360,10 @@ function revisarBloqueadosResueltos(db){
 }
 
 // Acción explícita (admin, vía endpoint de solo revisión) -- exige justificación y no envía nada nunca.
+// Punto 2 (quinta revisión) -- "regla de cierre" de una alerta interna: una alerta (es_plantilla_meta=0)
+// no pasa por "bloqueado" ni "pendiente_revision" (esos estados son del ciclo de mensajes de cliente); se
+// abre directo en "registrado" y se cierra directo con la MISMA acción explícita y la MISMA exigencia de
+// justificación que ya regía para los eventos de cliente -- sin inventar un mecanismo de cierre aparte.
 function resolverPendienteRevision(db, { eventoId, decision, justificacion, usuarioId }){
   if(!['descartado','liberado_para_programacion'].includes(decision)){
     throw new Error('Decisión inválida. Usa "descartado" o "liberado_para_programacion".');
@@ -295,12 +373,78 @@ function resolverPendienteRevision(db, { eventoId, decision, justificacion, usua
   }
   const evento = db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE id=?`).get(eventoId);
   if(!evento) throw new Error('Evento no encontrado.');
-  if(evento.estado !== 'pendiente_revision'){
+  const esAlertaInterna = evento.es_plantilla_meta === 0;
+  if(esAlertaInterna){
+    if(evento.estado !== 'registrado'){
+      throw new Error('Esta alerta interna ya fue cerrada (o no está en un estado que se pueda cerrar).');
+    }
+    if(decision !== 'descartado'){
+      throw new Error('Una alerta interna solo se puede cerrar ("descartado"); "liberado_para_programacion" no aplica porque no es un mensaje de cliente.');
+    }
+  } else if(evento.estado !== 'pendiente_revision'){
     throw new Error('Solo se puede resolver un evento que esté en estado "pendiente_revision".');
   }
   db.prepare(`UPDATE whatsapp_eventos_registrados SET estado=?, revisado_por=?, revisado_en=datetime('now'), justificacion=? WHERE id=?`)
     .run(decision, usuarioId||null, String(justificacion).trim(), eventoId);
   return db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE id=?`).get(eventoId);
+}
+
+// ===================== Validación final antes de un futuro envío real (punto 5, quinta revisión) =====
+// Todavía no existe ningún mecanismo de envío real en este modo -- esta función es el DISEÑO, ya
+// implementado y probado, de la comprobación que un futuro servicio de envío deberá correr INMEDIATAMENTE
+// antes de enviar cada mensaje, sin confiar ciegamente en que "liberado_para_programacion" siga vigente.
+// "Liberado" es una fotografía del momento en que un humano lo revisó -- no una garantía permanente.
+function validarAntesDeEnviar(db, eventoId){
+  const evento = db.prepare('SELECT * FROM whatsapp_eventos_registrados WHERE id=?').get(eventoId);
+  if(!evento) return { puedeEnviarse:false, motivo:'Evento no encontrado.' };
+  if(!['registrado','liberado_para_programacion'].includes(evento.estado)){
+    return { puedeEnviarse:false, motivo:`El evento está en estado "${evento.estado}", no en un estado que permita envío.` };
+  }
+  if(evento.es_plantilla_meta !== 1){
+    return { puedeEnviarse:false, motivo:'Es un evento interno (alerta), no una plantilla de cliente -- nunca se envía.' };
+  }
+  const siniestro = db.prepare('SELECT * FROM siniestros WHERE id=?').get(evento.siniestro_id);
+  if(!siniestro || siniestro.archivado || siniestro.estatus_general === 'Cerrado'){
+    return { puedeEnviarse:false, motivo:'El expediente ya no está activo (cerrado o archivado).' };
+  }
+  const destino = validarDestino(db, evento.siniestro_id);
+  if(!destino.valido){
+    return { puedeEnviarse:false, motivo:'El destino ya no es válido: ' + destino.detalle };
+  }
+  if(tieneIncidenciaDelicadaActiva(db, evento.siniestro_id)){
+    return { puedeEnviarse:false, motivo:'Existe una incidencia delicada activa sobre el expediente.' };
+  }
+  const local = dayjs.utc().tz(TZ);
+  if(!esHorarioHabil(local)){
+    return { puedeEnviarse:false, motivo:'Fuera del horario permitido de envío (L-V 9-18, Sáb 9-14).' };
+  }
+  // La etapa real vigente todavía corresponde a lo que este evento representa (no se envía algo que ya
+  // quedó obsoleto porque el expediente avanzó a otra etapa desde que se liberó).
+  if(evento.plantilla_codigo.startsWith('6.')){
+    const etapaVigente = etapaContinuidadActual(db, siniestro);
+    if(etapaVigente !== evento.plantilla_codigo){
+      return { puedeEnviarse:false, motivo:`La etapa cambió: el evento es de "${evento.plantilla_codigo}" pero la etapa vigente ahora es "${etapaVigente || 'ninguna'}".` };
+    }
+  }
+  return { puedeEnviarse:true, motivo:null };
+}
+
+// Se corre en el mismo barrido periódico (punto 8/1). Revalida cada evento "liberado_para_programacion":
+// si alguna condición cambió desde que se liberó, NUNCA se envía por inercia -- vuelve a pendiente_revision
+// para que un humano decida de nuevo (nunca se descarta solo, ni se envía solo).
+function revalidarEventosLiberados(db){
+  try{
+    const liberados = db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE estado='liberado_para_programacion'`).all();
+    for(const ev of liberados){
+      try{
+        const v = validarAntesDeEnviar(db, ev.id);
+        if(!v.puedeEnviarse){
+          db.prepare(`UPDATE whatsapp_eventos_registrados SET estado='pendiente_revision', justificacion=? WHERE id=?`)
+            .run('Revalidación automática: ' + v.motivo + ' (vuelve a revisión, no se descarta ni se envía solo).', ev.id);
+        }
+      } catch(e){ registrarError(db, { contexto:'revalidarEventosLiberados', siniestroId:ev.siniestro_id, plantillaCodigo:ev.plantilla_codigo, error:e }); }
+    }
+  } catch(e){ registrarError(db, { contexto:'revalidarEventosLiberados', error:e }); }
 }
 
 // ===================== Ciclo principal (5.1, 5.2, autorización, 5.8-5.11) =====================
@@ -461,18 +605,53 @@ function etapaContinuidadActual(db, siniestro){
   return '6.3';
 }
 
-// Ancla de tiempo para medir continuidad (punto 1): SOLO la última comunicación informativa REAL --
-// una de las 12 plantillas del ciclo principal (5.x), ya "registrada" (no bloqueada, no interna). Un
-// mensaje de continuidad (6.x) no cuenta como "avance", así que NO reinicia el contador -- eso es lo que
-// permite detectar el segundo periodo consecutivo (punto 2). Si nunca hubo ninguna, se usa la creación
-// del expediente.
+// ===================== Comunicación manual informativa (punto 3, quinta revisión) =====================
+// El objetivo NO es "detectar" que Alejandra escribió algo -- en modo "solo registro", sin conexión real
+// a WhatsApp, el sistema NO PUEDE leer lo que ella envía por su chat individual con el cliente. Por eso la
+// regla es deliberadamente simple y sin ninguna clasificación automática/IA: es Alejandra (o quien
+// registre) quien decide explícitamente, al capturarla, si esa comunicación fue informativa sobre el
+// avance ('informativa_avance', SÍ reinicia el contador) o si fue otra cosa -- un saludo, un acuse de
+// recibo, una nota administrativa ('administrativa', NO lo reinicia). Ningún mensaje ENTRANTE del cliente
+// reinicia el contador por sí solo (el sistema no puede leerlos), y los mensajes escritos dentro del grupo
+// nunca son visibles para este módulo (confirmado con la documentación oficial de Meta, ver la segunda
+// entrega) -- así que tampoco pueden reiniciarlo.
+// NOTA DE ALCANCE: esta función y su tabla ya están listas y probadas, pero todavía NO hay ningún botón ni
+// pantalla para que Alejandra la use (punto 7: sin cambios visibles todavía). Queda pendiente de que
+// Roberto decida cómo se captura (¿un botón junto al chat? ¿un campo en el expediente?) antes de exponerla.
+function registrarComunicacionManual(db, { siniestroId, tipo, nota=null, usuarioId=null }){
+  if(!['informativa_avance','administrativa'].includes(tipo)){
+    throw new Error('Tipo inválido. Usa "informativa_avance" o "administrativa".');
+  }
+  const s = db.prepare('SELECT id FROM siniestros WHERE id=?').get(siniestroId);
+  if(!s) throw new Error('Siniestro no encontrado.');
+  const info = db.prepare(`INSERT INTO whatsapp_comunicaciones_manuales (siniestro_id,tipo,nota,registrado_por) VALUES (?,?,?,?)`)
+    .run(siniestroId, tipo, nota, usuarioId);
+  return db.prepare('SELECT * FROM whatsapp_comunicaciones_manuales WHERE id=?').get(info.lastInsertRowid);
+}
+
+// Ancla de tiempo para medir continuidad (punto 1): la más reciente entre (a) la última comunicación
+// informativa REAL registrada -- una de las 12 plantillas del ciclo principal (5.x), ya "registrada" (no
+// bloqueada, no interna) -- y (b) la última comunicación MANUAL marcada explícitamente como
+// 'informativa_avance' (punto 3, quinta revisión). Un mensaje de continuidad (6.x) no cuenta como
+// "avance", así que NO reinicia el contador -- eso es lo que permite detectar el segundo periodo
+// consecutivo (punto 2). Si nunca hubo ninguna, se usa la creación del expediente.
 function ultimoAncla(db, siniestroId, siniestroCreadoEn){
-  const ultimo = db.prepare(`
+  const ultimoAutomatico = db.prepare(`
     SELECT creado_en FROM whatsapp_eventos_registrados
     WHERE siniestro_id = ? AND estado = 'registrado' AND es_plantilla_meta = 1 AND plantilla_codigo LIKE '5.%'
     ORDER BY creado_en DESC LIMIT 1
   `).get(siniestroId);
-  return (ultimo && ultimo.creado_en) || siniestroCreadoEn;
+  const ultimoManual = db.prepare(`
+    SELECT registrado_en AS creado_en FROM whatsapp_comunicaciones_manuales
+    WHERE siniestro_id = ? AND tipo = 'informativa_avance'
+    ORDER BY registrado_en DESC LIMIT 1
+  `).get(siniestroId);
+  // OJO: siniestroCreadoEn es solo el valor de RESPALDO cuando nunca hubo ninguna comunicación real
+  // (automática o manual) -- no compite contra ellas. Si compitiera, la fecha de creación (casi siempre
+  // más reciente que un ancla intencionalmente vieja) ganaría siempre y el contador nunca avanzaría.
+  const candidatos = [ultimoAutomatico && ultimoAutomatico.creado_en, ultimoManual && ultimoManual.creado_en].filter(Boolean);
+  if(candidatos.length === 0) return siniestroCreadoEn;
+  return candidatos.reduce((mas, actual) => (dayjs.utc(actual).isAfter(dayjs.utc(mas)) ? actual : mas));
 }
 
 // ----- Barrido periódico: continuidad de 72h NATURALES (6.1-6.6 / alerta interna) + postventa 48h (5.12). -----
@@ -563,9 +742,11 @@ function resolverExpedientePorTelefono(db, telefono){
 module.exports = {
   PLANTILLAS, EVENTOS_INTERNOS,
   esHorarioHabil, siguienteMomentoHabil, horasHabilesTranscurridas, horasNaturalesTranscurridas,
-  tieneIncidenciaDelicadaActiva, unidadEnTaller, refaccionesRealmenteDisponibles,
+  tieneIncidenciaDelicadaActiva, unidadEnTaller, refaccionesRealmenteDisponibles, validarDestino,
   registrarEvento, registrarEventoInterno, registrarConChequeoDelicada, registrarError,
   condicionDeBloqueoSigueActiva, revisarBloqueadosResueltos, resolverPendienteRevision,
+  registrarComunicacionManual,
+  validarAntesDeEnviar, revalidarEventosLiberados,
   evaluarYRegistrarCicloPrincipal,
   procesarCreacionSiniestro, procesarTransicionSiniestro, procesarRefaccionesCompletas,
   etapaContinuidadActual, ultimoAncla, barrerContinuidadYPostventa, reconciliarEventosPrincipales,

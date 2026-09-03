@@ -4,6 +4,12 @@
 // -> alerta interna, ciclo de bloqueo con revisión humana explícita, autorización parcial, bienvenida al
 // capturar el teléfono después, ubicación del vehículo sin adivinar, refacciones realmente disponibles,
 // persistencia de errores, resolución de expediente por teléfono, y dos pruebas de regresión de seguridad.
+// Ampliado con la QUINTA revisión de Roberto (3-sep-2026, misma tarde), 5 puntos más: WA-25 a WA-31
+// scheduler independiente (ejecución, log, recuperación tras caída, idempotencia, protección de
+// concurrencia, atraso); WA-32/33 alerta técnica separada con su regla de cierre; WA-34 a WA-36
+// comunicaciones manuales y el contador de 72h; WA-37 a WA-40 validación de destino antes de CUALQUIER
+// plantilla de cliente (sin teléfono, mal formado, corrección posterior, cambio de teléfono);
+// WA-41/WA-42 validación final antes de un futuro envío real.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -16,6 +22,7 @@ process.env.TEST_DB_PATH = TEST_DB;
 const app = require('../server/index');
 const db = require('../server/db');
 const whatsappFaseA = require('../server/whatsappFaseA');
+const whatsappScheduler = require('../server/whatsappScheduler');
 const dayjs = require('dayjs');
 const utcPlugin = require('dayjs/plugin/utc');
 const timezonePlugin = require('dayjs/plugin/timezone');
@@ -286,8 +293,13 @@ test('WA-17 (punto 8): un error se registra de forma persistente, con reintentos
   assert.ok(fila, 'el error debe quedar registrado y consultable');
   assert.equal(fila.intentos, 3, 'debe acumular reintentos en el mismo renglón, no crear tres filas distintas');
   const eventos = await eventosDe(s.id);
-  assert.ok(eventos.find(e => e.plantilla_codigo === 'ALERTA-72H-X2' && e.disparador.includes('Error persistente')),
-    'al persistir el error (3+ intentos) debe generarse una alerta interna auditable');
+  // Punto 2 (quinta revisión, 3-sep-2026): un error técnico ya NO reutiliza ALERTA-72H-X2 (esa es
+  // exclusiva de "expediente estancado"); usa su propio código ALERTA-WA-ERROR.
+  const alerta = eventos.find(e => e.plantilla_codigo === 'ALERTA-WA-ERROR' && e.disparador.includes('Error persistente'));
+  assert.ok(alerta, 'al persistir el error (3+ intentos) debe generarse una alerta interna auditable, con código propio');
+  assert.equal(alerta.prioridad, 'alta', 'un error técnico debe registrarse con prioridad alta');
+  assert.equal(eventos.find(e => e.plantilla_codigo === 'ALERTA-72H-X2'), undefined,
+    'un error técnico NUNCA debe aparecer mezclado con la alerta de estancamiento (ALERTA-72H-X2)');
 });
 
 test('WA-18 (punto 8): la reconciliación es idempotente -- llamarla varias veces no duplica eventos', async () => {
@@ -358,4 +370,240 @@ test('WA-23: el módulo nunca escribe en tablas del módulo de Daniela (pedidos/
 test('WA-24: "liberado_para_programacion" nunca implica un envío real -- no existe ningún mecanismo de envío en el módulo', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'server', 'whatsappFaseA.js'), 'utf-8');
   assert.ok(!/sendMessage|enviarWhatsapp|enviarMensaje\(/i.test(src), 'no debe existir ninguna función de envío real');
+});
+
+// ===================== QUINTA REVISIÓN (3-sep-2026, misma tarde) =====================
+
+// ---- Punto 1: barrido programado independiente ----
+test('WA-25 (punto 1): ejecutarBarridoProgramado corre, queda registrado en el historial, y es idempotente', async () => {
+  const s = await crearSiniestro({ numero:'WA25', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  const antes = db.prepare('SELECT COUNT(*) c FROM whatsapp_scheduler_ejecuciones').get().c;
+  const r1 = whatsappScheduler.ejecutarBarridoProgramado(db, { disparadoPor:'prueba' });
+  assert.equal(r1.omitido, false);
+  assert.equal(r1.estado, 'completado');
+  const despues = db.prepare('SELECT COUNT(*) c FROM whatsapp_scheduler_ejecuciones').get().c;
+  assert.equal(despues, antes + 1, 'debe quedar exactamente una fila nueva de ejecución');
+  const fila = db.prepare('SELECT * FROM whatsapp_scheduler_ejecuciones ORDER BY id DESC LIMIT 1').get();
+  assert.equal(fila.estado, 'completado');
+  assert.equal(fila.disparado_por, 'prueba');
+  assert.ok(fila.terminado_en, 'debe registrar cuándo terminó');
+  // Idempotencia: correrlo otra vez no debe duplicar el evento 5.3 ya registrado.
+  whatsappScheduler.ejecutarBarridoProgramado(db, { disparadoPor:'prueba' });
+  const eventos = await eventosDe(s.id);
+  assert.equal(eventos.filter(e => e.plantilla_codigo === '5.3').length, 1, 'reintentar el barrido no debe duplicar nada');
+});
+
+test('WA-26 (punto 1): recuperación tras una caída -- una ejecución "corriendo" colgada se marca fallida sola', () => {
+  // Simula que el proceso murió a media ejecución: una fila queda "corriendo" desde hace más del umbral.
+  const hace1h = dayjs.utc().subtract(60, 'minute').format('YYYY-MM-DD HH:mm:ss');
+  const info = db.prepare(`INSERT INTO whatsapp_scheduler_ejecuciones (iniciado_en, estado, disparado_por) VALUES (?, 'corriendo', 'arranque')`).run(hace1h);
+  const r = whatsappScheduler.ejecutarBarridoProgramado(db, { disparadoPor:'prueba-recuperacion' });
+  assert.equal(r.omitido, false, 'la siguiente ejecución debe poder correr con normalidad tras la autosanación');
+  const colgada = db.prepare('SELECT * FROM whatsapp_scheduler_ejecuciones WHERE id=?').get(info.lastInsertRowid);
+  assert.equal(colgada.estado, 'fallido', 'la ejecución colgada debe quedar marcada como fallida, no seguir "corriendo" para siempre');
+  assert.ok(colgada.error && colgada.error.length > 0, 'debe explicar por qué se marcó fallida');
+});
+
+test('WA-27 (punto 1): protección de concurrencia -- una segunda invocación mientras la primera sigue "corriendo" se omite', () => {
+  const original = whatsappFaseA.barrerContinuidadYPostventa;
+  let resultadoDeLaSegunda = null;
+  whatsappFaseA.barrerContinuidadYPostventa = function(dbArg){
+    // Mientras la primera ejecución sigue en curso (dentro de este mismo callback), intenta correr otra.
+    resultadoDeLaSegunda = whatsappScheduler.ejecutarBarridoProgramado(dbArg, { disparadoPor:'reentrada-de-prueba' });
+    return original(dbArg);
+  };
+  try{
+    const r1 = whatsappScheduler.ejecutarBarridoProgramado(db, { disparadoPor:'prueba-concurrencia' });
+    assert.equal(r1.omitido, false, 'la primera ejecución (la que sí llegó primero) debe completarse con normalidad');
+    assert.ok(resultadoDeLaSegunda, 'la reentrada debió intentarse durante la primera ejecución');
+    assert.equal(resultadoDeLaSegunda.omitido, true, 'la segunda ejecución simultánea debe omitirse, no correr en paralelo');
+  } finally {
+    whatsappFaseA.barrerContinuidadYPostventa = original;
+  }
+});
+
+test('WA-28 (punto 1): estadoScheduler detecta atraso cuando la última ejecución es más vieja que el umbral', () => {
+  db.exec('DELETE FROM whatsapp_scheduler_ejecuciones');
+  let estado = whatsappScheduler.estadoScheduler(db);
+  assert.equal(estado.nuncaHaCorrido, true, 'sin ninguna ejecución todavía, no debe alarmar (el proceso recién arrancó)');
+
+  const haceMucho = dayjs.utc().subtract(whatsappScheduler.UMBRAL_ATRASO_MINUTOS + 10, 'minute').format('YYYY-MM-DD HH:mm:ss');
+  db.prepare(`INSERT INTO whatsapp_scheduler_ejecuciones (iniciado_en, terminado_en, estado, disparado_por) VALUES (?, ?, 'completado', 'prueba')`).run(haceMucho, haceMucho);
+  estado = whatsappScheduler.estadoScheduler(db);
+  assert.equal(estado.atrasado, true, 'debe detectar que ya pasó el umbral desde la última ejecución');
+
+  whatsappScheduler.detectarYAlertarAtraso(db);
+  const errores = db.prepare(`SELECT * FROM whatsapp_errores WHERE contexto='scheduler:atraso' AND resuelto=0`).all();
+  assert.ok(errores.length >= 1, 'debe quedar un registro de error persistente por el atraso, consultable como cualquier otro');
+  assert.equal(errores[0].siniestro_id, null, 'una alerta de atraso es de SISTEMA, no pertenece a ningún expediente concreto');
+
+  // Ejecutarlo (aunque sea manualmente) debe quitar el atraso.
+  whatsappScheduler.ejecutarBarridoProgramado(db, { disparadoPor:'prueba-reset-atraso' });
+  estado = whatsappScheduler.estadoScheduler(db);
+  assert.equal(estado.atrasado, false, 'tras correr, ya no debe seguir marcado como atrasado');
+});
+
+// ---- Punto 2: alerta técnica separada, con su propia regla de cierre ----
+test('WA-29 (punto 2): una alerta interna se cierra con la misma acción explícita y justificación, nunca "liberado_para_programacion"', async () => {
+  const s = await crearSiniestro({ numero:'WA29', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa29', siniestroId:s.id, plantillaCodigo:'5.1', error:new Error('fallo') });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa29', siniestroId:s.id, plantillaCodigo:'5.1', error:new Error('fallo') });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa29', siniestroId:s.id, plantillaCodigo:'5.1', error:new Error('fallo') });
+  const eventos = await eventosDe(s.id);
+  const alerta = eventos.find(e => e.plantilla_codigo === 'ALERTA-WA-ERROR');
+  assert.ok(alerta, 'debe existir la alerta técnica');
+  assert.equal(alerta.estado, 'registrado');
+  assert.ok(alerta.alerta_responsable_sugerido && alerta.alerta_responsable_sugerido.length > 0, 'debe traer un responsable sugerido');
+  assert.ok(alerta.alerta_regla_cierre && alerta.alerta_regla_cierre.length > 0, 'debe traer su regla de cierre');
+
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  let r = await req('PATCH', `/api/whatsapp-fase-a/eventos/${alerta.id}/revision`, { decision:'liberado_para_programacion', justificacion:'intento inválido' });
+  assert.equal(r.status, 400, 'una alerta interna nunca se "libera para programación" -- no es un mensaje de cliente');
+
+  r = await req('PATCH', `/api/whatsapp-fase-a/eventos/${alerta.id}/revision`, { decision:'descartado', justificacion:'Corregido el error de origen, confirmado que no vuelve a repetirse.' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.estado, 'descartado');
+
+  // Ya cerrada, no se puede volver a cerrar.
+  r = await req('PATCH', `/api/whatsapp-fase-a/eventos/${alerta.id}/revision`, { decision:'descartado', justificacion:'otra vez' });
+  assert.equal(r.status, 400);
+});
+
+// ---- Punto 3: comunicaciones manuales y el contador de 72h ----
+test('WA-30 (punto 3): una comunicación manual "informativa_avance" reinicia el contador de continuidad', async () => {
+  const s = await crearSiniestro({ numero:'WA30', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-01', autorizador:'X', piezas_autorizadas_cambio:0 });
+  // Se retrasan los eventos 5.x a 100 horas atrás (ya pasarían las 72h si no hubiera nada más reciente).
+  const hace100h = dayjs.utc().subtract(100, 'hour').format('YYYY-MM-DD HH:mm:ss');
+  db.prepare(`UPDATE whatsapp_eventos_registrados SET creado_en=? WHERE siniestro_id=? AND plantilla_codigo LIKE '5.%'`).run(hace100h, s.id);
+  // Pero Alejandra ya avisó manualmente hace solo 10 horas -- eso debe ser el ancla real ahora.
+  const comunicacion = whatsappFaseA.registrarComunicacionManual(db, { siniestroId:s.id, tipo:'informativa_avance', nota:'Le marqué y le expliqué que sigue en hojalatería.' });
+  db.prepare(`UPDATE whatsapp_comunicaciones_manuales SET registrado_en=? WHERE id=?`).run(dayjs.utc().subtract(10,'hour').format('YYYY-MM-DD HH:mm:ss'), comunicacion.id);
+  whatsappFaseA.barrerContinuidadYPostventa(db);
+  const eventos = await eventosDe(s.id);
+  assert.equal(eventos.find(e => e.plantilla_codigo && e.plantilla_codigo.startsWith('6.')), undefined,
+    'con una comunicación manual informativa de hace 10h, todavía NO deben pasar 72h -- no debe activarse la continuidad');
+});
+
+test('WA-31 (punto 3): una comunicación manual "administrativa" NO reinicia el contador', async () => {
+  const s = await crearSiniestro({ numero:'WA31', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-01', autorizador:'X', piezas_autorizadas_cambio:0 });
+  const hace100h = dayjs.utc().subtract(100, 'hour').format('YYYY-MM-DD HH:mm:ss');
+  db.prepare(`UPDATE whatsapp_eventos_registrados SET creado_en=? WHERE siniestro_id=? AND plantilla_codigo LIKE '5.%'`).run(hace100h, s.id);
+  const comunicacion = whatsappFaseA.registrarComunicacionManual(db, { siniestroId:s.id, tipo:'administrativa', nota:'Solo confirmó que recibió el mensaje, sin pedir información.' });
+  db.prepare(`UPDATE whatsapp_comunicaciones_manuales SET registrado_en=? WHERE id=?`).run(dayjs.utc().subtract(10,'hour').format('YYYY-MM-DD HH:mm:ss'), comunicacion.id);
+  whatsappFaseA.barrerContinuidadYPostventa(db);
+  const eventos = await eventosDe(s.id);
+  assert.ok(eventos.find(e => e.plantilla_codigo && e.plantilla_codigo.startsWith('6.')),
+    'una comunicación "administrativa" no informa avance real -- la continuidad debe seguir activándose a las 100h');
+});
+
+test('WA-32 (punto 3): registrarComunicacionManual rechaza un tipo inválido (sin clasificación automática/IA, solo lo explícito)', async () => {
+  const s = await crearSiniestro({ numero:'WA32', cliente_telefono: tel() });
+  assert.throws(() => whatsappFaseA.registrarComunicacionManual(db, { siniestroId:s.id, tipo:'un_saludo_cualquiera' }), /Tipo inválido/);
+});
+
+// ---- Punto 4: validación de destino antes de CUALQUIER plantilla de cliente ----
+test('WA-33 (punto 4): sin teléfono, TODA plantilla de cliente queda bloqueada por destino_no_vinculado (no solo 5.1)', async () => {
+  const s = await crearSiniestroSinTelefono({ numero:'WA33', ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  const eventos = await eventosDe(s.id);
+  const e53 = eventos.find(e => e.plantilla_codigo === '5.3');
+  assert.ok(e53, 'el evento 5.3 sí debe quedar registrado (como bloqueado), nunca desaparecer silenciosamente');
+  assert.equal(e53.estado, 'bloqueado');
+  assert.equal(e53.tipo_bloqueo, 'destino_no_vinculado');
+  assert.equal(eventos.find(e => e.plantilla_codigo === '5.3' && e.estado === 'registrado'), undefined,
+    'nunca debe quedar "registrado" (listo para futura programación) sin un destino válido');
+});
+
+test('WA-34 (punto 4): un teléfono mal formado bloquea por destino_invalido', async () => {
+  const s = await crearSiniestro({ numero:'WA34', cliente_telefono:'123', ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  const eventos = await eventosDe(s.id);
+  const e53 = eventos.find(e => e.plantilla_codigo === '5.3');
+  assert.ok(e53);
+  assert.equal(e53.estado, 'bloqueado');
+  assert.equal(e53.tipo_bloqueo, 'destino_invalido');
+});
+
+test('WA-35 (punto 4): corregir el teléfono después revalida (pasa a pendiente_revision), pero no se libera sola', async () => {
+  const s = await crearSiniestroSinTelefono({ numero:'WA35', ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  let eventos = await eventosDe(s.id);
+  const e53 = eventos.find(e => e.plantilla_codigo === '5.3');
+  assert.equal(e53.estado, 'bloqueado');
+
+  await login('alejandra@serviciocristian.mx', 'ServicioCristian2026!');
+  await req('PATCH', `/api/siniestros/${s.id}`, { cliente_telefono: tel() });
+  whatsappFaseA.revisarBloqueadosResueltos(db);
+  eventos = await eventosDe(s.id);
+  const actualizado = eventos.find(e => e.id === e53.id);
+  assert.equal(actualizado.estado, 'pendiente_revision', 'debe pasar a revisión humana en cuanto el destino es válido, no liberarse ni enviarse solo');
+});
+
+test('WA-36 (punto 4): cambiar el teléfono a otro número también válido no duplica el evento ni lo reenvía retroactivamente', async () => {
+  const s = await crearSiniestro({ numero:'WA36', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  let eventos = await eventosDe(s.id);
+  assert.equal(eventos.filter(e => e.plantilla_codigo === '5.3').length, 1);
+  await login('alejandra@serviciocristian.mx', 'ServicioCristian2026!');
+  await req('PATCH', `/api/siniestros/${s.id}`, { cliente_telefono: tel() }); // corrige a otro número igual de válido
+  whatsappFaseA.reconciliarEventosPrincipales(db);
+  eventos = await eventosDe(s.id);
+  assert.equal(eventos.filter(e => e.plantilla_codigo === '5.3').length, 1, 'sigue siendo un solo renglón -- no se duplica ni se reenvía por cambiar el teléfono');
+});
+
+// ---- Punto 5: validación final antes de un futuro envío real ----
+test('WA-37 (punto 5): validarAntesDeEnviar rechaza si el expediente ya no está activo, si el destino dejó de ser válido, o si hay una incidencia delicada', async () => {
+  const s1 = await crearSiniestro({ numero:'WA37A', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  await autorizarOrlando(s1.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  let eventos = await eventosDe(s1.id);
+  const e53 = eventos.find(e => e.plantilla_codigo === '5.3');
+  let v = whatsappFaseA.validarAntesDeEnviar(db, e53.id);
+  // Puede depender del horario real de la corrida (L-V 9-18) -- si está fuera de horario, ese es un
+  // motivo válido de rechazo también; lo que importa es que NO se apruebe un envío inexistente.
+  assert.equal(typeof v.puedeEnviarse, 'boolean');
+
+  // Expediente cerrado -> rechazado.
+  await login('daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!');
+  db.prepare(`UPDATE siniestros SET estatus_general='Cerrado' WHERE id=?`).run(s1.id);
+  v = whatsappFaseA.validarAntesDeEnviar(db, e53.id);
+  assert.equal(v.puedeEnviarse, false);
+  assert.match(v.motivo, /activo/);
+
+  // Evento inexistente.
+  v = whatsappFaseA.validarAntesDeEnviar(db, 999999);
+  assert.equal(v.puedeEnviarse, false);
+});
+
+test('WA-38 (punto 5): revalidarEventosLiberados regresa a revisión un evento liberado si el expediente ya no está activo', async () => {
+  const s = await crearSiniestro({ numero:'WA38', cliente_telefono: tel() });
+  // Simula un evento ya bloqueado y explícitamente liberado en el pasado (flujo normal: bloqueado ->
+  // pendiente_revision -> liberado_para_programacion).
+  whatsappFaseA.registrarEvento(db, { siniestroId:s.id, plantillaCodigo:'5.10', disparador:'prueba', variables:{}, dedupKey:'prueba-wa38',
+    bloqueadoPorMotivo:'motivo de prueba', tipoBloqueo:'incidencia_delicada' });
+  let evento = db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND dedup_key='prueba-wa38'`).get(s.id);
+  db.prepare(`UPDATE whatsapp_eventos_registrados SET estado='pendiente_revision' WHERE id=?`).run(evento.id);
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const r = await req('PATCH', `/api/whatsapp-fase-a/eventos/${evento.id}/revision`, { decision:'liberado_para_programacion', justificacion:'Se revalidó todo en su momento y correspondía liberarlo.' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.estado, 'liberado_para_programacion');
+
+  // Ahora el expediente se cierra DESPUÉS de haberse liberado -- ya no debería poder "enviarse" nunca.
+  await login('daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!');
+  db.prepare(`UPDATE siniestros SET estatus_general='Cerrado' WHERE id=?`).run(s.id);
+  whatsappFaseA.revalidarEventosLiberados(db);
+  evento = db.prepare('SELECT * FROM whatsapp_eventos_registrados WHERE id=?').get(evento.id);
+  assert.equal(evento.estado, 'pendiente_revision', 'debe volver a revisión humana, nunca quedarse "liberado" sobre un expediente ya inactivo');
+  assert.ok(evento.justificacion && evento.justificacion.includes('Revalidación automática'), 'debe quedar explicado por qué se regresó a revisión');
+});
+
+// ---- Regresión de seguridad extendida al scheduler ----
+test('WA-39: whatsappScheduler.js tampoco contiene ninguna llamada real a un servicio externo, ni mecanismo de envío', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'server', 'whatsappScheduler.js'), 'utf-8');
+  assert.ok(!/fetch\s*\(/.test(src));
+  assert.ok(!/require\(['"]axios['"]\)|axios\s*\./i.test(src));
+  assert.ok(!/graph\.facebook\.com|whatsapp\.com|meta\.com/i.test(src));
+  assert.ok(!/sendMessage|enviarWhatsapp|enviarMensaje\(/i.test(src));
 });

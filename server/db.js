@@ -1166,6 +1166,80 @@ CREATE TABLE IF NOT EXISTS whatsapp_errores (
 CREATE INDEX IF NOT EXISTS idx_whatsapp_errores_siniestro ON whatsapp_errores(siniestro_id);
 `);
 
+/* ===================== WhatsApp Fase A -- quinta revisión (3-sep-2026, misma tarde) =====================
+   (a) siniestro_id deja de ser NOT NULL: una alerta interna de sistema (p. ej. "el barrido programado
+       lleva atrasado") no pertenece a ningún expediente concreto -- punto 1/2. La deduplicación por
+       UNIQUE ya no puede vivir en una sola restricción de tabla (SQLite trata cada NULL como distinto en
+       un UNIQUE normal), así que se reemplaza por DOS índices únicos parciales: uno para eventos de un
+       expediente y otro para eventos de sistema.
+   (b) Se agrega tipo_bloqueo 'destino_invalido' / 'destino_no_vinculado' (punto 4).
+   (c) Se agrega la columna prioridad (solo para alertas internas, punto 2). */
+const whatsappEventosSql2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='whatsapp_eventos_registrados'").get();
+if(whatsappEventosSql2 && !whatsappEventosSql2.sql.includes('destino_invalido')){
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    CREATE TABLE whatsapp_eventos_registrados_v3 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      siniestro_id INTEGER REFERENCES siniestros(id),
+      plantilla_codigo TEXT NOT NULL,
+      estado TEXT NOT NULL DEFAULT 'registrado' CHECK(estado IN ('registrado','bloqueado','pendiente_revision','descartado','liberado_para_programacion')),
+      tipo_bloqueo TEXT CHECK(tipo_bloqueo IS NULL OR tipo_bloqueo IN ('incidencia_delicada','refacciones_no_disponibles','autorizacion_parcial','ubicacion_desconocida','destino_invalido','destino_no_vinculado')),
+      prioridad TEXT,
+      motivo_bloqueo TEXT,
+      disparador TEXT,
+      variables_json TEXT,
+      programado_para TEXT,
+      dedup_key TEXT NOT NULL DEFAULT '',
+      es_plantilla_meta INTEGER NOT NULL DEFAULT 1,
+      revisado_por INTEGER REFERENCES usuarios(id),
+      revisado_en TEXT,
+      justificacion TEXT,
+      creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO whatsapp_eventos_registrados_v3 (id,siniestro_id,plantilla_codigo,estado,tipo_bloqueo,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta,revisado_por,revisado_en,justificacion,creado_en)
+      SELECT id,siniestro_id,plantilla_codigo,estado,tipo_bloqueo,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta,revisado_por,revisado_en,justificacion,creado_en FROM whatsapp_eventos_registrados;
+    DROP TABLE whatsapp_eventos_registrados;
+    ALTER TABLE whatsapp_eventos_registrados_v3 RENAME TO whatsapp_eventos_registrados;
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_siniestro ON whatsapp_eventos_registrados(siniestro_id);
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_plantilla ON whatsapp_eventos_registrados(plantilla_codigo);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_eventos_dedup_expediente ON whatsapp_eventos_registrados(siniestro_id, plantilla_codigo, dedup_key) WHERE siniestro_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_eventos_dedup_sistema ON whatsapp_eventos_registrados(plantilla_codigo, dedup_key) WHERE siniestro_id IS NULL;
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
+}
+
+// Registro de cada ejecución del barrido programado (punto 1): permite comprobar que corrió, detectar
+// atraso (el proceso dejó de ejecutarse) y recuperarse tras una caída (una fila que se quedó "corriendo"
+// más tiempo del que una ejecución síncrona puede tardar se considera fallida automáticamente).
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_scheduler_ejecuciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  iniciado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  terminado_en TEXT,
+  estado TEXT NOT NULL DEFAULT 'corriendo' CHECK(estado IN ('corriendo','completado','fallido')),
+  disparado_por TEXT NOT NULL DEFAULT 'scheduler',
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_scheduler_ejecuciones_iniciado ON whatsapp_scheduler_ejecuciones(iniciado_en);
+`);
+
+// Comunicación manual informativa (punto 3): registro de respaldo (backend, sin pantalla nueva todavía)
+// de que Alejandra ya informó al cliente por fuera de las plantillas automáticas -- para que el contador
+// de 72h no siga corriendo como si nadie hubiera dicho nada. 'tipo' obliga a que quien la registra decida
+// explícitamente si informa avance o no (sin ninguna clasificación automática/IA -- punto 3, quinta
+// revisión): 'informativa_avance' si reinicia el contador, 'administrativa' si no.
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_comunicaciones_manuales (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  tipo TEXT NOT NULL CHECK(tipo IN ('informativa_avance','administrativa')),
+  nota TEXT,
+  registrado_por INTEGER REFERENCES usuarios(id),
+  registrado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_comunicaciones_manuales_siniestro ON whatsapp_comunicaciones_manuales(siniestro_id);
+`);
+
 module.exports = db;
 
 
