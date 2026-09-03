@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision, requisitosAdmisionFaltantes } = require('../utils');
+const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "solo registro", autorizado por Roberto (3-sep-2026)
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
@@ -131,6 +132,7 @@ router.post('/', requireAuth, (req, res)=>{
   }
 
   const creado = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(info.lastInsertRowid);
+  whatsappFaseA.procesarCreacionSiniestro(db, creado); // solo registro interno, no envía nada
   res.status(201).json({ ...creado, advertencia: completo ? null : 'Faltan datos (vehículo/placas). Queda marcado como Pendiente de completar.' });
 });
 
@@ -331,6 +333,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.archivado, nuevo.archivado_en,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  whatsappFaseA.procesarTransicionSiniestro(db, { anterior, nuevo }); // solo registro interno, no envía nada
   if(nuevaInconformidad){
     db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
       VALUES (?,?,?,?,'pendiente','automatica','inconformidad_finiquito',?)`)

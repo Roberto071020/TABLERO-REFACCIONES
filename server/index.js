@@ -71,6 +71,7 @@ app.use('/api/mapeo-estatus-inpart', require('./routes/mapeoEstatusInpart'));
 app.use('/api/respaldos', require('./routes/respaldos'));
 app.use('/api/discrepancias-proveedor', require('./routes/discrepanciasProveedor'));
 app.use('/api/vales-pendientes', require('./routes/valesPendientes'));
+app.use('/api/whatsapp-fase-a', require('./routes/whatsappFaseA')); // solo lectura, admin, no enlazado desde ninguna pantalla
 
 // ---- Frontend estático ----
 // Reporte (2-sep-2026): varios "bugs" reportados ya estaban corregidos en el código pero el navegador

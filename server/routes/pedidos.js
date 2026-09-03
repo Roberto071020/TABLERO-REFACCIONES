@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
 const { registrarAuditoria, auditarCambios, verificarRefaccionesCompletas, crearTareaFechaPromesaModificada, prepararCorreoPedidoNuevo, sincronizarPiezasConEstatusPedido } = require('../utils');
+const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "solo registro"
 const router = express.Router();
 
 const ESTATUS_OPERATIVO = ['Nuevo','Por revisar','Esperando proveedor','En tránsito','Entrega vencida','Recibido parcial','Recibido completo','Con incidencia','Cancelado','Cerrado'];
@@ -112,6 +113,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
   }
   if(nuevo.estatus_operativo !== anterior.estatus_operativo){
     verificarRefaccionesCompletas(db, anterior.siniestro_id, req.session.user);
+    whatsappFaseA.procesarRefaccionesCompletas(db, anterior.siniestro_id); // solo registro interno, no envía nada
     // Roberto (29-ago-2026): si el pedido quedó Recibido completo/Cancelado por edición manual, sus
     // piezas todavía abiertas se sincronizan al instante (el barrido de /resumen es el respaldo, pero
     // no hay que esperar a la próxima carga del tablero para que se refleje).

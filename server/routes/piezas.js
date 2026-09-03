@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../auth');
 const { registrarAuditoria, auditarCambios, nowUTC, verificarRefaccionesCompletas, recalcularCorreosPorPiezaCerrada } = require('../utils');
+const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "solo registro"
 const router = express.Router();
 
 const ESTATUS_PIEZA = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
@@ -94,6 +95,7 @@ router.post('/:id/recibir', requireAuth, (req, res)=>{
   }
   // Módulo Alejandra (Fase 5): si con esto TODO el expediente queda con sus refacciones resueltas, avisarle.
   verificarRefaccionesCompletas(db, pedidoAnterior.siniestro_id, req.session.user);
+  whatsappFaseA.procesarRefaccionesCompletas(db, pedidoAnterior.siniestro_id); // solo registro interno, no envía nada
   // Hallazgo C-01 (Informe_funcional_tablero_refacciones_para_Claude.docx, 28-ago-2026): la pieza que se
   // acaba de recibir puede estar mencionada en un borrador de correo automático todavía sin enviar --
   // se recalcula/descarta para que nunca pida disponibilidad de algo que ya llegó.

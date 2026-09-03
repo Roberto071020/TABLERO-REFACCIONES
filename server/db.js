@@ -1081,6 +1081,31 @@ if(!tieneColumna('archivos', 'ot_operacion_id')){
   db.exec(`ALTER TABLE archivos ADD COLUMN ot_operacion_id INTEGER REFERENCES ot_operaciones(id);`);
 }
 
+
+/* ===================== WhatsApp Fase A -- modo "solo registro" (3-sep-2026, autorizado por Roberto) =====================
+   Autorización explícita de Roberto: SOLO detectar y registrar internamente qué plantilla de WhatsApp
+   se habría disparado, con qué expediente, fecha, hora, motivo y variables -- SIN enviar ningún mensaje
+   real, SIN conectar con el número real, SIN tocar el módulo de Daniela ni exponer nada nuevo a ningún
+   rol en producción. Ver server/whatsappFaseA.js para la lógica de detección/deduplicación/horario/bloqueo.
+   Tabla aditiva, nueva, sin relación con ninguna tabla usada por Daniela. */
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_eventos_registrados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  plantilla_codigo TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'registrado' CHECK(estado IN ('registrado','bloqueado')),
+  motivo_bloqueo TEXT,
+  disparador TEXT,
+  variables_json TEXT,
+  programado_para TEXT,
+  dedup_key TEXT NOT NULL DEFAULT '',
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(siniestro_id, plantilla_codigo, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_siniestro ON whatsapp_eventos_registrados(siniestro_id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_plantilla ON whatsapp_eventos_registrados(plantilla_codigo);
+`);
+
 module.exports = db;
 
 
