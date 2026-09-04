@@ -1240,6 +1240,34 @@ CREATE TABLE IF NOT EXISTS whatsapp_comunicaciones_manuales (
 CREATE INDEX IF NOT EXISTS idx_whatsapp_comunicaciones_manuales_siniestro ON whatsapp_comunicaciones_manuales(siniestro_id);
 `);
 
+
+/* ===================== WhatsApp Fase A -- sexta revisión (4-sep-2026) =====================
+   Punto 8: campos de tiempo EXPLÍCITOS en whatsapp_eventos_registrados, en vez de apoyarse solo en
+   creado_en (que solo dice "cuándo se detectó/registró", no "cuándo se habría enviado"). Todas nullable,
+   sin CHECK -- patrón aditivo simple, sin necesidad de reconstruir la tabla:
+     - detectado_en: mismo instante que creado_en, pero con nombre explícito (momento en que el detector
+       evaluó y registró el evento).
+     - simulado_enviado_en: en modo "solo registro" -- SIN mecanismo de envío real -- este es el momento
+       SIMULADO en el que el mensaje se habría enviado (igual a programado_para en el instante del
+       registro, para un evento no bloqueado). Es el que usa ahora ultimoAncla() para medir continuidad,
+       en vez del crudo creado_en (ver whatsappFaseA.js).
+     - enviado_en / entregado_en / error_en: reservados para cuando exista un servicio de envío real
+       conectado a los webhooks de Meta (confirmación de envío/entrega/error) -- hoy SIEMPRE quedan NULL,
+       a propósito, porque este módulo nunca envía nada real. Se agregan ahora para que conectar ese
+       futuro servicio no requiera otra migración de esquema. */
+const NUEVAS_COLUMNAS_WA_EVENTOS = [
+  ['detectado_en', 'TEXT'],
+  ['simulado_enviado_en', 'TEXT'],
+  ['enviado_en', 'TEXT'],
+  ['entregado_en', 'TEXT'],
+  ['error_en', 'TEXT'],
+];
+for(const [col, def] of NUEVAS_COLUMNAS_WA_EVENTOS){
+  if(!tieneColumna('whatsapp_eventos_registrados', col)){
+    db.exec(`ALTER TABLE whatsapp_eventos_registrados ADD COLUMN ${col} ${def};`);
+  }
+}
+
 module.exports = db;
 
 

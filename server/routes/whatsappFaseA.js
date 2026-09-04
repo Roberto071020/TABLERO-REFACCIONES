@@ -59,21 +59,17 @@ router.get('/scheduler', requireAuth, requireRole('admin'), (req, res)=>{
   res.json({ ...estado, historial });
 });
 
-// Punto 3 (quinta revisión): registro de una comunicación manual informativa. Endpoint admin-only, sin
-// enlazar desde ninguna pantalla todavía (punto 7 sigue sin autorizar cambios visibles para Alejandra) --
-// existe para que la lógica quede probada de extremo a extremo antes de decidir cómo se captura en la
-// interfaz real.
-router.post('/comunicaciones-manuales', requireAuth, requireRole('admin'), (req, res)=>{
-  const { siniestro_id, tipo, nota } = req.body;
-  try{
-    const registro = whatsappFaseA.registrarComunicacionManual(db, {
-      siniestroId: siniestro_id, tipo, nota, usuarioId: req.session.user.id,
-    });
-    res.status(201).json(registro);
-  } catch(e){
-    res.status(400).json({ error: e.message });
-  }
-});
+// Punto 9 (sexta revisión): el POST manual que existía aquí en la quinta entrega (que exigía que alguien
+// -- Alejandra o quien fuera -- decidiera a mano "informativa_avance" vs "administrativa" cada vez) se
+// RETIRÓ deliberadamente: es exactamente la carga operativa que Roberto rechazó ("sin agregar trabajo").
+// Se investigó la documentación oficial de Meta antes de rediseñar: la API de Coexistencia SÍ expone el
+// evento necesario (webhook "smb_message_echoes", disparado automáticamente por cada mensaje que se manda
+// desde la app de WhatsApp Business) -- ver el comentario completo sobre registrarComunicacionSaliente()
+// en server/whatsappFaseA.js. Ese webhook real todavía no existe en este modo (sigue sin vincularse ningún
+// número real, límite duro sin cambios), así que por ahora NO hay ningún endpoint público que reciba esto
+// -- la función vive lista y probada, para conectarse al webhook real el día que Roberto lo autorice, sin
+// necesitar ningún endpoint de captura manual ni ninguna pantalla nueva para Alejandra.
+// Se conserva el GET de solo lectura (admin, sin pantalla) para poder auditar lo que se haya registrado.
 router.get('/comunicaciones-manuales', requireAuth, requireRole('admin'), (req, res)=>{
   const { siniestro_id, limit } = req.query;
   let sql = `SELECT c.*, s.numero AS siniestro_numero FROM whatsapp_comunicaciones_manuales c

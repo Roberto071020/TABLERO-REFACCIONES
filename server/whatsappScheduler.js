@@ -27,6 +27,31 @@
 //
 // Qué NO hace este módulo (límites, igual que whatsappFaseA.js): no hace ninguna llamada HTTP externa, no
 // envía nada real, no modifica ninguna tabla de Daniela/Alejandra, no agrega ninguna pantalla nueva.
+//
+// Punto 10 (sexta revisión, 4-sep-2026): investigación real del servicio en Render antes de confiar en
+// setInterval como mecanismo -- consultada directamente vía la API de Render (solo lectura, sin cambiar
+// nada, como pidió Roberto explícitamente: "no cambies el plan ni contrates servicios"). Hallazgos del
+// servicio real "tablero-refacciones" (srv-da1lh6v40ujc73btvvpg):
+//   - plan: "starter" (de pago) -- a diferencia del plan gratuito de Render, el plan starter NO suspende
+//     el servicio por inactividad. Un setInterval en memoria SÍ es viable aquí porque el proceso Node no
+//     se apaga solo entre peticiones -- en el plan gratuito habría sido inviable (el proceso se duerme y
+//     el temporizador se pierde con él).
+//   - numInstances: 1 -- una sola instancia corriendo. Esto es justo lo que permite que la deduplicación
+//     por clave fija sea suficiente: si hubiera más de una instancia, dos procesos Node distintos podrían
+//     disparar el mismo barrido al mismo tiempo en paralelo real (ahí la bandera en memoria de este
+//     archivo YA NO alcanzaría, porque cada instancia tiene su propia memoria) -- no es el caso hoy.
+//   - autoDeploy: solo desde la rama "main" (autoDeployTrigger: "commit" sobre branch "main"). La rama de
+//     este módulo, whatsapp-fase-a-solo-registro, NO dispara ningún despliegue -- confirma, desde el lado
+//     de Render (no solo desde git), que nada de este trabajo llega a producción sin una acción explícita.
+//   - El proceso SÍ se reinicia en cada nuevo despliegue de main (visto en el historial de deploys) -- el
+//     diseño de recuperación tras caída/reinicio de este módulo (correr una vez de inmediato al arrancar,
+//     limpiarEjecucionesColgadas) ya cubre exactamente ese caso, confirmado con datos reales, no solo en
+//     teoría.
+// Conclusión: el diseño actual (setInterval + registro en disco + protección de concurrencia en memoria)
+// es viable con la configuración REAL de Render, sin necesitar un servicio de cron externo ni cambiar de
+// plan. Si en el futuro se aumentara a más de una instancia (no es el caso hoy), este diseño SÍ tendría que
+// revisarse -- se deja documentado para cuando corresponda, no se implementa una protección que hoy no
+// hace falta.
 
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');

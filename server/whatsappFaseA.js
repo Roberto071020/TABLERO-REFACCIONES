@@ -69,6 +69,16 @@ const EVENTOS_INTERNOS = {
     responsableSugerido:'Soporte técnico / Roberto',
     reglaCierre:'Se cierra (descartado) cuando el error deja de repetirse tras una corrección técnica y un humano lo confirma; el renglón de origen en whatsapp_errores debe marcarse resuelto=1 por separado.',
   },
+  // Punto 4 (sexta revisión): un pedido con un problema REAL (con incidencia, cancelado, entrega vencida)
+  // es una señal real que merece atención humana -- pero NO es un mensaje de cliente (nunca hay que
+  // "avisar" al cliente de un problema interno de proveedor a través de una plantilla automática), así
+  // que es una alerta interna, tan separada de las otras dos como ellas lo son entre sí.
+  'ALERTA-PEDIDO-PROBLEMA': {
+    nombre:'Alerta interna: pedido de refacciones con un problema real (incidencia, cancelado o entrega vencida)',
+    prioridad:'media',
+    responsableSugerido:'Responsable de refacciones del expediente',
+    reglaCierre:'Se cierra (descartado) cuando un humano revisa el/los pedidos señalados y confirma que ya se resolvió o que no requiere más acción. Nunca se cierra sola.',
+  },
 };
 
 // ----- Horario hábil confirmado por Roberto: L-V 9:00-18:00, Sáb 9:00-14:00, domingo cerrado. -----
@@ -129,15 +139,62 @@ function horasHabilesTranscurridas(desdeUTC, hastaUTC){
   return minutos / 60;
 }
 
-// ----- Bloqueo: incidencia delicada activa sobre el expediente (abierta o en proceso) -----
+// ----- Bloqueo: situación delicada activa sobre el expediente (punto 5, sexta revisión) -----
+// Roberto pidió cobertura COMPLETA, no solo incidencias de piezas. Inventario real (verificado leyendo
+// server/db.js, no supuesto), de todo lo que representa un problema humano/operativo abierto sobre el
+// expediente, con la tabla y condición exacta usada para cada uno:
+//   1) incidencias (piezas incorrectas/dañadas/incompletas/devueltas/canceladas/fecha incumplida),
+//      estado IN ('abierta','en_proceso') -- YA cubierto desde la tercera entrega.
+//   2) retrabajos con severidad='critica' (no conformidad de calidad seria) todavía sin cerrar
+//      (estado IN ('abierto','en_correccion','reinspeccion')): no tiene sentido avisar avance de
+//      producción con una no conformidad grave sin resolver.
+//   3) discrepancias_proveedor abiertas (estado='abierta') -- incluye las marcadas no_llego=1 (algo que
+//      el proveedor dijo que entregó pero nunca llegó).
+//   4) complementos con decision='pendiente' -- costo/tiempo adicional todavía sin autorizar por el
+//      cliente/aseguradora; comunicar avance normal mientras esto sigue en el aire puede contradecir lo
+//      que el cliente ya sabe.
+//   5) checklist_calidad con resultado='rechazado' y sin corrección registrada todavía (correccion
+//      NULL o vacío) -- hallazgo de calidad detectado y aún sin resolver.
+//   6) finiquito_estado='inconformidad_abierta' -- inconformidad formal abierta tras la entrega (aplica
+//      sobre todo a la plantilla 5.12/postventa, que se evalúa después de entregado el vehículo).
+// Evaluado y descartado explícitamente: vales_pendientes (ocurre DESPUÉS de la entrega; ninguna plantilla
+// de este módulo, 5.1-5.12/6.x, cae en esa ventana) y exclusiones_envio (es exclusivo de los correos de
+// Daniela a proveedores, sin relación con el cliente final).
 function tieneIncidenciaDelicadaActiva(db, siniestroId){
-  const row = db.prepare(`
+  const incidencias = db.prepare(`
     SELECT COUNT(*) c FROM incidencias i
     JOIN piezas p ON p.id = i.pieza_id
     JOIN pedidos pe ON pe.id = p.pedido_id
     WHERE pe.siniestro_id = ? AND i.estado IN ('abierta','en_proceso')
-  `).get(siniestroId);
-  return row.c > 0;
+  `).get(siniestroId).c;
+  if(incidencias > 0) return true;
+
+  const retrabajos = db.prepare(`
+    SELECT COUNT(*) c FROM retrabajos
+    WHERE siniestro_id = ? AND severidad = 'critica' AND estado IN ('abierto','en_correccion','reinspeccion')
+  `).get(siniestroId).c;
+  if(retrabajos > 0) return true;
+
+  const discrepancias = db.prepare(`
+    SELECT COUNT(*) c FROM discrepancias_proveedor WHERE siniestro_id = ? AND estado = 'abierta'
+  `).get(siniestroId).c;
+  if(discrepancias > 0) return true;
+
+  const complementosPendientes = db.prepare(`
+    SELECT COUNT(*) c FROM complementos WHERE siniestro_id = ? AND decision = 'pendiente'
+  `).get(siniestroId).c;
+  if(complementosPendientes > 0) return true;
+
+  const checklistRechazado = db.prepare(`
+    SELECT COUNT(*) c FROM checklist_calidad
+    WHERE siniestro_id = ? AND resultado = 'rechazado' AND (correccion IS NULL OR TRIM(correccion) = '')
+  `).get(siniestroId).c;
+  if(checklistRechazado > 0) return true;
+
+  const s2 = db.prepare(`SELECT finiquito_estado FROM siniestros WHERE id = ?`).get(siniestroId);
+  if(s2 && s2.finiquito_estado === 'inconformidad_abierta') return true;
+
+  return false;
 }
 
 // ----- Ubicación física del vehículo (punto 6) -----
@@ -185,15 +242,36 @@ function unidadEnTaller(db, siniestroId){
 // WhatsApp, un pedido cancelado, con incidencia, o no recibido en su totalidad NO significa que el
 // cliente ya pueda continuar -- por eso esta función es más estricta y vive separada, sin tocar la
 // función existente de Daniela/Alejandra.
+// Punto 4 (sexta revisión): la versión anterior trataba "sin pedidos todavía" y "pedidos en trámite
+// normal" exactamente igual que "pedido con un problema real" -- las tres devolvían disponible:false con
+// el mismo motivo genérico, y quien llamaba a esta función terminaba registrando un evento bloqueado de
+// cliente en los tres casos por igual (puro ruido en los dos primeros). Ahora se distinguen 4 estados:
+//   'sin_pedidos'  -- todavía no existe ningún pedido. No es una señal de nada, es la ausencia de señal.
+//   'en_proceso'   -- hay pedidos, ninguno tiene un problema real, simplemente no han llegado todos.
+//   'problema'     -- al menos un pedido está en un estatus que SÍ representa un problema real (con
+//                     incidencia, cancelado, o con entrega vencida) -- esto sí merece una alerta interna.
+//   'completo'     -- todos los pedidos están en "Recibido completo": las refacciones sí están disponibles.
+// PROBLEMATICOS son los 3 estatus operativos (de la lista real ESTATUS_OPERATIVO de server/routes/
+// pedidos.js) que reflejan un problema de verdad, no solo "todavía no". 'Cerrado' se deja fuera a propósito:
+// es un cierre manual legítimo (p. ej. un pedido sustituido por otro) y no siempre implica un problema.
 function refaccionesRealmenteDisponibles(db, siniestroId){
+  const PROBLEMATICOS = ['Con incidencia', 'Cancelado', 'Entrega vencida'];
   const pedidos = db.prepare('SELECT numero, estatus_operativo FROM pedidos WHERE siniestro_id = ?').all(siniestroId);
-  if(pedidos.length === 0) return { disponible:false, motivo:'Todavía no existe ningún pedido de refacciones para este expediente.' };
-  const problematicos = pedidos.filter(p => p.estatus_operativo !== 'Recibido completo');
-  if(problematicos.length){
-    const detalle = problematicos.map(p => `${p.numero} (${p.estatus_operativo})`).join(', ');
-    return { disponible:false, motivo:`Hay pedidos que no están realmente disponibles (cancelados, con incidencia, incompletos o en otro estatus distinto de "Recibido completo"): ${detalle}.` };
+  if(pedidos.length === 0){
+    return { disponible:false, estado:'sin_pedidos', motivo:'Todavía no existe ningún pedido de refacciones para este expediente.' };
   }
-  return { disponible:true, motivo:null };
+  const noCompletos = pedidos.filter(p => p.estatus_operativo !== 'Recibido completo');
+  if(noCompletos.length === 0){
+    return { disponible:true, estado:'completo', motivo:null };
+  }
+  const problematicos = noCompletos.filter(p => PROBLEMATICOS.includes(p.estatus_operativo));
+  if(problematicos.length){
+    const firma = problematicos.map(p => `${p.numero}:${p.estatus_operativo}`).sort().join('|');
+    const detalle = problematicos.map(p => `${p.numero} (${p.estatus_operativo})`).join(', ');
+    return { disponible:false, estado:'problema', firma,
+      motivo:`Hay pedidos con un problema real que requiere atención (con incidencia, cancelados o con entrega vencida): ${detalle}.` };
+  }
+  return { disponible:false, estado:'en_proceso', motivo:'Los pedidos siguen en trámite normal (todavía no llegan todos); no hay ningún problema real que reportar.' };
 }
 
 // ----- Validación de destino (punto 4, quinta revisión) -----
@@ -207,23 +285,39 @@ function refaccionesRealmenteDisponibles(db, siniestroId){
 // aquí -- es una situación operativa legítima (un mismo cliente con dos vehículos en el taller a la vez),
 // no un error de captura. Ese es un problema distinto (a quién se le atribuye un mensaje ENTRANTE), ya
 // resuelto por resolverExpedientePorTelefono(), que nunca asigna automáticamente un caso ambiguo.
-function validarDestino(db, siniestroId){
-  const s = db.prepare('SELECT cliente_telefono FROM siniestros WHERE id = ?').get(siniestroId);
-  const telefono = s && s.cliente_telefono;
-  if(!telefono || !String(telefono).trim()){
-    return { valido:false, motivo:'destino_no_vinculado', detalle:'No hay ningún teléfono capturado para este expediente; no se puede enviar ninguna comunicación individual todavía.' };
-  }
-  const digitos = String(telefono).replace(/\D/g, '');
+// Punto 3 (sexta revisión): UNA SOLA función de normalización de teléfono, reusada tanto para el
+// DESTINO (validarDestino, salida) como para la BÚSQUEDA de expediente por teléfono ENTRANTE
+// (resolverExpedientePorTelefono) -- antes cada una tenía su propia lógica (la búsqueda entrante no tenía
+// ninguna: comparaba el string crudo tal cual se guardó en cliente_telefono). Un mismo número capturado
+// como "55 1234 5678" en el expediente y recibido como "5215512345678" desde WhatsApp nunca habría hecho
+// match con la lógica anterior. Devuelve { valido:true, local:'5512345678' } o
+// { valido:false, motivo:'vacio'|'formato_invalido'|'placeholder' }.
+function normalizarTelefonoMX(telefonoCrudo){
+  const telefono = telefonoCrudo == null ? '' : String(telefonoCrudo).trim();
+  if(!telefono) return { valido:false, motivo:'vacio' };
+  const digitos = telefono.replace(/\D/g, '');
   let local = digitos;
   if(digitos.length === 12 && digitos.startsWith('52')) local = digitos.slice(2);
   else if(digitos.length === 13 && digitos.startsWith('521')) local = digitos.slice(3);
-  if(local.length !== 10){
+  if(local.length !== 10) return { valido:false, motivo:'formato_invalido' };
+  if(/^(\d)\1{9}$/.test(local)) return { valido:false, motivo:'placeholder' };
+  return { valido:true, local };
+}
+
+function validarDestino(db, siniestroId){
+  const s = db.prepare('SELECT cliente_telefono FROM siniestros WHERE id = ?').get(siniestroId);
+  const telefono = s && s.cliente_telefono;
+  const norm = normalizarTelefonoMX(telefono);
+  if(!norm.valido){
+    if(norm.motivo === 'vacio'){
+      return { valido:false, motivo:'destino_no_vinculado', detalle:'No hay ningún teléfono capturado para este expediente; no se puede enviar ninguna comunicación individual todavía.' };
+    }
+    if(norm.motivo === 'placeholder'){
+      return { valido:false, motivo:'destino_invalido', detalle:`El teléfono capturado ("${telefono}") parece un valor de prueba o placeholder (mismo dígito repetido), no un número real.` };
+    }
     return { valido:false, motivo:'destino_invalido', detalle:`El teléfono capturado ("${telefono}") no tiene un formato mexicano válido (se esperan 10 dígitos locales, con o sin +52/52 de código de país).` };
   }
-  if(/^(\d)\1{9}$/.test(local)){
-    return { valido:false, motivo:'destino_invalido', detalle:`El teléfono capturado ("${telefono}") parece un valor de prueba o placeholder (mismo dígito repetido), no un número real.` };
-  }
-  return { valido:true, telefonoNormalizado: local };
+  return { valido:true, telefonoNormalizado: norm.local };
 }
 
 // ===================== Registro persistente de errores (punto 8) =====================
@@ -248,9 +342,16 @@ function registrarError(db, { contexto, siniestroId=null, plantillaCodigo=null, 
         // ALERTA-72H-X2 -- un fallo del detector no es lo mismo que un expediente sin avance real, y no
         // debe aparecer mezclado con esas alertas. Funciona con o sin siniestroId (un error puede ser de
         // sistema, p. ej. el barrido programado atrasado, sin pertenecer a ningún expediente concreto).
+        // Punto 7 (sexta revisión): la clave incluye el id de ESTE renglón de whatsapp_errores, no solo
+        // contexto+plantilla. Así, si el error se marca resuelto=1 (whatsapp_errores) y luego el MISMO tipo
+        // de error vuelve a ocurrir, registrarError abre un renglón NUEVO (el filtro de "existente" exige
+        // resuelto=0) con un id distinto -> nueva clave de deduplicación -> nueva alerta. Con la clave
+        // anterior (fija por contexto+plantilla, sin el id) un segundo ciclo del mismo error jamás habría
+        // generado una alerta nueva: habría chocado con el registro ya cerrado del primer ciclo y quedado
+        // deduplicado en silencio, sin que nadie se enterara de la recurrencia.
         registrarEventoInterno(db, { siniestroId: siniestroId || null, codigo:'ALERTA-WA-ERROR',
           disparador:`Error persistente en la detección de WhatsApp Fase A (contexto: ${contexto}${plantillaCodigo ? ', plantilla '+plantillaCodigo : ''}, ${nuevosIntentos} intentos) -- requiere revisión técnica.`,
-          variables:{}, dedupKey:'error:'+contexto+':'+plantillaCodigo });
+          variables:{}, dedupKey:'error:'+contexto+':'+plantillaCodigo+':'+existente.id });
       }
     } else {
       db.prepare(`INSERT INTO whatsapp_errores (contexto,siniestro_id,plantilla_codigo,mensaje,detalle) VALUES (?,?,?,?,?)`)
@@ -298,10 +399,18 @@ function registrarEvento(db, { siniestroId, plantillaCodigo, disparador, variabl
     programadoPara = momentoHabil.utc().format('YYYY-MM-DD HH:mm:ss');
   }
   const prioridad = (!esPlantillaMeta && EVENTOS_INTERNOS[plantillaCodigo]) ? EVENTOS_INTERNOS[plantillaCodigo].prioridad : null;
+  // Punto 8 (sexta revisión): campos de tiempo EXPLÍCITOS, no solo creado_en. detectado_en es el mismo
+  // instante que creado_en (cuándo el detector evaluó y registró esto), pero con nombre propio. Sin
+  // mecanismo de envío real en este modo, simulado_enviado_en es el momento SIMULADO en el que el mensaje
+  // se habría enviado -- igual a programado_para cuando el evento no queda bloqueado, NULL si sí queda
+  // bloqueado (un evento bloqueado nunca llega a un "momento simulado de envío"). enviado_en/entregado_en/
+  // error_en quedan SIEMPRE NULL aquí a propósito: son del futuro servicio de envío real, no de este.
+  const detectadoEn = ahora.format('YYYY-MM-DD HH:mm:ss');
+  const simuladoEnviadoEn = estado === 'registrado' ? programadoPara : null;
   const info = db.prepare(`INSERT INTO whatsapp_eventos_registrados
-      (siniestro_id,plantilla_codigo,estado,tipo_bloqueo,prioridad,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(sid, plantillaCodigo, estado, tipoBloqueoFinal, prioridad, motivoBloqueo, disparador, JSON.stringify(variables||{}), programadoPara, dedup, esPlantillaMeta?1:0);
+      (siniestro_id,plantilla_codigo,estado,tipo_bloqueo,prioridad,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta,detectado_en,simulado_enviado_en)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(sid, plantillaCodigo, estado, tipoBloqueoFinal, prioridad, motivoBloqueo, disparador, JSON.stringify(variables||{}), programadoPara, dedup, esPlantillaMeta?1:0, detectadoEn, simuladoEnviadoEn);
   return { creado:true, id: info.lastInsertRowid, estado };
 }
 
@@ -332,6 +441,10 @@ function registrarConChequeoDelicada(db, { siniestroId, plantillaCodigo, dispara
 //   real -- no existe ningún mecanismo de envío en este modo.
 function condicionDeBloqueoSigueActiva(db, evento){
   if(evento.tipo_bloqueo === 'incidencia_delicada') return tieneIncidenciaDelicadaActiva(db, evento.siniestro_id);
+  // Punto 4 (sexta revisión): 'refacciones_no_disponibles' ya NO se genera (procesarRefaccionesCompletas
+  // fue rediseñado: "sin pedidos"/"en proceso" ya no bloquean nada, y "problema" genera una alerta interna,
+  // no un evento bloqueado de cliente) -- se deja el chequeo por compatibilidad con filas antiguas que ya
+  // existan con ese tipo_bloqueo; para esas, refaccionesRealmenteDisponibles ahora requiere disp.disponible.
   if(evento.tipo_bloqueo === 'refacciones_no_disponibles') return !refaccionesRealmenteDisponibles(db, evento.siniestro_id).disponible;
   if(evento.tipo_bloqueo === 'ubicacion_desconocida') return unidadEnTaller(db, evento.siniestro_id) === 'desconocido';
   if(evento.tipo_bloqueo === 'autorizacion_parcial'){
@@ -418,15 +531,48 @@ function validarAntesDeEnviar(db, eventoId){
   if(!esHorarioHabil(local)){
     return { puedeEnviarse:false, motivo:'Fuera del horario permitido de envío (L-V 9-18, Sáb 9-14).' };
   }
-  // La etapa real vigente todavía corresponde a lo que este evento representa (no se envía algo que ya
-  // quedó obsoleto porque el expediente avanzó a otra etapa desde que se liberó).
+  // La etapa/condición real vigente todavía corresponde a lo que este evento representa (no se envía algo
+  // que ya quedó obsoleto porque el expediente avanzó o cambió desde que se liberó). Punto 2 (sexta
+  // revisión): esto ya NO es exclusivo de continuidad (6.x) -- se extiende a las 12 plantillas del ciclo
+  // principal (5.1-5.12), cada una con su propia condición (ver vigenciaPlantillaPrincipal).
   if(evento.plantilla_codigo.startsWith('6.')){
     const etapaVigente = etapaContinuidadActual(db, siniestro);
     if(etapaVigente !== evento.plantilla_codigo){
       return { puedeEnviarse:false, motivo:`La etapa cambió: el evento es de "${evento.plantilla_codigo}" pero la etapa vigente ahora es "${etapaVigente || 'ninguna'}".` };
     }
+  } else if(evento.plantilla_codigo.startsWith('5.')){
+    if(!vigenciaPlantillaPrincipal(db, siniestro, evento.plantilla_codigo)){
+      return { puedeEnviarse:false, motivo:`La condición que originó "${evento.plantilla_codigo}" ya no se cumple (el expediente avanzó o cambió desde que se registró/liberó este evento).` };
+    }
   }
   return { puedeEnviarse:true, motivo:null };
+}
+
+// Punto 2 (sexta revisión): condición de vigencia propia para cada una de las 12 plantillas del ciclo
+// principal -- ¿la situación que originó el mensaje sigue siendo cierta AHORA MISMO? Sin esto, un mensaje
+// que quedó "liberado_para_programacion" hace tiempo podría enviarse mucho después de que el expediente ya
+// avanzó a una etapa completamente distinta (p. ej. liberar 5.8 "inicia hojalatería" y enviarlo cuando el
+// expediente ya está en pintura). Espejo de la misma condición que usa evaluarYRegistrarCicloPrincipal /
+// procesarRefaccionesCompletas para registrar cada plantilla, para no duplicar reglas de negocio con
+// lógicas distintas en dos lugares.
+function vigenciaPlantillaPrincipal(db, siniestro, codigo){
+  const autorizada = siniestro.estado_autorizacion === 'autorizada';
+  const conPiezas = Number(siniestro.piezas_autorizadas_cambio || 0) > 0;
+  switch(codigo){
+    case '5.1': return true; // la bienvenida es un hecho histórico (se creó el expediente); no caduca.
+    case '5.2': return !!(siniestro.valuacion_fecha_envio && String(siniestro.valuacion_fecha_envio).trim());
+    case '5.3': return autorizada && conPiezas;
+    case '5.4': return refaccionesRealmenteDisponibles(db, siniestro.id).disponible && unidadEnTaller(db, siniestro.id) === 'fuera_taller';
+    case '5.5': return refaccionesRealmenteDisponibles(db, siniestro.id).disponible && unidadEnTaller(db, siniestro.id) === 'en_taller';
+    case '5.6': return autorizada && !conPiezas && unidadEnTaller(db, siniestro.id) === 'en_taller';
+    case '5.7': return autorizada && !conPiezas && unidadEnTaller(db, siniestro.id) === 'fuera_taller';
+    case '5.8': return siniestro.estado_produccion === 'en_laminado';
+    case '5.9': return siniestro.estado_produccion === 'pintura';
+    case '5.10': return siniestro.estado_calidad === 'en_inspeccion';
+    case '5.11': return siniestro.estado_calidad === 'liberado';
+    case '5.12': return !!(siniestro.fecha_entrega_real && String(siniestro.fecha_entrega_real).trim());
+    default: return true; // código desconocido: no se bloquea aquí (no hay regla que aplicar).
+  }
 }
 
 // Se corre en el mismo barrido periódico (punto 8/1). Revalida cada evento "liberado_para_programacion":
@@ -559,15 +705,25 @@ function procesarRefaccionesCompletas(db, siniestroId){
     if(!siniestro || siniestro.requiere_refacciones !== 'si') return;
     const variables = { nombre: siniestro.cliente_nombre||'' };
     const disp = refaccionesRealmenteDisponibles(db, siniestroId);
-    if(!disp.disponible){
-      // Solo bloquea si ya había piezas evaluadas (evita ruido en expedientes que ni siquiera tienen
-      // pedidos todavía -- refaccionesRealmenteDisponibles ya cubre "sin pedidos" con su propio motivo).
-      registrarEvento(db, { siniestroId, plantillaCodigo:'5.5',
-        disparador:'Se evaluó si las refacciones ya están disponibles para continuar la reparación',
-        variables, dedupKey:'refacciones_completas',
-        bloqueadoPorMotivo: disp.motivo, tipoBloqueo:'refacciones_no_disponibles' });
+
+    if(disp.estado === 'sin_pedidos' || disp.estado === 'en_proceso'){
+      // Punto 4 (sexta revisión): sin pedidos todavía, o en trámite normal -- todavía NO hay ninguna
+      // señal real que reportar. Antes esto registraba un evento 5.5 "bloqueado" en ambos casos, aunque el
+      // propio comentario del código decía lo contrario ("evita ruido..."); el código no hacía lo que el
+      // comentario prometía. Ahora, de verdad, no se registra nada: ni un mensaje de cliente ni una alerta.
       return;
     }
+    if(disp.estado === 'problema'){
+      // Pedido(s) con un problema real: SÍ es una señal real que merece atención humana, pero NO es un
+      // mensaje de cliente -- es una alerta interna (ALERTA-PEDIDO-PROBLEMA), separada de las otras dos.
+      // dedupKey incluye la "firma" del problema actual (qué pedidos, en qué estatus): si se resuelve y
+      // más adelante aparece un problema distinto (u otro pedido cae en el mismo estatus), la firma cambia
+      // y se genera una alerta nueva -- no queda silenciada para siempre por la primera.
+      registrarEventoInterno(db, { siniestroId, codigo:'ALERTA-PEDIDO-PROBLEMA',
+        disparador: disp.motivo, variables, dedupKey:'pedido_problema:' + disp.firma });
+      return;
+    }
+    // disp.estado === 'completo': las refacciones sí están disponibles -- sigue el flujo normal.
     const ubicacion = unidadEnTaller(db, siniestroId);
     if(ubicacion === 'desconocido'){
       registrarEvento(db, { siniestroId, plantillaCodigo:'5.5',
@@ -587,12 +743,18 @@ function procesarRefaccionesCompletas(db, siniestroId){
 
 // ----- Etapa actual para continuidad -----
 // Regresa el código 6.x que aplica ahora, o null si no aplica ninguna (expediente cerrado/archivado,
-// calidad ya liberada, autorización rechazada). 'parcial' NO cuenta como autorizado (punto 4): un
-// expediente detenido en autorización parcial sigue mostrando 6.1 "esperando autorización".
+// calidad ya liberada, autorización rechazada o PARCIAL, sin ningún 6.x que la represente).
 function etapaContinuidadActual(db, siniestro){
   if(siniestro.archivado || siniestro.estatus_general === 'Cerrado') return null;
   if(siniestro.estado_calidad === 'liberado') return null;
   if(siniestro.estado_autorizacion === 'rechazada') return null;
+  // Punto 1 (sexta revisión): la versión anterior trataba 'parcial' igual que "todavía sin autorizar"
+  // (ambas caían en el mismo `!== 'autorizada'` y devolvían 6.1, "esperando autorización" -- como si nada
+  // hubiera pasado todavía). Pero una autorización PARCIAL ya generó una decisión humana bloqueada
+  // (tipo_bloqueo 'autorizacion_parcial' en el ciclo principal, ver evaluarYRegistrarCicloPrincipal): el
+  // caso está en revisión de Daniela, no "esperando" en el sentido de 6.1. Por eso NO se registra ningún
+  // 6.x mientras la autorización siga parcial -- ni continuidad de cliente ni confusión con "esperando".
+  if(siniestro.estado_autorizacion === 'parcial') return null;
 
   if(siniestro.estado_autorizacion !== 'autorizada') return '6.1';
 
@@ -605,27 +767,40 @@ function etapaContinuidadActual(db, siniestro){
   return '6.3';
 }
 
-// ===================== Comunicación manual informativa (punto 3, quinta revisión) =====================
-// El objetivo NO es "detectar" que Alejandra escribió algo -- en modo "solo registro", sin conexión real
-// a WhatsApp, el sistema NO PUEDE leer lo que ella envía por su chat individual con el cliente. Por eso la
-// regla es deliberadamente simple y sin ninguna clasificación automática/IA: es Alejandra (o quien
-// registre) quien decide explícitamente, al capturarla, si esa comunicación fue informativa sobre el
-// avance ('informativa_avance', SÍ reinicia el contador) o si fue otra cosa -- un saludo, un acuse de
-// recibo, una nota administrativa ('administrativa', NO lo reinicia). Ningún mensaje ENTRANTE del cliente
-// reinicia el contador por sí solo (el sistema no puede leerlos), y los mensajes escritos dentro del grupo
-// nunca son visibles para este módulo (confirmado con la documentación oficial de Meta, ver la segunda
-// entrega) -- así que tampoco pueden reiniciarlo.
-// NOTA DE ALCANCE: esta función y su tabla ya están listas y probadas, pero todavía NO hay ningún botón ni
-// pantalla para que Alejandra la use (punto 7: sin cambios visibles todavía). Queda pendiente de que
-// Roberto decida cómo se captura (¿un botón junto al chat? ¿un campo en el expediente?) antes de exponerla.
-function registrarComunicacionManual(db, { siniestroId, tipo, nota=null, usuarioId=null }){
-  if(!['informativa_avance','administrativa'].includes(tipo)){
-    throw new Error('Tipo inválido. Usa "informativa_avance" o "administrativa".');
-  }
+// ===================== Comunicación saliente detectada (punto 3 quinta revisión; REDISEÑADO por el =====
+// ===================== punto 9 de la sexta revisión) =====================
+// LA QUINTA ENTREGA hacía que Alejandra (o quien registrara) decidiera A MANO, cada vez, si una
+// comunicación fue "informativa de avance" o "administrativa" -- eso es exactamente la carga operativa
+// que Roberto rechazó en la sexta revisión: "sin agregar trabajo".
+//
+// Antes de rediseñar, se investigó la documentación OFICIAL de Meta (punto 9 lo pide explícitamente: "con
+// documentación y pruebas", no solo código) para confirmar si existe una forma de detectar esto sin que
+// nadie tenga que capturar ni clasificar nada. SÍ existe: cuando un número está en modo Coexistencia
+// (vinculado a Cloud API y usado también desde la app de WhatsApp Business), cada mensaje que se envía
+// manualmente desde esa app dispara un webhook "smb_message_echoes" hacia el número configurado -- Meta ya
+// distingue automáticamente "el negocio le escribió al cliente por la app".
+//   Fuente: developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/overview -- evento
+//   smb_message_echoes: "describes any new messages the business customer sends with the WhatsApp
+//   Business app after onboarding".
+// Como el evento SÍ existe, esta función ya NO recibe ningún "tipo" que alguien tenga que decidir:
+// cualquier mensaje saliente capturado por este mecanismo cuenta, sin excepción, como comunicación real
+// con el cliente -- ya hubo una persona escribiéndole, eso es lo único que importa para el contador de
+// 72h, no si el mensaje era "de avance" o "administrativo" (esa distinción era la fuente de la carga).
+//
+// LÍMITE DURO todavía vigente (prohibición permanente de Roberto): este módulo sigue sin vincular ningún
+// número real ni crear ningún activo en Meta, así que TODAVÍA no existe ningún webhook real que dispare
+// esta función -- vive lista y probada (con payloads sintéticos que imitan la forma de smb_message_echoes)
+// para conectarse el día que Roberto autorice la vinculación real del número, sin necesitar ningún cambio
+// de diseño en ese momento. Hasta entonces, la única forma de que el contador de 72h se reinicie por
+// comunicación manual es llamar a esta función directamente (uso interno/pruebas) -- no hay ningún botón,
+// pantalla ni endpoint de captura manual expuesto (ver server/routes/whatsappFaseA.js: el POST que existía
+// en la quinta entrega se retiró en esta ronda, precisamente porque era la carga operativa rechazada).
+function registrarComunicacionSaliente(db, { siniestroId, referenciaExterna=null, nota=null }){
   const s = db.prepare('SELECT id FROM siniestros WHERE id=?').get(siniestroId);
   if(!s) throw new Error('Siniestro no encontrado.');
+  const notaFinal = nota || (referenciaExterna ? ('echo:' + referenciaExterna) : null);
   const info = db.prepare(`INSERT INTO whatsapp_comunicaciones_manuales (siniestro_id,tipo,nota,registrado_por) VALUES (?,?,?,?)`)
-    .run(siniestroId, tipo, nota, usuarioId);
+    .run(siniestroId, 'informativa_avance', notaFinal, null);
   return db.prepare('SELECT * FROM whatsapp_comunicaciones_manuales WHERE id=?').get(info.lastInsertRowid);
 }
 
@@ -636,10 +811,15 @@ function registrarComunicacionManual(db, { siniestroId, tipo, nota=null, usuario
 // "avance", así que NO reinicia el contador -- eso es lo que permite detectar el segundo periodo
 // consecutivo (punto 2). Si nunca hubo ninguna, se usa la creación del expediente.
 function ultimoAncla(db, siniestroId, siniestroCreadoEn){
+  // Punto 8 (sexta revisión): el ancla ya no usa el crudo creado_en (momento de DETECCIÓN) sino
+  // COALESCE(simulado_enviado_en, creado_en) -- el momento SIMULADO en que ese mensaje se habría enviado
+  // de verdad (igual a "momento real de la comunicación" que pidió Roberto, dentro de lo que "solo
+  // registro" permite sin mecanismo de envío real). El COALESCE es compatibilidad hacia atrás: filas
+  // creadas antes de esta migración no tienen simulado_enviado_en y siguen usando creado_en como antes.
   const ultimoAutomatico = db.prepare(`
-    SELECT creado_en FROM whatsapp_eventos_registrados
+    SELECT COALESCE(simulado_enviado_en, creado_en) AS creado_en FROM whatsapp_eventos_registrados
     WHERE siniestro_id = ? AND estado = 'registrado' AND es_plantilla_meta = 1 AND plantilla_codigo LIKE '5.%'
-    ORDER BY creado_en DESC LIMIT 1
+    ORDER BY COALESCE(simulado_enviado_en, creado_en) DESC LIMIT 1
   `).get(siniestroId);
   const ultimoManual = db.prepare(`
     SELECT registrado_en AS creado_en FROM whatsapp_comunicaciones_manuales
@@ -670,19 +850,32 @@ function barrerContinuidadYPostventa(db){
         if(horas < 72) continue;
         const ventana = Math.floor(horas / 72); // 1 = primer periodo sin novedad; 2+ = periodos consecutivos.
         const variables = { nombre: s.cliente_nombre || '', vehiculo: s.vehiculo || '' };
+        // Punto 6 (sexta revisión): dedupKey anclada al CICLO de estancamiento (ancla + etapa), no a la
+        // ventana numérica. Con 'ventana:1' / 'ventana:'+ventana (versión anterior) pasaban dos cosas
+        // mal: (a) 'ventana:1' era un literal FIJO que nunca cambiaba, así que una vez registrado el
+        // primer mensaje de continuidad, un ciclo de estancamiento POSTERIOR (después de que el cliente sí
+        // recibió avance real y el ancla se movió) jamás habría vuelto a generarlo -- chocaba para siempre
+        // con la fila del primer ciclo; y (b) 'ventana:'+ventana generaba una ALERTA NUEVA por cada
+        // ventana de 72h que pasara sin avance (2, 3, 4...), en vez de una sola por ciclo, como pidió
+        // Roberto. Ahora la clave incluye anclaUTC (que solo cambia cuando hay avance real o cambio de
+        // etapa): mientras el ciclo siga activo, todas las corridas del barrido comparten la misma clave y
+        // deduplican; en cuanto el ancla se mueve (nuevo ciclo), la clave cambia y se genera una nueva.
+        const claveCiclo = 'ciclo:' + anclaUTC + ':' + codigo;
         if(ventana === 1){
           registrarConChequeoDelicada(db, {
             siniestroId: s.id, plantillaCodigo: codigo,
             disparador: '72 horas naturales sin comunicación informativa real en la etapa actual (' + codigo + ')',
-            variables, dedupKey: 'ventana:1',
+            variables, dedupKey: claveCiclo,
           });
         } else {
           // Punto 2: segundo periodo consecutivo (y siguientes) sin avance real -> alerta interna,
-          // NUNCA otra plantilla de Meta. No se vuelve a tranquilizar automáticamente al cliente.
+          // NUNCA otra plantilla de Meta. No se vuelve a tranquilizar automáticamente al cliente. Una sola
+          // alerta por ciclo (punto 6): la MISMA clave de ciclo se reusa sin importar si ya van 2, 3 o 10
+          // ventanas consecutivas -- deduplica hasta que el ciclo termine de verdad.
           registrarEventoInterno(db, {
             siniestroId: s.id, codigo:'ALERTA-72H-X2',
             disparador: `Periodo consecutivo #${ventana} de 72h naturales sin avance real en la etapa ${codigo} -- requiere revisión humana antes de decidir cualquier nueva comunicación.`,
-            variables, dedupKey: 'ventana:' + ventana,
+            variables, dedupKey: claveCiclo,
           });
         }
       } catch(e){ registrarError(db, { contexto:'barrerContinuidadYPostventa:continuidad', siniestroId: s.id, error:e }); }
@@ -725,15 +918,24 @@ function reconciliarEventosPrincipales(db){
 }
 
 // ===================== Resolución de expediente por teléfono (para mensajes entrantes) =====================
+// Punto 3 (sexta revisión): usa normalizarTelefonoMX -- la MISMA función que valida el destino de salida
+// -- para comparar. SQLite no tiene ninguna función nativa para normalizar teléfonos (quitar +52/52,
+// guiones, espacios), así que la comparación exacta "cliente_telefono = ?" de la versión anterior solo
+// hacía match si el teléfono entrante estaba guardado carácter por carácter igual al capturado en el
+// expediente -- un mismo número recibido como "5215512345678" y capturado como "55-1234-5678" nunca habría
+// hecho match. Se trae el universo de candidatos con teléfono capturado y se normaliza cada uno en JS.
 function resolverExpedientePorTelefono(db, telefono){
-  const tel = String(telefono || '').trim();
-  if(!tel) return { resultado:'sin_telefono', siniestro: null, candidatos: [] };
-  const activos = db.prepare(`
-    SELECT id, numero, cliente_nombre, vehiculo, estatus_general
+  const norm = normalizarTelefonoMX(telefono);
+  if(!norm.valido) return { resultado:'sin_telefono', siniestro: null, candidatos: [] };
+  const candidatosCrudos = db.prepare(`
+    SELECT id, numero, cliente_nombre, vehiculo, estatus_general, cliente_telefono
     FROM siniestros
-    WHERE cliente_telefono = ? AND (archivado IS NULL OR archivado = 0) AND estatus_general != 'Cerrado'
+    WHERE cliente_telefono IS NOT NULL AND cliente_telefono != '' AND (archivado IS NULL OR archivado = 0) AND estatus_general != 'Cerrado'
     ORDER BY id DESC
-  `).all(tel);
+  `).all();
+  const activos = candidatosCrudos
+    .filter(c => { const n = normalizarTelefonoMX(c.cliente_telefono); return n.valido && n.local === norm.local; })
+    .map(({ cliente_telefono, ...resto }) => resto);
   if(activos.length === 0) return { resultado:'sin_expediente_activo', siniestro: null, candidatos: [] };
   if(activos.length === 1) return { resultado:'resuelto_automatico', siniestro: activos[0], candidatos: activos };
   return { resultado:'ambiguo_pendiente_asignacion', siniestro: null, candidatos: activos };
@@ -742,11 +944,12 @@ function resolverExpedientePorTelefono(db, telefono){
 module.exports = {
   PLANTILLAS, EVENTOS_INTERNOS,
   esHorarioHabil, siguienteMomentoHabil, horasHabilesTranscurridas, horasNaturalesTranscurridas,
+  normalizarTelefonoMX,
   tieneIncidenciaDelicadaActiva, unidadEnTaller, refaccionesRealmenteDisponibles, validarDestino,
   registrarEvento, registrarEventoInterno, registrarConChequeoDelicada, registrarError,
   condicionDeBloqueoSigueActiva, revisarBloqueadosResueltos, resolverPendienteRevision,
-  registrarComunicacionManual,
-  validarAntesDeEnviar, revalidarEventosLiberados,
+  registrarComunicacionSaliente,
+  validarAntesDeEnviar, vigenciaPlantillaPrincipal, revalidarEventosLiberados,
   evaluarYRegistrarCicloPrincipal,
   procesarCreacionSiniestro, procesarTransicionSiniestro, procesarRefaccionesCompletas,
   etapaContinuidadActual, ultimoAncla, barrerContinuidadYPostventa, reconciliarEventosPrincipales,
