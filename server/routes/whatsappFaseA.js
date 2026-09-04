@@ -9,6 +9,8 @@ const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const whatsappFaseA = require('../whatsappFaseA');
 const whatsappScheduler = require('../whatsappScheduler');
+const whatsappWebhook = require('../whatsappWebhook');
+const activacion = require('../whatsappFaseAActivacion');
 const router = express.Router();
 
 // LEFT JOIN (no INNER): un evento puede ser una alerta de SISTEMA (punto 1/2, quinta revisión) sin
@@ -93,6 +95,65 @@ router.patch('/eventos/:id/revision', requireAuth, requireRole('admin'), (req, r
     res.json(evento);
   } catch(e){
     res.status(400).json({ error: e.message });
+  }
+});
+
+// ===================== Punto 1 (séptima revisión): activación controlada, solo lectura/escritura admin =====
+// GET expone la configuración actual (activo, piloto_todos, piloto_numeros, fecha_corte). PATCH la
+// modifica -- una sola instrucción HTTP (o SQL directo, ver whatsappFaseAActivacion.js) para prender,
+// apagar, o ajustar el piloto, sin redeploy: el scheduler relee esta tabla en cada ciclo (máximo 15 min) y
+// cualquier acción del tablero la respeta al instante (cada hook la relee en cada llamada).
+router.get('/config', requireAuth, requireRole('admin'), (req, res)=>{
+  res.json(activacion.leerConfig(db));
+});
+router.patch('/config', requireAuth, requireRole('admin'), (req, res)=>{
+  const CLAVES_VALIDAS = ['activo','piloto_todos','piloto_numeros','fecha_corte'];
+  const cambios = {};
+  try{
+    for(const clave of CLAVES_VALIDAS){
+      if(req.body[clave] !== undefined){
+        activacion.establecerConfig(db, clave, req.body[clave]);
+        cambios[clave] = req.body[clave];
+      }
+    }
+    if(Object.keys(cambios).length === 0){
+      return res.status(400).json({ error: 'No se envió ninguna clave válida. Usa: ' + CLAVES_VALIDAS.join(', ') + '.' });
+    }
+    res.json({ actualizado: cambios, configActual: activacion.leerConfig(db) });
+  } catch(e){
+    res.status(400).json({ error: e.message });
+  }
+});
+// Procedimiento de reversión del piloto (punto 1): borra ÚNICAMENTE los datos generados para los
+// expedientes indicados (o los de la lista de piloto configurada actualmente, si no se especifica ninguno).
+router.post('/config/revertir-piloto', requireAuth, requireRole('admin'), (req, res)=>{
+  const { numeros } = req.body || {};
+  const resultado = activacion.revertirDatosPiloto(db, Array.isArray(numeros) ? numeros : undefined);
+  res.json(resultado);
+});
+
+// ===================== Punto 3 (séptima revisión): webhook de Coexistencia (smb_message_echoes) ==========
+// NO requiere sesión (Meta no tiene una) -- se autentica exclusivamente con la firma HMAC del header
+// X-Hub-Signature-256, calculada sobre el cuerpo crudo (req.rawBody, capturado en server/index.js). Sin
+// WHATSAPP_APP_SECRET configurado (nunca lo está hoy: no hay número real vinculado), rechaza TODO --
+// estructuralmente inerte hasta que Roberto autorice la vinculación real y se configure el secreto real.
+router.post('/webhooks/echo', (req, res)=>{
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  if(!appSecret){
+    return res.status(503).json({ error: 'Webhook no configurado (falta WHATSAPP_APP_SECRET) -- este módulo sigue sin vincular ningún número real.' });
+  }
+  const firma = req.headers['x-hub-signature-256'];
+  if(!whatsappWebhook.verificarFirma(appSecret, req.rawBody, firma)){
+    return res.status(401).json({ error: 'Firma inválida.' });
+  }
+  try{
+    const resultado = whatsappWebhook.procesarEventoEcho(db, req.body);
+    res.json(resultado);
+  } catch(e){
+    whatsappFaseA.registrarError(db, { contexto:'webhook:echo', error:e });
+    // 200 a propósito: si Meta recibe un error, reintenta agresivamente el mismo webhook -- el error ya
+    // quedó auditado en whatsapp_errores, no hace falta provocar una tormenta de reintentos por lo mismo.
+    res.status(200).json({ procesado:false, motivo:'Error interno, registrado para revisión técnica.' });
   }
 });
 

@@ -1268,6 +1268,42 @@ for(const [col, def] of NUEVAS_COLUMNAS_WA_EVENTOS){
   }
 }
 
+
+/* ===================== WhatsApp Fase A -- séptima revisión (4-sep-2026) =====================
+   Punto 1: activación controlada. Tabla de CONFIGURACIÓN en base de datos (no variables de entorno):
+   se puede prender/apagar el módulo completo, restringir a una lista explícita de expedientes piloto, y
+   fijar una fecha de corte -- todo con una simple actualización SQL, sin necesitar un redeploy en Render.
+   Nace SIEMPRE desactivada (activo='0'): instalar o reiniciar el servicio con esta fila así NO escribe
+   ninguna fila en whatsapp_eventos_registrados/whatsapp_comunicaciones_manuales/whatsapp_errores (ver el
+   gate en cada punto de entrada de server/whatsappFaseA.js y server/whatsappScheduler.js). */
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_config (
+  clave TEXT PRIMARY KEY,
+  valor TEXT
+);
+`);
+const WHATSAPP_CONFIG_DEFAULT = [
+  ['activo', '0'],          // '1' para encender el módulo completo. Por defecto SIEMPRE apagado.
+  ['piloto_todos', '0'],    // '1' para procesar TODA la cartera activa (nunca por defecto -- Roberto: "no
+                              // debe incluir automáticamente toda la cartera activa").
+  ['piloto_numeros', ''],   // lista separada por comas de siniestros.numero -- estos SIEMPRE se procesan
+                              // (sin importar piloto_todos ni fecha_corte) mientras activo='1'.
+  ['fecha_corte', ''],      // 'YYYY-MM-DD HH:mm:ss' -- en modo piloto_todos, los expedientes creados ANTES
+                              // de esta fecha se saltan (no se reconstruyen automáticamente etapas viejas).
+];
+for(const [clave, valor] of WHATSAPP_CONFIG_DEFAULT){
+  const existeConfig = db.prepare('SELECT 1 FROM whatsapp_config WHERE clave=?').get(clave);
+  if(!existeConfig) db.prepare('INSERT INTO whatsapp_config (clave,valor) VALUES (?,?)').run(clave, valor);
+}
+
+// Punto 3: columna para deduplicar por el identificador único del mensaje que asigna Meta (wamid) en el
+// webhook smb_message_echoes -- sin esto, un reintento de entrega del webhook (Meta reintenta si no recibe
+// 200 a tiempo) podría registrarse dos veces como si fueran dos comunicaciones reales distintas.
+if(!tieneColumna('whatsapp_comunicaciones_manuales', 'wamid')){
+  db.exec(`ALTER TABLE whatsapp_comunicaciones_manuales ADD COLUMN wamid TEXT;`);
+}
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_comunicaciones_wamid ON whatsapp_comunicaciones_manuales(wamid) WHERE wamid IS NOT NULL;`);
+
 module.exports = db;
 
 

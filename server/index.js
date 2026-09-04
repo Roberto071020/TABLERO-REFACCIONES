@@ -18,7 +18,11 @@ const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword
 const bcrypt = require('bcryptjs');
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+// verify: guarda el cuerpo crudo (rawBody) además de parsear el JSON -- lo necesita el webhook de
+// WhatsApp Fase A (server/routes/whatsappFaseA.js, punto 3 de la séptima revisión) para validar la firma
+// HMAC de Meta (X-Hub-Signature-256), que se calcula sobre los bytes exactos recibidos, no sobre el objeto
+// ya parseado. No cambia nada del comportamiento existente para el resto de las rutas.
+app.use(express.json({ limit: '2mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(session({
   store: new SqliteSessionStore(db), // corrige "Sesión expirada" tras cada reinicio (antes: MemoryStore)
   secret: process.env.SESSION_SECRET || 'cambia-este-secreto-en-produccion',

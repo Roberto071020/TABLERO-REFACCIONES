@@ -28,6 +28,7 @@ const timezone = require('dayjs/plugin/timezone');
 dayjs.extend(utc);
 dayjs.extend(timezone);
 const TZ = 'America/Mexico_City';
+const activacion = require('./whatsappFaseAActivacion'); // punto 1, séptima revisión: activación controlada
 
 // ----- Catálogo de las 18 plantillas reales (van a Meta). -----
 const PLANTILLAS = {
@@ -78,6 +79,18 @@ const EVENTOS_INTERNOS = {
     prioridad:'media',
     responsableSugerido:'Responsable de refacciones del expediente',
     reglaCierre:'Se cierra (descartado) cuando un humano revisa el/los pedidos señalados y confirma que ya se resolvió o que no requiere más acción. Nunca se cierra sola.',
+  },
+  // Punto 3 (séptima revisión): cuando un mensaje entrante (o un eco de mensaje saliente) llega de un
+  // teléfono vinculado a MÁS DE UN expediente activo, el sistema NUNCA elige uno arbitrariamente ni
+  // reinicia el contador de los dos/varios a la vez -- eso podría enmascarar estancamiento real en el
+  // expediente equivocado. Se registra esta alerta (una sola por teléfono ambiguo, no una por mensaje) para
+  // que un humano decida a cuál expediente corresponde -- sin crear ningún trabajo recurrente para
+  // Alejandra (es interna, admin-only, igual que las otras tres).
+  'ALERTA-TELEFONO-AMBIGUO': {
+    nombre:'Alerta interna: un teléfono con mensaje entrante/eco corresponde a más de un expediente activo',
+    prioridad:'media',
+    responsableSugerido:'Atención a clientes (Alejandra) -- resolución manual, sin capturas nuevas',
+    reglaCierre:'Se cierra (descartado) cuando un humano confirma a cuál expediente corresponde el teléfono, o que la ambigüedad ya no aplica (uno de los expedientes se cerró/archivó). Nunca se cierra sola.',
   },
 };
 
@@ -157,9 +170,28 @@ function horasHabilesTranscurridas(desdeUTC, hastaUTC){
 //      NULL o vacío) -- hallazgo de calidad detectado y aún sin resolver.
 //   6) finiquito_estado='inconformidad_abierta' -- inconformidad formal abierta tras la entrega (aplica
 //      sobre todo a la plantilla 5.12/postventa, que se evalúa después de entregado el vehículo).
-// Evaluado y descartado explícitamente: vales_pendientes (ocurre DESPUÉS de la entrega; ninguna plantilla
-// de este módulo, 5.1-5.12/6.x, cae en esa ventana) y exclusiones_envio (es exclusivo de los correos de
-// Daniela a proveedores, sin relación con el cliente final).
+//   7) entrega_compromiso_gnp=1 con fecha_entrega_prevista ya vencida y sin fecha_entrega_real -- un
+//      compromiso de fecha YA INFORMADO al cliente/aseguradora que no se cumplió (punto 4, séptima
+//      revisión: "incumplimiento de una fecha o compromiso informado").
+//   8) pedidos.estatus_operativo='Entrega vencida' -- una pieza con entrega vencida también es delicada
+//      para el ciclo principal completo, no solo para la alerta interna de refacciones (punto 4, séptima
+//      revisión).
+// Evaluado y descartado explícitamente, con el motivo declarado (punto 4, séptima revisión -- matriz
+// completa de las 8 categorías acordadas, con su tabla/campo real o su limitación, en la sección 4 de la
+// séptima entrega):
+//   - "Queja o inconformidad del cliente" ANTES de la entrega: SC Control no tiene ningún campo o tabla
+//     estructurada para esto hoy (solo texto libre disperso en notas/observaciones, que este módulo nunca
+//     lee ni interpreta, por diseño). LIMITACIÓN DECLARADA: no hay señal real que bloquear antes de la
+//     entrega; después de la entrega SÍ se cubre con finiquito_estado (punto 6 arriba).
+//   - "Daño adicional o accidente" durante el proceso: danos_evidencia es un registro de EVIDENCIA
+//     (fotos/observaciones de daños, capturado sobre todo en admisión), sin ningún campo de estado
+//     abierto/resuelto -- casi todo expediente tiene filas ahí desde el día uno, así que usarlo bloquearía
+//     prácticamente siempre (falso positivo permanente). LIMITACIÓN DECLARADA: no se usa como bloqueo por
+//     no tener una señal confiable de "sin resolver" vs. "ya documentado y superado".
+//   - vales_pendientes: ocurre DESPUÉS de la entrega; ninguna plantilla de este módulo (5.1-5.12/6.x) cae
+//     en esa ventana operativa -- no hay nada que bloquear ahí.
+//   - exclusiones_envio: exclusivo de los correos de Daniela a proveedores, sin relación con el cliente
+//     final.
 function tieneIncidenciaDelicadaActiva(db, siniestroId){
   const incidencias = db.prepare(`
     SELECT COUNT(*) c FROM incidencias i
@@ -191,8 +223,27 @@ function tieneIncidenciaDelicadaActiva(db, siniestroId){
   `).get(siniestroId).c;
   if(checklistRechazado > 0) return true;
 
-  const s2 = db.prepare(`SELECT finiquito_estado FROM siniestros WHERE id = ?`).get(siniestroId);
+  const s2 = db.prepare(`SELECT finiquito_estado, entrega_compromiso_gnp, fecha_entrega_prevista, fecha_entrega_real FROM siniestros WHERE id = ?`).get(siniestroId);
   if(s2 && s2.finiquito_estado === 'inconformidad_abierta') return true;
+
+  // Punto 4 (séptima revisión, matriz de incidencias delicadas): "incumplimiento de una fecha o compromiso
+  // informado" -- entrega_compromiso_gnp=1 significa que YA se le informó al cliente/aseguradora una fecha
+  // de entrega comprometida (campo que se bloquea al capturarse, ver server/routes/siniestros.js). Si esa
+  // fecha (fecha_entrega_prevista) ya pasó y el vehículo todavía no se entrega, es un compromiso incumplido
+  // -- delicado para seguir mandando avisos de rutina como si nada.
+  if(s2 && s2.entrega_compromiso_gnp === 1 && s2.fecha_entrega_prevista && !s2.fecha_entrega_real){
+    const hoy = dayjs.utc().tz(TZ).format('YYYY-MM-DD');
+    if(String(s2.fecha_entrega_prevista).slice(0,10) < hoy) return true;
+  }
+
+  // Un pedido de refacciones con estatus "Entrega vencida" ya genera su propia alerta interna
+  // (ALERTA-PEDIDO-PROBLEMA, punto 4 de la sexta revisión) pero NO bloqueaba, hasta ahora, otras plantillas
+  // del ciclo principal (p. ej. avisar que "inicia pintura" mientras una pieza tiene entrega vencida). Se
+  // agrega aquí para que también cuente como situación delicada de cara al cliente.
+  const pedidoVencido = db.prepare(`
+    SELECT COUNT(*) c FROM pedidos WHERE siniestro_id = ? AND estatus_operativo = 'Entrega vencida'
+  `).get(siniestroId).c;
+  if(pedidoVencido > 0) return true;
 
   return false;
 }
@@ -548,30 +599,66 @@ function validarAntesDeEnviar(db, eventoId){
   return { puedeEnviarse:true, motivo:null };
 }
 
-// Punto 2 (sexta revisión): condición de vigencia propia para cada una de las 12 plantillas del ciclo
-// principal -- ¿la situación que originó el mensaje sigue siendo cierta AHORA MISMO? Sin esto, un mensaje
-// que quedó "liberado_para_programacion" hace tiempo podría enviarse mucho después de que el expediente ya
-// avanzó a una etapa completamente distinta (p. ej. liberar 5.8 "inicia hojalatería" y enviarlo cuando el
-// expediente ya está en pintura). Espejo de la misma condición que usa evaluarYRegistrarCicloPrincipal /
-// procesarRefaccionesCompletas para registrar cada plantilla, para no duplicar reglas de negocio con
-// lógicas distintas en dos lugares.
+// Punto 2 (séptima revisión -- reemplaza el diseño de la sexta): la versión anterior comparaba cada
+// plantilla contra su condición de origen de forma AISLADA (p. ej. "¿sigue autorizado con piezas?"), sin
+// comprobar que el expediente no hubiera avanzado ADEMÁS a una etapa posterior -- por eso Roberto encontró
+// que 5.2 seguía vigente aun ya autorizado, que 5.3 seguía vigente aun con piezas ya recibidas o producción
+// ya iniciada, que 5.6/5.7 no descartaban producción ya iniciada, que 5.11 no comprobaba que ya se hubiera
+// entregado, y que 5.12 no comprobaba nada más allá de la fecha de entrega. Y un código desconocido
+// devolvía true (autorizaba por defecto) en vez de bloquear.
+//
+// Rediseño: UNA sola función, etapaCicloPrincipalActual(), calcula la etapa actual del expediente en el
+// ciclo principal (igual patrón que etapaContinuidadActual() ya usa para 6.x) revisando las condiciones de
+// la MÁS avanzada a la MENOS avanzada -- así que devuelve siempre la etapa más reciente alcanzada, nunca
+// una etapa vieja que técnicamente "sigue siendo cierta" en aislado. vigenciaPlantillaPrincipal() compara
+// el código contra esa etapa única: un mensaje es vigente si y solo si el expediente está EXACTAMENTE en
+// la etapa que ese mensaje representa -- ninguno vigente si ya se pasó a la siguiente.
+function etapaCicloPrincipalActual(db, siniestro){
+  if(siniestro.archivado || siniestro.estatus_general === 'Cerrado') return null;
+  if(siniestro.estado_autorizacion === 'rechazada') return null;
+  if(siniestro.estado_autorizacion === 'parcial') return null; // igual que etapaContinuidadActual: en revisión, ningún 5.x vigente.
+
+  // Eje de postventa: una vez entregado, es una etapa aparte -- nada del ciclo principal previo a la
+  // entrega sigue vigente (si se entregó, ya pasó por todo lo anterior).
+  if(siniestro.fecha_entrega_real && String(siniestro.fecha_entrega_real).trim()) return 'postventa';
+
+  if(siniestro.estado_calidad === 'liberado') return '5.11';
+  if(siniestro.estado_calidad === 'en_inspeccion') return '5.10';
+  if(siniestro.estado_produccion === 'pintura') return '5.9';
+  if(siniestro.estado_produccion === 'en_laminado') return '5.8';
+
+  if(siniestro.estado_autorizacion === 'autorizada'){
+    const conPiezas = Number(siniestro.piezas_autorizadas_cambio || 0) > 0;
+    if(conPiezas){
+      if(refaccionesRealmenteDisponibles(db, siniestro.id).disponible) return 'piezas_listas'; // 5.4/5.5, según ubicación.
+      return '5.3';
+    }
+    return 'autorizado_sin_piezas'; // 5.6/5.7, según ubicación.
+  }
+
+  if(siniestro.valuacion_fecha_envio && String(siniestro.valuacion_fecha_envio).trim()) return '5.2';
+  return '5.1';
+}
+
 function vigenciaPlantillaPrincipal(db, siniestro, codigo){
-  const autorizada = siniestro.estado_autorizacion === 'autorizada';
-  const conPiezas = Number(siniestro.piezas_autorizadas_cambio || 0) > 0;
+  const etapa = etapaCicloPrincipalActual(db, siniestro);
+  if(etapa === null) return false;
   switch(codigo){
-    case '5.1': return true; // la bienvenida es un hecho histórico (se creó el expediente); no caduca.
-    case '5.2': return !!(siniestro.valuacion_fecha_envio && String(siniestro.valuacion_fecha_envio).trim());
-    case '5.3': return autorizada && conPiezas;
-    case '5.4': return refaccionesRealmenteDisponibles(db, siniestro.id).disponible && unidadEnTaller(db, siniestro.id) === 'fuera_taller';
-    case '5.5': return refaccionesRealmenteDisponibles(db, siniestro.id).disponible && unidadEnTaller(db, siniestro.id) === 'en_taller';
-    case '5.6': return autorizada && !conPiezas && unidadEnTaller(db, siniestro.id) === 'en_taller';
-    case '5.7': return autorizada && !conPiezas && unidadEnTaller(db, siniestro.id) === 'fuera_taller';
-    case '5.8': return siniestro.estado_produccion === 'en_laminado';
-    case '5.9': return siniestro.estado_produccion === 'pintura';
-    case '5.10': return siniestro.estado_calidad === 'en_inspeccion';
-    case '5.11': return siniestro.estado_calidad === 'liberado';
-    case '5.12': return !!(siniestro.fecha_entrega_real && String(siniestro.fecha_entrega_real).trim());
-    default: return true; // código desconocido: no se bloquea aquí (no hay regla que aplicar).
+    case '5.1': return etapa === '5.1';
+    case '5.2': return etapa === '5.2';
+    case '5.3': return etapa === '5.3';
+    case '5.4': return etapa === 'piezas_listas' && unidadEnTaller(db, siniestro.id) === 'fuera_taller';
+    case '5.5': return etapa === 'piezas_listas' && unidadEnTaller(db, siniestro.id) === 'en_taller';
+    case '5.6': return etapa === 'autorizado_sin_piezas' && unidadEnTaller(db, siniestro.id) === 'en_taller';
+    case '5.7': return etapa === 'autorizado_sin_piezas' && unidadEnTaller(db, siniestro.id) === 'fuera_taller';
+    case '5.8': return etapa === '5.8';
+    case '5.9': return etapa === '5.9';
+    case '5.10': return etapa === '5.10';
+    case '5.11': return etapa === '5.11';
+    case '5.12': return etapa === 'postventa' && siniestro.encuesta_estado !== 'respondida'; // ya hubo seguimiento -> deja de ser vigente.
+    // Punto 2 (séptima revisión): fail-safe explícito. Un código que este módulo no reconoce NUNCA se
+    // autoriza por defecto -- se bloquea de forma segura, igual que cualquier otro motivo de bloqueo.
+    default: return false;
   }
 }
 
@@ -688,11 +775,18 @@ function evaluarYRegistrarCicloPrincipal(db, siniestro){
   } catch(e){ registrarError(db, { contexto:'ciclo_principal:calidad', siniestroId, error:e }); }
 }
 
+// Punto 1 (séptima revisión): gate de activación -- si el módulo está apagado, o si este expediente en
+// particular no está en el piloto (o no aplica "todos"), NINGUNA de estas tres funciones toca la base de
+// datos. Se hace aquí, en los tres puntos de entrada reales del módulo (creación, transición, refacciones),
+// para que un solo lugar (whatsappFaseAActivacion.siniestroElegible) decida todo -- nada se repite ni se
+// puede quedar desactualizado en un cuarto sitio nuevo que alguien agregue después.
 function procesarCreacionSiniestro(db, siniestro){
+  if(!activacion.siniestroElegible(db, siniestro)) return;
   try{ evaluarYRegistrarCicloPrincipal(db, siniestro); }
   catch(e){ registrarError(db, { contexto:'procesarCreacionSiniestro', siniestroId: siniestro && siniestro.id, error:e }); }
 }
 function procesarTransicionSiniestro(db, { anterior, nuevo }){
+  if(!activacion.siniestroElegible(db, nuevo)) return;
   try{ evaluarYRegistrarCicloPrincipal(db, nuevo); }
   catch(e){ registrarError(db, { contexto:'procesarTransicionSiniestro', siniestroId: anterior && anterior.id, error:e }); }
 }
@@ -703,6 +797,7 @@ function procesarRefaccionesCompletas(db, siniestroId){
   try{
     const siniestro = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(siniestroId);
     if(!siniestro || siniestro.requiere_refacciones !== 'si') return;
+    if(!activacion.siniestroElegible(db, siniestro)) return;
     const variables = { nombre: siniestro.cliente_nombre||'' };
     const disp = refaccionesRealmenteDisponibles(db, siniestroId);
 
@@ -795,12 +890,25 @@ function etapaContinuidadActual(db, siniestro){
 // comunicación manual es llamar a esta función directamente (uso interno/pruebas) -- no hay ningún botón,
 // pantalla ni endpoint de captura manual expuesto (ver server/routes/whatsappFaseA.js: el POST que existía
 // en la quinta entrega se retiró en esta ronda, precisamente porque era la carga operativa rechazada).
-function registrarComunicacionSaliente(db, { siniestroId, referenciaExterna=null, nota=null }){
-  const s = db.prepare('SELECT id FROM siniestros WHERE id=?').get(siniestroId);
+function registrarComunicacionSaliente(db, { siniestroId, referenciaExterna=null, nota=null, wamid=null }){
+  const s = db.prepare('SELECT * FROM siniestros WHERE id=?').get(siniestroId);
   if(!s) throw new Error('Siniestro no encontrado.');
+  // Punto 1 (séptima revisión): mismo gate de activación/piloto que el resto del módulo -- un eco
+  // detectado sobre un expediente fuera del piloto tampoco debe escribir nada.
+  if(!activacion.siniestroElegible(db, s)){
+    return { omitido:true, motivo:'Módulo desactivado o expediente fuera del piloto (whatsapp_config).' };
+  }
+  // Punto 3 (séptima revisión): deduplicación por wamid -- el identificador único que Meta asigna a cada
+  // mensaje. Si Meta reintenta la entrega del webhook (lo hace si no recibe 200 a tiempo), el mismo wamid
+  // llega dos veces; sin este chequeo, se habría registrado como dos comunicaciones reales distintas y
+  // reiniciado el contador de 72h dos veces por el mismo mensaje.
+  if(wamid){
+    const existente = db.prepare('SELECT * FROM whatsapp_comunicaciones_manuales WHERE wamid=?').get(wamid);
+    if(existente) return { ...existente, duplicado:true };
+  }
   const notaFinal = nota || (referenciaExterna ? ('echo:' + referenciaExterna) : null);
-  const info = db.prepare(`INSERT INTO whatsapp_comunicaciones_manuales (siniestro_id,tipo,nota,registrado_por) VALUES (?,?,?,?)`)
-    .run(siniestroId, 'informativa_avance', notaFinal, null);
+  const info = db.prepare(`INSERT INTO whatsapp_comunicaciones_manuales (siniestro_id,tipo,nota,registrado_por,wamid) VALUES (?,?,?,?,?)`)
+    .run(siniestroId, 'informativa_avance', notaFinal, null, wamid);
   return db.prepare('SELECT * FROM whatsapp_comunicaciones_manuales WHERE id=?').get(info.lastInsertRowid);
 }
 
@@ -842,6 +950,7 @@ function barrerContinuidadYPostventa(db){
 
     const activos = db.prepare(`SELECT * FROM siniestros WHERE (archivado IS NULL OR archivado = 0) AND estatus_general != 'Cerrado'`).all();
     for(const s of activos){
+      if(!activacion.siniestroElegible(db, s)) continue; // punto 1, séptima revisión: gate de activación/piloto.
       try{
         const codigo = etapaContinuidadActual(db, s);
         if(!codigo) continue;
@@ -883,6 +992,7 @@ function barrerContinuidadYPostventa(db){
 
     const entregados = db.prepare(`SELECT * FROM siniestros WHERE fecha_entrega_real IS NOT NULL AND fecha_entrega_real != ''`).all();
     for(const s of entregados){
+      if(!activacion.siniestroElegible(db, s)) continue; // punto 1, séptima revisión.
       try{
         const entrega = dayjs.utc(s.fecha_entrega_real);
         if(!entrega.isValid()) continue;
@@ -909,6 +1019,7 @@ function reconciliarEventosPrincipales(db){
   try{
     const activos = db.prepare(`SELECT * FROM siniestros WHERE (archivado IS NULL OR archivado = 0) AND estatus_general != 'Cerrado'`).all();
     for(const s of activos){
+      if(!activacion.siniestroElegible(db, s)) continue; // punto 1, séptima revisión: nunca reconstruye toda la cartera sin permiso explícito.
       try{ evaluarYRegistrarCicloPrincipal(db, s); }
       catch(e){ registrarError(db, { contexto:'reconciliarEventosPrincipales:ciclo', siniestroId: s.id, error:e }); }
       try{ procesarRefaccionesCompletas(db, s.id); }
@@ -949,7 +1060,7 @@ module.exports = {
   registrarEvento, registrarEventoInterno, registrarConChequeoDelicada, registrarError,
   condicionDeBloqueoSigueActiva, revisarBloqueadosResueltos, resolverPendienteRevision,
   registrarComunicacionSaliente,
-  validarAntesDeEnviar, vigenciaPlantillaPrincipal, revalidarEventosLiberados,
+  validarAntesDeEnviar, vigenciaPlantillaPrincipal, etapaCicloPrincipalActual, revalidarEventosLiberados,
   evaluarYRegistrarCicloPrincipal,
   procesarCreacionSiniestro, procesarTransicionSiniestro, procesarRefaccionesCompletas,
   etapaContinuidadActual, ultimoAncla, barrerContinuidadYPostventa, reconciliarEventosPrincipales,

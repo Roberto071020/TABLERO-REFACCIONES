@@ -23,6 +23,8 @@ const app = require('../server/index');
 const db = require('../server/db');
 const whatsappFaseA = require('../server/whatsappFaseA');
 const whatsappScheduler = require('../server/whatsappScheduler');
+const activacion = require('../server/whatsappFaseAActivacion');
+const whatsappWebhook = require('../server/whatsappWebhook');
 const dayjs = require('dayjs');
 const utcPlugin = require('dayjs/plugin/utc');
 const timezonePlugin = require('dayjs/plugin/timezone');
@@ -57,6 +59,12 @@ function tel(){ contador++; return '551' + String(1000000 + contador); }
 test.before(async () => {
   await new Promise(resolve => { server = app.listen(PORT, resolve); });
   await login('daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!');
+  // Séptima revisión (punto 1): el módulo nace INACTIVO por defecto. Todas las pruebas WA-1 a WA-47 fueron
+  // escritas asumiendo que el módulo SIEMPRE procesa -- así que aquí, en un solo lugar, se activa el modo
+  // "piloto_todos" sin fecha de corte para esta base de datos de pruebas exclusivamente. Las pruebas nuevas
+  // de activación (WA-48+) manipulan la configuración por su cuenta y la restauran al terminar.
+  activacion.establecerConfig(db, 'activo', '1');
+  activacion.establecerConfig(db, 'piloto_todos', '1');
 });
 test.after(async () => { await new Promise(resolve => server.close(resolve)); });
 
@@ -791,4 +799,344 @@ test('WA-47 (punto 8, sexta revisión): registrarEvento guarda detectado_en y si
   const siniestro = db.prepare('SELECT * FROM siniestros WHERE id=?').get(s.id);
   const ancla = whatsappFaseA.ultimoAncla(db, s.id, siniestro.creado_en);
   assert.equal(ancla, haceUnRato, 'ultimoAncla debe usar simulado_enviado_en (reciente), no el crudo creado_en (viejo)');
+});
+
+// ===================== SÉPTIMA REVISIÓN (4-sep-2026): punto 1 -- activación controlada =====================
+const crypto = require('node:crypto');
+async function loginAdmin(){ await login('admin@serviciocristian.mx', 'ServicioCristian2026!'); }
+
+test('WA-48 (punto 1, séptima revisión): con el módulo DESACTIVADO (activo=0), ningún expediente nuevo escribe una sola fila', async () => {
+  activacion.establecerConfig(db, 'activo', '0');
+  try{
+    const s = await crearSiniestro({ numero:'WA48', cliente_telefono: tel() });
+    const eventos = await eventosDe(s.id);
+    assert.equal(eventos.length, 0, 'con el módulo desactivado no debe registrarse ni siquiera 5.1');
+    const filasDirectas = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(s.id).c;
+    assert.equal(filasDirectas, 0);
+    // Los barridos periódicos tampoco deben escribir nada mientras está apagado.
+    whatsappFaseA.barrerContinuidadYPostventa(db);
+    whatsappFaseA.reconciliarEventosPrincipales(db);
+    const filasTrasBarrido = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(s.id).c;
+    assert.equal(filasTrasBarrido, 0, 'los barridos periódicos tampoco deben escribir nada con el módulo apagado');
+  } finally {
+    activacion.establecerConfig(db, 'activo', '1');
+    activacion.establecerConfig(db, 'piloto_todos', '1');
+  }
+});
+
+test('WA-49 (punto 1, séptima revisión): con piloto_todos=0, SOLO los expedientes en piloto_numeros se procesan -- el resto de la cartera queda intacta', async () => {
+  activacion.establecerConfig(db, 'piloto_todos', '0');
+  activacion.establecerConfig(db, 'piloto_numeros', 'WA49PILOTO');
+  try{
+    const dentro = await crearSiniestro({ numero:'WA49PILOTO', cliente_telefono: tel() });
+    const fuera = await crearSiniestro({ numero:'WA49FUERA', cliente_telefono: tel() });
+    const eventosDentro = await eventosDe(dentro.id);
+    const eventosFuera = await eventosDe(fuera.id);
+    assert.ok(eventosDentro.find(e => e.plantilla_codigo === '5.1'), 'el expediente EN la lista de piloto sí debe procesarse');
+    assert.equal(eventosFuera.length, 0, 'un expediente FUERA de la lista de piloto (y sin modo "todos") no debe procesarse: no es "toda la cartera activa"');
+  } finally {
+    activacion.establecerConfig(db, 'piloto_todos', '1');
+    activacion.establecerConfig(db, 'piloto_numeros', '');
+  }
+});
+
+test('WA-50 (punto 1, séptima revisión): fecha_corte excluye reconstrucción automática de expedientes anteriores a la activación; la lista de piloto explícita ignora el corte', () => {
+  activacion.establecerConfig(db, 'fecha_corte', '2026-09-10');
+  try{
+    const viejo = { numero:'WA50-VIEJO', creado_en:'2026-09-01 00:00:00' };
+    const nuevo = { numero:'WA50-NUEVO', creado_en:'2026-09-15 00:00:00' };
+    assert.equal(activacion.siniestroElegible(db, viejo), false, 'un expediente creado antes del corte no debe reconstruirse automáticamente (modo "todos")');
+    assert.equal(activacion.siniestroElegible(db, nuevo), true, 'un expediente creado después del corte sí se procesa en modo "todos"');
+    // La lista explícita de piloto (selección manual y deliberada) SIEMPRE gana, sin importar el corte.
+    activacion.establecerConfig(db, 'piloto_numeros', 'WA50-VIEJO');
+    assert.equal(activacion.siniestroElegible(db, viejo), true, 'estar en la lista explícita de piloto ignora la fecha de corte');
+  } finally {
+    activacion.establecerConfig(db, 'fecha_corte', '');
+    activacion.establecerConfig(db, 'piloto_numeros', '');
+  }
+});
+
+test('WA-51 (punto 1, séptima revisión): revertirDatosPiloto borra ÚNICAMENTE los datos del expediente indicado, sin tocar ningún otro', async () => {
+  const a = await crearSiniestro({ numero:'WA51A', cliente_telefono: tel() });
+  const b = await crearSiniestro({ numero:'WA51B', cliente_telefono: tel() });
+  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:a.id, nota:'prueba WA-51 A' });
+  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:b.id, nota:'prueba WA-51 B' });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51', siniestroId:a.id, error:new Error('falso A') });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51', siniestroId:b.id, error:new Error('falso B') });
+
+  const antesA = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(a.id).c;
+  assert.ok(antesA > 0);
+
+  const resultado = activacion.revertirDatosPiloto(db, ['WA51A']);
+  assert.ok(resultado.eventosBorrados > 0);
+  assert.ok(resultado.comunicacionesBorradas > 0);
+  assert.ok(resultado.erroresBorrados > 0);
+
+  const despuesA = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(a.id).c;
+  const comunicacionesA = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(a.id).c;
+  const erroresA = db.prepare('SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=?').get(a.id).c;
+  assert.equal(despuesA, 0, 'el expediente revertido debe quedar sin eventos');
+  assert.equal(comunicacionesA, 0, 'el expediente revertido debe quedar sin comunicaciones');
+  assert.equal(erroresA, 0, 'el expediente revertido debe quedar sin errores');
+
+  const despuesB = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(b.id).c;
+  const comunicacionesB = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(b.id).c;
+  const erroresB = db.prepare('SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=?').get(b.id).c;
+  assert.ok(despuesB > 0, 'otro expediente no incluido en la reversión debe quedar intacto (eventos)');
+  assert.ok(comunicacionesB > 0, 'otro expediente no incluido en la reversión debe quedar intacto (comunicaciones)');
+  assert.ok(erroresB > 0, 'otro expediente no incluido en la reversión debe quedar intacto (errores)');
+});
+
+test('WA-52 (punto 1, séptima revisión): GET/PATCH /config y POST /config/revertir-piloto son admin-only, y PATCH aplica cambios reales', async () => {
+  await login('daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!');
+  let r = await req('GET', '/api/whatsapp-fase-a/config');
+  assert.equal(r.status, 403, 'un usuario no-admin no debe poder leer la configuración de activación');
+
+  await loginAdmin();
+  r = await req('GET', '/api/whatsapp-fase-a/config');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.activo, '1');
+
+  r = await req('PATCH', '/api/whatsapp-fase-a/config', { activo:'0' });
+  assert.equal(r.status, 200);
+  r = await req('GET', '/api/whatsapp-fase-a/config');
+  assert.equal(r.data.activo, '0', 'PATCH debe aplicarse de inmediato, sin redeploy');
+
+  // Restaurar antes de que el resto de la suite lo necesite activo.
+  r = await req('PATCH', '/api/whatsapp-fase-a/config', { activo:'1', piloto_todos:'1' });
+  assert.equal(r.status, 200);
+
+  r = await req('POST', '/api/whatsapp-fase-a/config/revertir-piloto', { numeros:['NO-EXISTE-XYZ'] });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.eventosBorrados, 0);
+
+  r = await req('PATCH', '/api/whatsapp-fase-a/config', { clave_invalida:'x' });
+  assert.equal(r.status, 400, 'una PATCH sin ninguna clave válida debe rechazarse');
+});
+
+// ===================== SÉPTIMA REVISIÓN: punto 2 -- vigencia estricta por etapa (las 12 plantillas 5.x) =====================
+test('WA-53 (punto 2, séptima revisión): recorrido completo del ciclo principal SIN piezas (5.1 -> 5.2 -> 5.6 -> 5.8 -> 5.9 -> 5.10 -> 5.11 -> postventa/5.12) -- cada etapa vuelve inválido el mensaje anterior', async () => {
+  const s = await crearSiniestro({ numero:'WA53', cliente_telefono: tel(), ingreso_tipo:'grua' }); // grua => siempre en_taller
+  let eventos = await eventosDe(s.id);
+  const e51 = eventos.find(e => e.plantilla_codigo === '5.1');
+  assert.ok(e51, 'debe registrar 5.1 al crear con teléfono');
+
+  await loginAdmin();
+  await req('PATCH', `/api/siniestros/${s.id}`, { valuacion_fecha_envio:'2026-09-03' });
+  eventos = await eventosDe(s.id);
+  const e52 = eventos.find(e => e.plantilla_codigo === '5.2');
+  assert.ok(e52, 'debe registrar 5.2 al enviar la valuación');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e51.id).puedeEnviarse, false, '5.1 ya no debe ser vigente una vez que se envió la valuación (etapa avanzó a 5.2)');
+
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:0 });
+  eventos = await eventosDe(s.id);
+  const e56 = eventos.find(e => e.plantilla_codigo === '5.6');
+  assert.ok(e56, 'debe registrar 5.6 (sin piezas, en taller) al autorizar');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e52.id).puedeEnviarse, false, '5.2 ya no debe ser vigente una vez autorizado');
+
+  await loginAdmin();
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_produccion:'en_laminado' });
+  eventos = await eventosDe(s.id);
+  const e58 = eventos.find(e => e.plantilla_codigo === '5.8');
+  assert.ok(e58, 'debe registrar 5.8 al entrar a hojalatería');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e56.id).puedeEnviarse, false, '5.6 ya no debe ser vigente una vez iniciada la producción');
+
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_produccion:'pintura' });
+  eventos = await eventosDe(s.id);
+  const e59 = eventos.find(e => e.plantilla_codigo === '5.9');
+  assert.ok(e59, 'debe registrar 5.9 al entrar a pintura');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e58.id).puedeEnviarse, false, '5.8 ya no debe ser vigente una vez en pintura');
+
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_calidad:'en_inspeccion' });
+  eventos = await eventosDe(s.id);
+  const e510 = eventos.find(e => e.plantilla_codigo === '5.10');
+  assert.ok(e510, 'debe registrar 5.10 al entrar a inspección de calidad');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e59.id).puedeEnviarse, false, '5.9 ya no debe ser vigente una vez en inspección de calidad');
+
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_calidad:'liberado' });
+  eventos = await eventosDe(s.id);
+  const e511 = eventos.find(e => e.plantilla_codigo === '5.11');
+  assert.ok(e511, 'debe registrar 5.11 al liberar calidad');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e510.id).puedeEnviarse, false, '5.10 ya no debe ser vigente una vez liberada la calidad');
+
+  await req('PATCH', `/api/siniestros/${s.id}`, { fecha_entrega_real: dayjs.utc().format('YYYY-MM-DD') });
+  const siniestroEntregado = db.prepare('SELECT * FROM siniestros WHERE id=?').get(s.id);
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e511.id).puedeEnviarse, false, '5.11 ya no debe ser vigente una vez que se registró la entrega real');
+  assert.equal(whatsappFaseA.vigenciaPlantillaPrincipal(db, siniestroEntregado, '5.12'), true, '5.12 (postventa) sí debe ser vigente justo después de la entrega, antes de la encuesta');
+});
+
+test('WA-54 (punto 2, séptima revisión): con piezas a cambio, 5.3 deja de ser vigente en cuanto las refacciones quedan realmente disponibles (5.4/5.5)', async () => {
+  const s = await crearSiniestro({ numero:'WA54', cliente_telefono: tel(), ingreso_tipo:'circulando', requiere_refacciones:'si' });
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  let eventos = await eventosDe(s.id);
+  const e53 = eventos.find(e => e.plantilla_codigo === '5.3');
+  assert.ok(e53, 'debe registrar 5.3 al autorizar con piezas');
+
+  db.prepare(`INSERT INTO pedidos (numero, siniestro_id, estatus_operativo) VALUES ('WA54-PED', ?, 'En proceso de surtido')`).run(s.id);
+  whatsappFaseA.procesarRefaccionesCompletas(db, s.id);
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e53.id).puedeEnviarse, true, '5.3 sigue vigente mientras las piezas no estén realmente disponibles');
+
+  db.prepare(`UPDATE pedidos SET estatus_operativo='Recibido completo' WHERE numero='WA54-PED'`).run();
+  whatsappFaseA.procesarRefaccionesCompletas(db, s.id);
+  eventos = await eventosDe(s.id);
+  const e54 = eventos.find(e => e.plantilla_codigo === '5.4');
+  assert.ok(e54, 'debe registrar 5.4 (piezas listas, unidad fuera del taller) al completarse el pedido');
+  assert.equal(whatsappFaseA.validarAntesDeEnviar(db, e53.id).puedeEnviarse, false, '5.3 ya no debe ser vigente una vez que las piezas están realmente disponibles');
+});
+
+test('WA-55 (punto 2, séptima revisión): 5.7 (sin piezas, fuera del taller) y 5.5 (piezas listas, en taller); un código desconocido siempre falla-seguro (bloquea)', async () => {
+  const fuera = await crearSiniestro({ numero:'WA55A', cliente_telefono: tel(), ingreso_tipo:'circulando' });
+  await autorizarOrlando(fuera.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:0 });
+  let eventos = await eventosDe(fuera.id);
+  assert.ok(eventos.find(e => e.plantilla_codigo === '5.7'), 'sin piezas y fuera del taller debe registrar 5.7');
+
+  const enTaller = await crearSiniestro({ numero:'WA55B', cliente_telefono: tel(), ingreso_tipo:'grua', requiere_refacciones:'si' });
+  await autorizarOrlando(enTaller.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:2 });
+  db.prepare(`INSERT INTO pedidos (numero, siniestro_id, estatus_operativo) VALUES ('WA55B-PED', ?, 'Recibido completo')`).run(enTaller.id);
+  whatsappFaseA.procesarRefaccionesCompletas(db, enTaller.id);
+  eventos = await eventosDe(enTaller.id);
+  assert.ok(eventos.find(e => e.plantilla_codigo === '5.5'), 'piezas listas y unidad en taller debe registrar 5.5');
+
+  const siniestroEnTaller = db.prepare('SELECT * FROM siniestros WHERE id=?').get(enTaller.id);
+  assert.equal(whatsappFaseA.vigenciaPlantillaPrincipal(db, siniestroEnTaller, '5.99'), false, 'un código de plantilla desconocido nunca debe autorizarse por defecto -- debe bloquear');
+});
+
+// ===================== SÉPTIMA REVISIÓN: punto 4 -- dos nuevas señales de incidencia delicada =====================
+test('WA-56 (punto 4, séptima revisión): compromiso de fecha de entrega GNP vencido bloquea por incidencia delicada; cumplir la entrega lo libera', async () => {
+  const s = await crearSiniestro({ numero:'WA56', cliente_telefono: tel() });
+  assert.equal(whatsappFaseA.tieneIncidenciaDelicadaActiva(db, s.id), false);
+  const ayer = dayjs.utc().subtract(1, 'day').format('YYYY-MM-DD');
+  db.prepare(`UPDATE siniestros SET entrega_compromiso_gnp=1, fecha_entrega_prevista=? WHERE id=?`).run(ayer, s.id);
+  assert.equal(whatsappFaseA.tieneIncidenciaDelicadaActiva(db, s.id), true, 'un compromiso de entrega ya vencido y sin entrega real debe bloquear');
+
+  const manana = dayjs.utc().add(1, 'day').format('YYYY-MM-DD');
+  db.prepare(`UPDATE siniestros SET fecha_entrega_prevista=? WHERE id=?`).run(manana, s.id);
+  assert.equal(whatsappFaseA.tieneIncidenciaDelicadaActiva(db, s.id), false, 'un compromiso todavía no vencido no debe bloquear');
+
+  db.prepare(`UPDATE siniestros SET fecha_entrega_prevista=?, fecha_entrega_real=? WHERE id=?`).run(ayer, ayer, s.id);
+  assert.equal(whatsappFaseA.tieneIncidenciaDelicadaActiva(db, s.id), false, 'si ya se registró la entrega real, un compromiso vencido ya no bloquea (se cumplió, aunque tarde)');
+});
+
+test('WA-57 (punto 4, séptima revisión): un pedido con "Entrega vencida" bloquea el ciclo principal completo, no solo la alerta interna de refacciones', async () => {
+  const s = await crearSiniestro({ numero:'WA57', cliente_telefono: tel() });
+  assert.equal(whatsappFaseA.tieneIncidenciaDelicadaActiva(db, s.id), false);
+  db.prepare(`INSERT INTO pedidos (numero, siniestro_id, estatus_operativo) VALUES ('WA57-PED', ?, 'Entrega vencida')`).run(s.id);
+  assert.equal(whatsappFaseA.tieneIncidenciaDelicadaActiva(db, s.id), true, 'un pedido con entrega vencida debe contar como situación delicada para todo el ciclo principal');
+});
+
+// ===================== SÉPTIMA REVISIÓN: punto 3 -- flujo completo del webhook smb_message_echoes =====================
+function firmar(secret, rawBody){
+  return 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+}
+async function postWebhook(payload, { secret, firmaIncorrecta=false } = {}){
+  const raw = JSON.stringify(payload);
+  const headers = { 'Content-Type':'application/json' };
+  if(secret){
+    headers['X-Hub-Signature-256'] = firmaIncorrecta ? 'sha256=' + '0'.repeat(64) : firmar(secret, raw);
+  }
+  const res = await fetch(BASE + '/api/whatsapp-fase-a/webhooks/echo', { method:'POST', headers, body: raw });
+  let data = null;
+  try { data = await res.json(); } catch(e) {}
+  return { status: res.status, data };
+}
+
+test('WA-58 (punto 3, séptima revisión): sin WHATSAPP_APP_SECRET configurado, el webhook rechaza TODO -- estructuralmente inerte sin número real vinculado', async () => {
+  delete process.env.WHATSAPP_APP_SECRET;
+  const r = await postWebhook({ id:'wamid.WA58', type:'text', to:'5215512340001' });
+  assert.equal(r.status, 503);
+});
+
+test('WA-59 (punto 3, séptima revisión): con secreto configurado, una firma inválida se rechaza (401); una firma válida se acepta', async () => {
+  process.env.WHATSAPP_APP_SECRET = 'secreto_de_prueba_wa59';
+  try{
+    let r = await postWebhook({ id:'wamid.WA59-bad', type:'text', to:'5215512340002' }, { secret:process.env.WHATSAPP_APP_SECRET, firmaIncorrecta:true });
+    assert.equal(r.status, 401);
+
+    const s = await crearSiniestro({ numero:'WA59', cliente_telefono:'5512340002' });
+    r = await postWebhook({ id:'wamid.WA59-ok', type:'text', to:'5215512340002' }, { secret:process.env.WHATSAPP_APP_SECRET });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.procesado, true);
+    assert.equal(r.data.siniestroId, s.id);
+    const fila = db.prepare(`SELECT * FROM whatsapp_comunicaciones_manuales WHERE wamid='wamid.WA59-ok'`).get();
+    assert.ok(fila, 'debe quedar registrada la comunicación con su wamid');
+  } finally {
+    delete process.env.WHATSAPP_APP_SECRET;
+  }
+});
+
+test('WA-60 (punto 3, séptima revisión): el mismo wamid reenviado (reintento de Meta) se detecta como duplicado, sin registrar una segunda comunicación', async () => {
+  process.env.WHATSAPP_APP_SECRET = 'secreto_de_prueba_wa60';
+  try{
+    const s = await crearSiniestro({ numero:'WA60', cliente_telefono:'5512340003' });
+    const payload = { id:'wamid.WA60-dup', type:'text', to:'5215512340003' };
+    let r = await postWebhook(payload, { secret:process.env.WHATSAPP_APP_SECRET });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.procesado, true);
+    r = await postWebhook(payload, { secret:process.env.WHATSAPP_APP_SECRET });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.procesado, false);
+    assert.match(r.data.motivo, /duplicado/i);
+    const total = db.prepare(`SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE wamid='wamid.WA60-dup'`).get().c;
+    assert.equal(total, 1, 'un reintento con el mismo wamid nunca debe producir una segunda fila');
+  } finally {
+    delete process.env.WHATSAPP_APP_SECRET;
+  }
+});
+
+test('WA-61 (punto 3, séptima revisión): un eco de tipo "reaction" no cuenta como comunicación nueva -- filtro estructural, no interpretación de contenido', async () => {
+  process.env.WHATSAPP_APP_SECRET = 'secreto_de_prueba_wa61';
+  try{
+    const s = await crearSiniestro({ numero:'WA61', cliente_telefono:'5512340004' });
+    const r = await postWebhook({ id:'wamid.WA61-reaction', type:'reaction', to:'5215512340004' }, { secret:process.env.WHATSAPP_APP_SECRET });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.procesado, false);
+    assert.match(r.data.motivo, /reacción|contenido nuevo/i);
+    const fila = db.prepare(`SELECT * FROM whatsapp_comunicaciones_manuales WHERE wamid='wamid.WA61-reaction'`).get();
+    assert.equal(fila, undefined, 'una reacción nunca debe registrarse como comunicación');
+  } finally {
+    delete process.env.WHATSAPP_APP_SECRET;
+  }
+});
+
+test('WA-62 (punto 3, séptima revisión): teléfono ambiguo (2+ expedientes activos) NUNCA elige uno arbitrariamente ni reinicia ningún contador -- una sola alerta interna por teléfono', async () => {
+  process.env.WHATSAPP_APP_SECRET = 'secreto_de_prueba_wa62';
+  try{
+    const telCompartido = '5512340005';
+    const uno = await crearSiniestro({ numero:'WA62A', cliente_telefono: telCompartido });
+    const dos = await crearSiniestro({ numero:'WA62B', cliente_telefono: telCompartido });
+
+    let r = await postWebhook({ id:'wamid.WA62-1', type:'text', to:'5215512340005' }, { secret:process.env.WHATSAPP_APP_SECRET });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.procesado, false);
+    assert.match(r.data.motivo, /ambigu/i);
+    assert.deepEqual(r.data.candidatos.sort(), ['WA62A','WA62B'].sort(), 'debe listar los candidatos, sin elegir ninguno');
+
+    const comUno = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(uno.id).c;
+    const comDos = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(dos.id).c;
+    assert.equal(comUno, 0, 'ningún contador debe reiniciarse mientras la ambigüedad no se resuelva');
+    assert.equal(comDos, 0);
+
+    const alertas1 = db.prepare(`SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE plantilla_codigo='ALERTA-TELEFONO-AMBIGUO'`).get().c;
+    assert.equal(alertas1, 1, 'debe registrarse exactamente una alerta interna');
+
+    // Un segundo mensaje ambiguo (wamid distinto) del mismo teléfono no debe generar trabajo recurrente:
+    // sigue siendo la MISMA alerta (dedup por teléfono, no por mensaje).
+    r = await postWebhook({ id:'wamid.WA62-2', type:'text', to:'5215512340005' }, { secret:process.env.WHATSAPP_APP_SECRET });
+    assert.equal(r.data.procesado, false);
+    const alertas2 = db.prepare(`SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE plantilla_codigo='ALERTA-TELEFONO-AMBIGUO'`).get().c;
+    assert.equal(alertas2, 1, 'un segundo mensaje ambiguo del mismo teléfono no debe generar una alerta nueva ni trabajo recurrente para Alejandra');
+  } finally {
+    delete process.env.WHATSAPP_APP_SECRET;
+  }
+});
+
+test('WA-63 (punto 3, séptima revisión): verificarFirma -- casos de borde (sin secreto, sin firma, longitud distinta, firma correcta)', () => {
+  const secreto = 'x'.repeat(20);
+  const raw = Buffer.from('{"id":"wamid.X"}');
+  const firmaOk = firmar(secreto, raw);
+  assert.equal(whatsappWebhook.verificarFirma(null, raw, firmaOk), false);
+  assert.equal(whatsappWebhook.verificarFirma(secreto, raw, null), false);
+  assert.equal(whatsappWebhook.verificarFirma(secreto, raw, 'sha256=abc'), false);
+  assert.equal(whatsappWebhook.verificarFirma(secreto, raw, firmaOk), true);
+  assert.equal(whatsappWebhook.verificarFirma(secreto, raw, firmaOk.slice(0, -2) + 'zz'), false);
 });

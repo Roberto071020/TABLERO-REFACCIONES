@@ -57,6 +57,7 @@ const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 dayjs.extend(utc);
 const whatsappFaseA = require('./whatsappFaseA');
+const activacion = require('./whatsappFaseAActivacion'); // punto 1, séptima revisión
 
 const INTERVALO_MS_DEFAULT = 15 * 60 * 1000; // cada 15 minutos
 const UMBRAL_ATRASO_MINUTOS = 45; // 3x el intervalo esperado -- a partir de aquí se considera "atrasado"
@@ -80,6 +81,13 @@ function limpiarEjecucionesColgadas(db){
 function ejecutarBarridoProgramado(db, { disparadoPor = 'scheduler' } = {}){
   if(corriendoAhora){
     return { omitido:true, motivo:'Ya hay una ejecución en curso en este mismo proceso (protección de concurrencia).' };
+  }
+  // Punto 1 (séptima revisión): si el módulo está desactivado (whatsapp_config.activo != '1'), el barrido
+  // sale AQUÍ, antes de crear siquiera la fila de whatsapp_scheduler_ejecuciones -- garantiza que instalar
+  // o reiniciar el servicio con la función desactivada no escribe NINGUNA fila, en ninguna tabla de este
+  // módulo, ni siquiera la de su propio historial de ejecuciones.
+  if(!activacion.activacionHabilitada(db)){
+    return { omitido:true, motivo:'Módulo WhatsApp Fase A desactivado (whatsapp_config.activo=0) -- no se procesa ni se escribe nada.' };
   }
   corriendoAhora = true;
   try{
@@ -120,6 +128,7 @@ function estadoScheduler(db){
 // mecanismo principal sigue siendo el setInterval de iniciarSchedulerWhatsApp).
 function detectarYAlertarAtraso(db){
   try{
+    if(!activacion.activacionHabilitada(db)) return; // desactivado: no tiene sentido alertar por un barrido que no debe correr.
     const estado = estadoScheduler(db);
     if(estado.nuncaHaCorrido) return; // el proceso recién arrancó; dale tiempo antes de alarmar.
     if(estado.atrasado){
