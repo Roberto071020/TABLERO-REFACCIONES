@@ -405,8 +405,8 @@ function registrarError(db, { contexto, siniestroId=null, plantillaCodigo=null, 
           variables:{}, dedupKey:'error:'+contexto+':'+plantillaCodigo+':'+existente.id });
       }
     } else {
-      db.prepare(`INSERT INTO whatsapp_errores (contexto,siniestro_id,plantilla_codigo,mensaje,detalle) VALUES (?,?,?,?,?)`)
-        .run(contexto, siniestroId, plantillaCodigo, mensaje, detalle);
+      db.prepare(`INSERT INTO whatsapp_errores (contexto,siniestro_id,plantilla_codigo,mensaje,detalle,piloto_run_id) VALUES (?,?,?,?,?,?)`)
+        .run(contexto, siniestroId, plantillaCodigo, mensaje, detalle, activacion.pilotoRunActual(db));
     }
   } catch(e2){ console.error('[whatsappFaseA] registrarError también falló (no se interrumpe la operación principal):', e2.message); }
 }
@@ -459,9 +459,9 @@ function registrarEvento(db, { siniestroId, plantillaCodigo, disparador, variabl
   const detectadoEn = ahora.format('YYYY-MM-DD HH:mm:ss');
   const simuladoEnviadoEn = estado === 'registrado' ? programadoPara : null;
   const info = db.prepare(`INSERT INTO whatsapp_eventos_registrados
-      (siniestro_id,plantilla_codigo,estado,tipo_bloqueo,prioridad,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta,detectado_en,simulado_enviado_en)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(sid, plantillaCodigo, estado, tipoBloqueoFinal, prioridad, motivoBloqueo, disparador, JSON.stringify(variables||{}), programadoPara, dedup, esPlantillaMeta?1:0, detectadoEn, simuladoEnviadoEn);
+      (siniestro_id,plantilla_codigo,estado,tipo_bloqueo,prioridad,motivo_bloqueo,disparador,variables_json,programado_para,dedup_key,es_plantilla_meta,detectado_en,simulado_enviado_en,piloto_run_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(sid, plantillaCodigo, estado, tipoBloqueoFinal, prioridad, motivoBloqueo, disparador, JSON.stringify(variables||{}), programadoPara, dedup, esPlantillaMeta?1:0, detectadoEn, simuladoEnviadoEn, activacion.pilotoRunActual(db));
   return { creado:true, id: info.lastInsertRowid, estado };
 }
 
@@ -863,7 +863,7 @@ function etapaContinuidadActual(db, siniestro){
 }
 
 // ===================== Comunicación saliente detectada (punto 3 quinta revisión; REDISEÑADO por el =====
-// ===================== punto 9 de la sexta revisión) =====================
+// ===================== punto 9 de la sexta revisión; corregido por el punto 2 de la octava revisión) =====
 // LA QUINTA ENTREGA hacía que Alejandra (o quien registrara) decidiera A MANO, cada vez, si una
 // comunicación fue "informativa de avance" o "administrativa" -- eso es exactamente la carga operativa
 // que Roberto rechazó en la sexta revisión: "sin agregar trabajo".
@@ -877,19 +877,15 @@ function etapaContinuidadActual(db, siniestro){
 //   Fuente: developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/overview -- evento
 //   smb_message_echoes: "describes any new messages the business customer sends with the WhatsApp
 //   Business app after onboarding".
-// Como el evento SÍ existe, esta función ya NO recibe ningún "tipo" que alguien tenga que decidir:
-// cualquier mensaje saliente capturado por este mecanismo cuenta, sin excepción, como comunicación real
-// con el cliente -- ya hubo una persona escribiéndole, eso es lo único que importa para el contador de
-// 72h, no si el mensaje era "de avance" o "administrativo" (esa distinción era la fuente de la carga).
 //
-// LÍMITE DURO todavía vigente (prohibición permanente de Roberto): este módulo sigue sin vincular ningún
-// número real ni crear ningún activo en Meta, así que TODAVÍA no existe ningún webhook real que dispare
-// esta función -- vive lista y probada (con payloads sintéticos que imitan la forma de smb_message_echoes)
-// para conectarse el día que Roberto autorice la vinculación real del número, sin necesitar ningún cambio
-// de diseño en ese momento. Hasta entonces, la única forma de que el contador de 72h se reinicie por
-// comunicación manual es llamar a esta función directamente (uso interno/pruebas) -- no hay ningún botón,
-// pantalla ni endpoint de captura manual expuesto (ver server/routes/whatsappFaseA.js: el POST que existía
-// en la quinta entrega se retiró en esta ronda, precisamente porque era la carga operativa rechazada).
+// CORRECCIÓN (octava revisión, punto 2): "Meta no distingue un avance real de un saludo o mensaje
+// administrativo. Por ello, los ecos manuales deben conservarse en el historial y deduplicarse mediante
+// wamid, pero no deben reiniciar automáticamente el contador de 72 horas." Esta función SIGUE registrando
+// cada eco (historial completo, deduplicado por wamid, sin que nadie tenga que clasificar nada) -- lo que
+// cambió es que ultimoAncla() (más abajo) ya NO la consulta. El contador de continuidad de 72h se reinicia
+// EXCLUSIVAMENTE por una comunicación automática del propio sistema (una de las 12 plantillas 5.x,
+// registrada porque el expediente tuvo un cambio de estado real y verificable en SC Control) -- nunca por
+// un eco de mensaje manual, sin importar su contenido.
 function registrarComunicacionSaliente(db, { siniestroId, referenciaExterna=null, nota=null, wamid=null }){
   const s = db.prepare('SELECT * FROM siniestros WHERE id=?').get(siniestroId);
   if(!s) throw new Error('Siniestro no encontrado.');
@@ -900,24 +896,28 @@ function registrarComunicacionSaliente(db, { siniestroId, referenciaExterna=null
   }
   // Punto 3 (séptima revisión): deduplicación por wamid -- el identificador único que Meta asigna a cada
   // mensaje. Si Meta reintenta la entrega del webhook (lo hace si no recibe 200 a tiempo), el mismo wamid
-  // llega dos veces; sin este chequeo, se habría registrado como dos comunicaciones reales distintas y
-  // reiniciado el contador de 72h dos veces por el mismo mensaje.
+  // llega dos veces; sin este chequeo, se habría registrado dos veces la misma comunicación en el
+  // historial.
   if(wamid){
     const existente = db.prepare('SELECT * FROM whatsapp_comunicaciones_manuales WHERE wamid=?').get(wamid);
     if(existente) return { ...existente, duplicado:true };
   }
   const notaFinal = nota || (referenciaExterna ? ('echo:' + referenciaExterna) : null);
-  const info = db.prepare(`INSERT INTO whatsapp_comunicaciones_manuales (siniestro_id,tipo,nota,registrado_por,wamid) VALUES (?,?,?,?,?)`)
-    .run(siniestroId, 'informativa_avance', notaFinal, null, wamid);
+  const info = db.prepare(`INSERT INTO whatsapp_comunicaciones_manuales (siniestro_id,tipo,nota,registrado_por,wamid,piloto_run_id) VALUES (?,?,?,?,?,?)`)
+    .run(siniestroId, 'informativa_avance', notaFinal, null, wamid, activacion.pilotoRunActual(db));
   return db.prepare('SELECT * FROM whatsapp_comunicaciones_manuales WHERE id=?').get(info.lastInsertRowid);
 }
 
-// Ancla de tiempo para medir continuidad (punto 1): la más reciente entre (a) la última comunicación
-// informativa REAL registrada -- una de las 12 plantillas del ciclo principal (5.x), ya "registrada" (no
-// bloqueada, no interna) -- y (b) la última comunicación MANUAL marcada explícitamente como
-// 'informativa_avance' (punto 3, quinta revisión). Un mensaje de continuidad (6.x) no cuenta como
-// "avance", así que NO reinicia el contador -- eso es lo que permite detectar el segundo periodo
-// consecutivo (punto 2). Si nunca hubo ninguna, se usa la creación del expediente.
+// Ancla de tiempo para medir continuidad (punto 1) -- REDISEÑADO (octava revisión, punto 2). Hasta la
+// séptima entrega, esta función tomaba la más reciente entre (a) la última plantilla del ciclo principal
+// (5.x) registrada automáticamente y (b) la última comunicación MANUAL (un eco de smb_message_echoes).
+// Roberto corrigió esto: "Meta no distingue un avance real de un saludo o mensaje administrativo" -- así
+// que un eco manual NUNCA puede ser una señal confiable de que el expediente tuvo avance real. Ahora el
+// ancla usa EXCLUSIVAMENTE la última plantilla del ciclo principal (5.x) ya registrada -- es decir, un
+// cambio de estado REAL y VERIFICABLE del expediente en SC Control (autorización, cambio de etapa de
+// producción, calidad, etc.), nunca un mensaje. Un mensaje de continuidad (6.x) tampoco cuenta como
+// "avance" (eso es lo que permite detectar el segundo periodo consecutivo, punto 2 de la cuarta revisión).
+// Si nunca hubo ninguna plantilla automática registrada, se usa la creación del expediente.
 function ultimoAncla(db, siniestroId, siniestroCreadoEn){
   // Punto 8 (sexta revisión): el ancla ya no usa el crudo creado_en (momento de DETECCIÓN) sino
   // COALESCE(simulado_enviado_en, creado_en) -- el momento SIMULADO en que ese mensaje se habría enviado
@@ -929,17 +929,11 @@ function ultimoAncla(db, siniestroId, siniestroCreadoEn){
     WHERE siniestro_id = ? AND estado = 'registrado' AND es_plantilla_meta = 1 AND plantilla_codigo LIKE '5.%'
     ORDER BY COALESCE(simulado_enviado_en, creado_en) DESC LIMIT 1
   `).get(siniestroId);
-  const ultimoManual = db.prepare(`
-    SELECT registrado_en AS creado_en FROM whatsapp_comunicaciones_manuales
-    WHERE siniestro_id = ? AND tipo = 'informativa_avance'
-    ORDER BY registrado_en DESC LIMIT 1
-  `).get(siniestroId);
-  // OJO: siniestroCreadoEn es solo el valor de RESPALDO cuando nunca hubo ninguna comunicación real
-  // (automática o manual) -- no compite contra ellas. Si compitiera, la fecha de creación (casi siempre
-  // más reciente que un ancla intencionalmente vieja) ganaría siempre y el contador nunca avanzaría.
-  const candidatos = [ultimoAutomatico && ultimoAutomatico.creado_en, ultimoManual && ultimoManual.creado_en].filter(Boolean);
-  if(candidatos.length === 0) return siniestroCreadoEn;
-  return candidatos.reduce((mas, actual) => (dayjs.utc(actual).isAfter(dayjs.utc(mas)) ? actual : mas));
+  // OJO: siniestroCreadoEn es solo el valor de RESPALDO cuando nunca hubo ninguna comunicación automática
+  // real -- no compite contra ella. Si compitiera, la fecha de creación (casi siempre más reciente que un
+  // ancla intencionalmente vieja) ganaría siempre y el contador nunca avanzaría.
+  if(!ultimoAutomatico || !ultimoAutomatico.creado_en) return siniestroCreadoEn;
+  return ultimoAutomatico.creado_en;
 }
 
 // ----- Barrido periódico: continuidad de 72h NATURALES (6.1-6.6 / alerta interna) + postventa 48h (5.12). -----

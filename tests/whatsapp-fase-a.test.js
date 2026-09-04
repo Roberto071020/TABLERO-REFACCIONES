@@ -524,21 +524,28 @@ test('WA-29 (punto 2): una alerta interna se cierra con la misma acción explíc
 });
 
 // ---- Punto 9 (sexta revisión): comunicación saliente detectada automáticamente (rediseño del punto 3) ----
-test('WA-30 (punto 9): registrarComunicacionSaliente reinicia el contador de continuidad, sin que nadie clasifique nada', async () => {
+// CORREGIDO por el punto 2 de la octava revisión: "Meta no distingue un avance real de un saludo o mensaje
+// administrativo" -- un eco manual YA NO reinicia el contador de continuidad. Se conserva en el historial y
+// se deduplica por wamid, pero el ancla solo se mueve por un avance AUTOMÁTICO real (ver WA-64).
+test('WA-30 (punto 9, corregido por el punto 2 de la octava revisión): un eco manual reciente NO impide que la continuidad se active -- ya no reinicia el ancla', async () => {
   const s = await crearSiniestro({ numero:'WA30', cliente_telefono: tel(), ingreso_tipo:'grua' });
   await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-01', autorizador:'X', piezas_autorizadas_cambio:0 });
   // Se retrasan los eventos 5.x a 100 horas atrás (ya pasarían las 72h si no hubiera nada más reciente).
   const hace100h = dayjs.utc().subtract(100, 'hour').format('YYYY-MM-DD HH:mm:ss');
   db.prepare(`UPDATE whatsapp_eventos_registrados SET creado_en=?, simulado_enviado_en=? WHERE siniestro_id=? AND plantilla_codigo LIKE '5.%'`).run(hace100h, hace100h, s.id);
-  // Simula lo que el futuro webhook "smb_message_echoes" de Coexistencia habría entregado -- sin que
-  // nadie decida a mano si fue "informativa" o "administrativa" (ver el comentario completo en
-  // whatsappFaseA.js): cualquier mensaje saliente manual cuenta como comunicación real.
+  // Simula lo que el futuro webhook "smb_message_echoes" de Coexistencia habría entregado -- se registra
+  // en el historial (deduplicado por wamid) pero, a partir de esta corrección, NO reinicia el ancla.
   const comunicacion = whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:s.id, referenciaExterna:'wamid.TEST123' });
   db.prepare(`UPDATE whatsapp_comunicaciones_manuales SET registrado_en=? WHERE id=?`).run(dayjs.utc().subtract(10,'hour').format('YYYY-MM-DD HH:mm:ss'), comunicacion.id);
   whatsappFaseA.barrerContinuidadYPostventa(db);
   const eventos = await eventosDe(s.id);
-  assert.equal(eventos.find(e => e.plantilla_codigo && e.plantilla_codigo.startsWith('6.')), undefined,
-    'con una comunicación saliente detectada hace 10h, todavía NO deben pasar 72h -- no debe activarse la continuidad');
+  // Con 100h desde el último evento AUTOMÁTICO (ventana=1, el primer periodo sin novedad), el sistema
+  // registra el mensaje de continuidad (6.x) correspondiente -- no todavía ALERTA-72H-X2 (esa es a partir
+  // del segundo periodo consecutivo, ver WA-44). Lo que esta prueba demuestra es que, pese al eco manual
+  // reciente (hace 10h), el ancla siguió en el evento automático de 100h -- si el eco hubiera reiniciado el
+  // contador (comportamiento anterior a esta corrección), NINGÚN mensaje de continuidad se habría generado.
+  assert.ok(eventos.find(e => e.plantilla_codigo && e.plantilla_codigo.startsWith('6.')),
+    'aunque hubo un eco manual hace 10h, el ancla sigue en el último evento automático (100h) -- ya pasaron 72h y debe activarse la continuidad: el eco no reinicia el contador.');
 });
 
 test('WA-31 (punto 9): ya no existe ningún endpoint de captura manual -- el POST se retiró (sin agregar trabajo a Alejandra)', async () => {
@@ -723,7 +730,7 @@ test('WA-43 (punto 3, sexta revisión): validarDestino acepta el mismo abanico d
   assert.equal(d1.telefonoNormalizado, crudo);
 });
 
-test('WA-44 (punto 6, sexta revisión): un ciclo NUEVO (tras avance real) sí genera una alerta ALERTA-72H-X2 nueva, distinta de la del ciclo anterior', async () => {
+test('WA-44 (punto 6, sexta revisión; avance real corregido por el punto 2 de la octava revisión): un ciclo NUEVO (tras un avance AUTOMÁTICO real) sí genera una alerta ALERTA-72H-X2 nueva, distinta de la del ciclo anterior', async () => {
   const s = await crearSiniestro({ numero:'WA44', cliente_telefono: tel(), ingreso_tipo:'grua' });
   await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-01', autorizador:'X', piezas_autorizadas_cambio:0 });
   const hace150h = dayjs.utc().subtract(150, 'hour').format('YYYY-MM-DD HH:mm:ss');
@@ -732,16 +739,22 @@ test('WA-44 (punto 6, sexta revisión): un ciclo NUEVO (tras avance real) sí ge
   let eventos = await eventosDe(s.id);
   assert.equal(eventos.filter(e => e.plantilla_codigo === 'ALERTA-72H-X2').length, 1, 'primer ciclo: una alerta');
 
-  // Avance real: una comunicación saliente detectada mueve el ancla (nuevo ciclo). Se usa un ancla
-  // DISTINTA (145h, no 150h) a propósito: si se reutilizara el mismo timestamp, la clave de ciclo
-  // ('ciclo:'+ancla+':'+codigo) sería idéntica a la del primer ciclo y esta prueba no probaría nada nuevo.
-  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:s.id, nota:'Nuevo avance real, mueve el ancla.' });
+  // Avance real y VERIFICABLE (octava revisión, punto 2): un cambio de estado real del expediente en SC
+  // Control (entra a producción/hojalatería), no un eco manual -- eso ya no mueve el ancla (ver WA-30/WA-64).
+  // El cambio de etapa también cambia el código de continuidad (6.3 -> 6.4), así que la nueva clave de
+  // ciclo ('ciclo:'+ancla+':'+codigo) es distinta por partida doble.
+  await loginAdmin();
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_produccion:'en_laminado' });
+  let eventosTrasAvance = await eventosDe(s.id);
+  assert.ok(eventosTrasAvance.find(e => e.plantilla_codigo === '5.8'), 'el avance real debe registrar automáticamente el evento 5.8');
+  // Se retrasa (a propósito, para la prueba) el nuevo evento automático 145h -- simula que, aun con el
+  // avance real ya ocurrido, volvió a pasar más de 72h desde ese avance sin ninguna comunicación posterior.
   const hace145h = dayjs.utc().subtract(145, 'hour').format('YYYY-MM-DD HH:mm:ss');
-  db.prepare(`UPDATE whatsapp_comunicaciones_manuales SET registrado_en=? WHERE siniestro_id=?`).run(hace145h, s.id);
+  db.prepare(`UPDATE whatsapp_eventos_registrados SET creado_en=?, simulado_enviado_en=? WHERE siniestro_id=? AND plantilla_codigo='5.8'`).run(hace145h, hace145h, s.id);
   whatsappFaseA.barrerContinuidadYPostventa(db);
   eventos = await eventosDe(s.id);
   assert.equal(eventos.filter(e => e.plantilla_codigo === 'ALERTA-72H-X2').length, 2,
-    'un ciclo de estancamiento NUEVO (ancla distinta) debe generar una alerta nueva, no quedar deduplicado contra la del ciclo anterior');
+    'un ciclo de estancamiento NUEVO, originado por un avance automático real y verificable, debe generar una alerta nueva -- no un eco manual');
 });
 
 test('WA-45 (punto 7, sexta revisión): un error que se resuelve y VUELVE a ocurrir genera una alerta ALERTA-WA-ERROR nueva', async () => {
@@ -856,35 +869,77 @@ test('WA-50 (punto 1, séptima revisión): fecha_corte excluye reconstrucción a
   }
 });
 
-test('WA-51 (punto 1, séptima revisión): revertirDatosPiloto borra ÚNICAMENTE los datos del expediente indicado, sin tocar ningún otro', async () => {
-  const a = await crearSiniestro({ numero:'WA51A', cliente_telefono: tel() });
+test('WA-51 (punto 1, octava revisión): sin ninguna corrida de piloto identificada, revertirDatosPiloto NO borra nada (seguro por defecto)', () => {
+  // Antes de iniciar nunca ninguna corrida (iniciarPilotoRun), pilotoRunActual() es null -- revertir en
+  // este estado debe negarse a borrar cualquier cosa, en vez de adivinar qué filas pertenecen a "el piloto".
+  assert.equal(activacion.pilotoRunActual(db), null, 'precondición: todavía no se ha iniciado ninguna corrida en esta base de datos de pruebas');
+  const resultado = activacion.revertirDatosPiloto(db, { numeros:['NO-IMPORTA'] });
+  assert.equal(resultado.runId, null);
+  assert.equal(resultado.eventosBorrados, 0);
+  assert.equal(resultado.comunicacionesBorradas, 0);
+  assert.equal(resultado.erroresBorrados, 0);
+});
+
+test('WA-51b (punto 1, octava revisión): revertirDatosPiloto borra EXCLUSIVAMENTE lo generado por la corrida indicada -- una corrida anterior sobre el MISMO expediente permanece intacta', async () => {
+  // Corrida A: genera datos reales para el expediente.
+  const runA = activacion.iniciarPilotoRun(db);
+  const s = await crearSiniestro({ numero:'WA51A', cliente_telefono: tel() }); // 5.1 se etiqueta con runA
+  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:s.id, nota:'eco de la corrida A' });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51-runA', siniestroId:s.id, error:new Error('falso A') });
+
+  const eventosRunAAntes = db.prepare(`SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runA).c;
+  const comunicacionesRunAAntes = db.prepare(`SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runA).c;
+  const erroresRunAAntes = db.prepare(`SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runA).c;
+  assert.ok(eventosRunAAntes > 0 && comunicacionesRunAAntes > 0 && erroresRunAAntes > 0, 'la corrida A debe haber generado datos propios');
+
+  // Corrida B: una ejecución NUEVA del piloto, más adelante, sobre el MISMO expediente.
+  const runB = activacion.iniciarPilotoRun(db);
+  assert.notEqual(runB, runA, 'cada corrida debe tener un identificador distinto');
+  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:s.id, nota:'eco de la corrida B' });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51-runB', siniestroId:s.id, error:new Error('falso B') });
+
+  // Se revierte SOLO la corrida B.
+  const resultado = activacion.revertirDatosPiloto(db, { numeros:['WA51A'], runId: runB });
+  assert.equal(resultado.runId, runB);
+  assert.equal(resultado.comunicacionesBorradas, 1);
+  assert.equal(resultado.erroresBorrados, 1);
+
+  // Los datos ANTERIORES (corrida A) permanecen exactamente intactos -- ni un renglón de menos.
+  const eventosRunADespues = db.prepare(`SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runA).c;
+  const comunicacionesRunADespues = db.prepare(`SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runA).c;
+  const erroresRunADespues = db.prepare(`SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runA).c;
+  assert.equal(eventosRunADespues, eventosRunAAntes, 'los eventos de la corrida A no deben tocarse al revertir la corrida B');
+  assert.equal(comunicacionesRunADespues, comunicacionesRunAAntes, 'las comunicaciones de la corrida A no deben tocarse al revertir la corrida B');
+  assert.equal(erroresRunADespues, erroresRunAAntes, 'los errores de la corrida A no deben tocarse al revertir la corrida B');
+
+  // Y la corrida B sí quedó en cero.
+  const comunicacionesRunBDespues = db.prepare(`SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runB).c;
+  const erroresRunBDespues = db.prepare(`SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=? AND piloto_run_id=?`).get(s.id, runB).c;
+  assert.equal(comunicacionesRunBDespues, 0, 'la corrida B revertida debe quedar en cero comunicaciones');
+  assert.equal(erroresRunBDespues, 0, 'la corrida B revertida debe quedar en cero errores');
+});
+
+test('WA-51c (punto 1, octava revisión): otro expediente, ajeno a la reversión, queda completamente intacto', async () => {
+  const runC = activacion.pilotoRunActual(db) || activacion.iniciarPilotoRun(db);
   const b = await crearSiniestro({ numero:'WA51B', cliente_telefono: tel() });
-  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:a.id, nota:'prueba WA-51 A' });
-  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:b.id, nota:'prueba WA-51 B' });
-  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51', siniestroId:a.id, error:new Error('falso A') });
-  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51', siniestroId:b.id, error:new Error('falso B') });
+  whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:b.id, nota:'prueba WA-51c B' });
+  whatsappFaseA.registrarError(db, { contexto:'prueba-wa51c', siniestroId:b.id, error:new Error('falso C') });
 
-  const antesA = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(a.id).c;
-  assert.ok(antesA > 0);
+  const antes = {
+    eventos: db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(b.id).c,
+    comunicaciones: db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(b.id).c,
+    errores: db.prepare('SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=?').get(b.id).c,
+  };
+  assert.ok(antes.eventos > 0 && antes.comunicaciones > 0 && antes.errores > 0);
 
-  const resultado = activacion.revertirDatosPiloto(db, ['WA51A']);
-  assert.ok(resultado.eventosBorrados > 0);
-  assert.ok(resultado.comunicacionesBorradas > 0);
-  assert.ok(resultado.erroresBorrados > 0);
+  activacion.revertirDatosPiloto(db, { numeros:['WA51A'], runId: runC }); // se revierte OTRO expediente, no B.
 
-  const despuesA = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(a.id).c;
-  const comunicacionesA = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(a.id).c;
-  const erroresA = db.prepare('SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=?').get(a.id).c;
-  assert.equal(despuesA, 0, 'el expediente revertido debe quedar sin eventos');
-  assert.equal(comunicacionesA, 0, 'el expediente revertido debe quedar sin comunicaciones');
-  assert.equal(erroresA, 0, 'el expediente revertido debe quedar sin errores');
-
-  const despuesB = db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(b.id).c;
-  const comunicacionesB = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(b.id).c;
-  const erroresB = db.prepare('SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=?').get(b.id).c;
-  assert.ok(despuesB > 0, 'otro expediente no incluido en la reversión debe quedar intacto (eventos)');
-  assert.ok(comunicacionesB > 0, 'otro expediente no incluido en la reversión debe quedar intacto (comunicaciones)');
-  assert.ok(erroresB > 0, 'otro expediente no incluido en la reversión debe quedar intacto (errores)');
+  const despues = {
+    eventos: db.prepare('SELECT COUNT(*) c FROM whatsapp_eventos_registrados WHERE siniestro_id=?').get(b.id).c,
+    comunicaciones: db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=?').get(b.id).c,
+    errores: db.prepare('SELECT COUNT(*) c FROM whatsapp_errores WHERE siniestro_id=?').get(b.id).c,
+  };
+  assert.deepEqual(despues, antes, 'un expediente no incluido en la reversión debe quedar exactamente igual');
 });
 
 test('WA-52 (punto 1, séptima revisión): GET/PATCH /config y POST /config/revertir-piloto son admin-only, y PATCH aplica cambios reales', async () => {
@@ -1139,4 +1194,34 @@ test('WA-63 (punto 3, séptima revisión): verificarFirma -- casos de borde (sin
   assert.equal(whatsappWebhook.verificarFirma(secreto, raw, 'sha256=abc'), false);
   assert.equal(whatsappWebhook.verificarFirma(secreto, raw, firmaOk), true);
   assert.equal(whatsappWebhook.verificarFirma(secreto, raw, firmaOk.slice(0, -2) + 'zz'), false);
+});
+
+// ===================== OCTAVA REVISIÓN (4-sep-2026): punto 2 -- el eco no reinicia el ancla =====================
+test('WA-64 (punto 2, octava revisión): el eco queda registrado y deduplicado por wamid, pero NO mueve ultimoAncla(); solo un avance automático real y verificable lo hace', async () => {
+  const s = await crearSiniestro({ numero:'WA64', cliente_telefono: tel(), ingreso_tipo:'grua' });
+  // Se retrasa el evento automático inicial (5.1) a propósito, para poder distinguir con certeza -- sin
+  // depender de que dos timestamps "ahora" con precisión de segundo caigan en instantes distintos -- el
+  // ancla ANTES del avance real (vieja, de hace 10h) de la ancla DESPUÉS del avance real (recién ocurrido).
+  const hace10h = dayjs.utc().subtract(10, 'hour').format('YYYY-MM-DD HH:mm:ss');
+  db.prepare(`UPDATE whatsapp_eventos_registrados SET creado_en=?, simulado_enviado_en=? WHERE siniestro_id=? AND plantilla_codigo='5.1'`).run(hace10h, hace10h, s.id);
+  const siniestroInicial = db.prepare('SELECT * FROM siniestros WHERE id=?').get(s.id);
+  const anclaAntes = whatsappFaseA.ultimoAncla(db, s.id, siniestroInicial.creado_en);
+  assert.equal(anclaAntes, hace10h);
+
+  const eco = whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:s.id, wamid:'wamid.WA64-1', nota:'Meta no distingue esto de un saludo.' });
+  assert.ok(eco.id, 'el eco debe quedar registrado en el historial de comunicaciones');
+  const anclaTrasEco = whatsappFaseA.ultimoAncla(db, s.id, siniestroInicial.creado_en);
+  assert.equal(anclaTrasEco, anclaAntes, 'un eco manual, por sí solo, NO debe mover el ancla de continuidad');
+
+  // Deduplicación por wamid: el mismo identificador reenviado (reintento de Meta) no crea una segunda fila.
+  const ecoDuplicado = whatsappFaseA.registrarComunicacionSaliente(db, { siniestroId:s.id, wamid:'wamid.WA64-1', nota:'reintento del webhook' });
+  assert.equal(ecoDuplicado.duplicado, true);
+  const totalEcos = db.prepare('SELECT COUNT(*) c FROM whatsapp_comunicaciones_manuales WHERE siniestro_id=? AND wamid=?').get(s.id, 'wamid.WA64-1').c;
+  assert.equal(totalEcos, 1, 'un wamid reenviado no debe duplicar la fila en el historial');
+
+  // Un avance AUTOMÁTICO real y verificable (autorización confirmada en SC Control) sí mueve el ancla.
+  await autorizarOrlando(s.id, { estado_autorizacion:'autorizada', autorizacion_fecha_respuesta:'2026-09-03', autorizador:'X', piezas_autorizadas_cambio:0 });
+  const siniestroTrasAutorizar = db.prepare('SELECT * FROM siniestros WHERE id=?').get(s.id);
+  const anclaTrasAvanceReal = whatsappFaseA.ultimoAncla(db, s.id, siniestroTrasAutorizar.creado_en);
+  assert.notEqual(anclaTrasAvanceReal, anclaAntes, 'un avance automático real (autorización) sí debe mover el ancla de continuidad');
 });

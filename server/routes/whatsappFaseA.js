@@ -127,9 +127,20 @@ router.patch('/config', requireAuth, requireRole('admin'), (req, res)=>{
 // Procedimiento de reversión del piloto (punto 1): borra ÚNICAMENTE los datos generados para los
 // expedientes indicados (o los de la lista de piloto configurada actualmente, si no se especifica ninguno).
 router.post('/config/revertir-piloto', requireAuth, requireRole('admin'), (req, res)=>{
-  const { numeros } = req.body || {};
-  const resultado = activacion.revertirDatosPiloto(db, Array.isArray(numeros) ? numeros : undefined);
+  // Octava revisión (punto 1): admite runId explícito para revertir una corrida concreta (p. ej. una ya
+  // detenida); si no se especifica, revertirDatosPiloto usa la corrida ACTUAL (pilotoRunActual()). Sin
+  // ninguna corrida identificable, no borra nada -- ver el comentario de seguridad en
+  // whatsappFaseAActivacion.js.
+  const { numeros, runId } = req.body || {};
+  const resultado = activacion.revertirDatosPiloto(db, { numeros: Array.isArray(numeros) ? numeros : undefined, runId });
   res.json(resultado);
+});
+// Octava revisión (punto 1): inicia una nueva corrida de piloto identificable (piloto_run_id). Se llama
+// explícitamente antes de activar el piloto -- así, cada corrida queda etiquetada por separado y se puede
+// revertir sin arrastrar datos de una corrida anterior sobre el mismo expediente.
+router.post('/config/nuevo-piloto-run', requireAuth, requireRole('admin'), (req, res)=>{
+  const runId = activacion.iniciarPilotoRun(db);
+  res.json({ runId });
 });
 
 // ===================== Punto 3 (séptima revisión): webhook de Coexistencia (smb_message_echoes) ==========

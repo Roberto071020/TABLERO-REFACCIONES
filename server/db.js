@@ -1290,6 +1290,10 @@ const WHATSAPP_CONFIG_DEFAULT = [
                               // (sin importar piloto_todos ni fecha_corte) mientras activo='1'.
   ['fecha_corte', ''],      // 'YYYY-MM-DD HH:mm:ss' -- en modo piloto_todos, los expedientes creados ANTES
                               // de esta fecha se saltan (no se reconstruyen automáticamente etapas viejas).
+  ['piloto_run_id', ''],    // Octava revisión (punto 1): identificador de la corrida de piloto ACTUAL --
+                              // solo se genera con activacion.iniciarPilotoRun(), nunca se escribe a mano
+                              // vía PATCH /config. Etiqueta cada fila que el módulo escribe mientras esa
+                              // corrida está activa, para poder revertir exclusivamente esa corrida.
 ];
 for(const [clave, valor] of WHATSAPP_CONFIG_DEFAULT){
   const existeConfig = db.prepare('SELECT 1 FROM whatsapp_config WHERE clave=?').get(clave);
@@ -1303,6 +1307,23 @@ if(!tieneColumna('whatsapp_comunicaciones_manuales', 'wamid')){
   db.exec(`ALTER TABLE whatsapp_comunicaciones_manuales ADD COLUMN wamid TEXT;`);
 }
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_comunicaciones_wamid ON whatsapp_comunicaciones_manuales(wamid) WHERE wamid IS NOT NULL;`);
+
+/* ===================== Octava revisión (Roberto, 4-sep-2026) =====================
+   Punto 1: columna piloto_run_id (nullable) en las 3 tablas que el módulo escribe, para que
+   revertirDatosPiloto() pueda borrar EXCLUSIVAMENTE lo que generó una corrida concreta del piloto, en vez
+   de todo lo asociado a un expediente sin importar cuándo se creó. */
+if(!tieneColumna('whatsapp_eventos_registrados', 'piloto_run_id')){
+  db.exec(`ALTER TABLE whatsapp_eventos_registrados ADD COLUMN piloto_run_id TEXT;`);
+}
+if(!tieneColumna('whatsapp_comunicaciones_manuales', 'piloto_run_id')){
+  db.exec(`ALTER TABLE whatsapp_comunicaciones_manuales ADD COLUMN piloto_run_id TEXT;`);
+}
+if(!tieneColumna('whatsapp_errores', 'piloto_run_id')){
+  db.exec(`ALTER TABLE whatsapp_errores ADD COLUMN piloto_run_id TEXT;`);
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_piloto_run ON whatsapp_eventos_registrados(piloto_run_id);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_comunicaciones_piloto_run ON whatsapp_comunicaciones_manuales(piloto_run_id);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_errores_piloto_run ON whatsapp_errores(piloto_run_id);`);
 
 module.exports = db;
 

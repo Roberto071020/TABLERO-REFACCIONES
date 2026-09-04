@@ -71,6 +71,11 @@ linea('PASO 2 -- activar el piloto, limitado EXCLUSIVAMENTE a SIM-PILOTO-1 (SIM-
 activacion.establecerConfig(db, 'activo', '1');
 activacion.establecerConfig(db, 'piloto_todos', '0');
 activacion.establecerConfig(db, 'piloto_numeros', 'SIM-PILOTO-1');
+// Octava revisión (punto 1): cada corrida del piloto se identifica con un piloto_run_id propio -- se
+// genera aquí, ANTES de procesar nada, así que cada fila que este piloto escriba queda etiquetada con esta
+// corrida y revertirDatosPiloto() puede borrar exclusivamente lo que ella generó (sección 6 del documento).
+const runId = activacion.iniciarPilotoRun(db);
+console.log('piloto_run_id de esta corrida:', runId);
 console.log(activacion.leerConfig(db));
 
 whatsappFaseA.procesarCreacionSiniestro(db, piloto);
@@ -91,8 +96,8 @@ if (filasPilotoDespues.total === 0) {
   throw new Error('FALLO DE SIMULACIÓN: el expediente EN la lista de piloto no generó ninguna fila.');
 }
 
-linea('PASO 3 -- procedimiento de reversión del piloto (revertirDatosPiloto)');
-const resultadoReversion = activacion.revertirDatosPiloto(db, ['SIM-PILOTO-1']);
+linea('PASO 3 -- procedimiento de reversión del piloto (revertirDatosPiloto), acotado a esta corrida (piloto_run_id)');
+const resultadoReversion = activacion.revertirDatosPiloto(db, { numeros:['SIM-PILOTO-1'], runId });
 console.log('Resultado de la reversión:', resultadoReversion);
 const filasPilotoTrasRevertir = filasWA(piloto.id);
 console.log('Filas de SIM-PILOTO-1 tras revertir:', filasPilotoTrasRevertir.total, '<- debe ser 0 otra vez');
