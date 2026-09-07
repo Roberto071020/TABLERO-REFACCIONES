@@ -1750,7 +1750,7 @@ test('TRIAGE-CORREO-1: no se puede aprobar un correo con destinatario que no tie
   assert.equal(valido.status, 201);
 });
 
-test('TRIAGE-INDICADOR-1: pedidosSinPiezas cuenta pedidos activos sin ninguna pieza capturada (complementa a sinProveedor)', async () => {
+test('TRIAGE-INDICADOR-1: pedidosSinPiezas cuenta pedidos activos sin ninguna pieza capturada', async () => {
   const antes = (await req('GET', '/api/reportes/resumen')).data.pedidosSinPiezas;
   const s = (await req('POST', '/api/siniestros', { numero: 'IND-SINPZ-1', aseguradora: 'GNP' })).data;
   await req('POST', '/api/pedidos', { numero: 'IND-SINPZ-1-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' });
@@ -2250,7 +2250,8 @@ test('VENTANA-1: un pedido anterior al 1-jun-2026 no aparece por default en list
 
   const resumen = (await req('GET', '/api/reportes/resumen')).data;
   const resumenTodas = (await req('GET', '/api/reportes/resumen?ventana=todas')).data;
-  assert.ok(resumenTodas.pedidosSinPiezas + resumenTodas.sinProveedor + 1 >= 0, 'sanity: el resumen sin corte sigue respondiendo');
+  assert.ok(resumenTodas.pedidosSinPiezas + 1 >= 0, 'sanity: el resumen sin corte sigue respondiendo');
+  assert.equal(resumenTodas.sinProveedor, undefined, 'solicitud de Daniela (7-sep-2026): el contador "sinProveedor" ya no se expone en el resumen');
   // El pedido cuenta como "Nuevo" en ambos resúmenes; solo debe contarse en el que incluye todo el historial.
   assert.ok(resumenTodas.pedidosNuevos >= resumen.pedidosNuevos, 'el resumen con ?ventana=todas nunca cuenta menos que el resumen con el corte aplicado');
 });
@@ -2895,17 +2896,50 @@ test('DANIELA2-7 (M-04): el resumen expone cuántos correos quedaron incompletos
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
-test('DANIELA2-8 (A-04): las rutas de piezas sin proveedor y pedidos sin piezas devuelven exactamente lo que cuenta el resumen', async () => {
+test('DANIELA2-8 (A-04, actualizado 7-sep-2026): la ruta de pedidos sin piezas sigue devolviendo exactamente lo que cuenta el resumen', async () => {
   await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'D2A04-SIN', aseguradora: 'GNP' })).data;
   const p1 = (await req('POST', '/api/pedidos', { numero: 'D2A04-PED-SINPZ', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
   const p2 = (await req('POST', '/api/pedidos', { numero: 'D2A04-PED-CONPZ', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
   await req('POST', '/api/piezas', { pedido_id: p2.id, descripcion: 'Faro' }); // sin proveedor_id -> estatus 'Sin proveedor'
-  const sinProveedor = (await req('GET', '/api/reportes/piezas-sin-proveedor')).data;
-  assert.ok(sinProveedor.some(f => f.pedido_id === p2.id), 'la pieza sin proveedor del pedido D2A04-PED-CONPZ debe listarse');
   const pedidosSinPiezas = (await req('GET', '/api/reportes/pedidos-sin-piezas')).data;
   assert.ok(pedidosSinPiezas.some(f => f.pedido_id === p1.id), 'D2A04-PED-SINPZ (sin ninguna pieza capturada) debe listarse');
   assert.ok(!pedidosSinPiezas.some(f => f.pedido_id === p2.id), 'D2A04-PED-CONPZ ya tiene una pieza capturada, no debe salir aquí');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+// Solicitud de Daniela (7-sep-2026): retirar del tablero toda referencia a "Sin proveedor" (pestañas,
+// filtros, contadores, textos, opciones de formularios) sin borrar ni modificar la información de los
+// pedidos actuales. Esta prueba demuestra las dos mitades de esa promesa: (1) la ruta dedicada y el
+// contador del resumen ya NO existen; (2) el DATO subyacente de una pieza capturada sin proveedor sigue
+// intacto -- se sigue pudiendo consultar por la vía genérica (GET /api/piezas), solo que ya no tiene una
+// pantalla ni un contador propios en el tablero.
+test('PROV2026-1: "Sin proveedor" se retiró del tablero como categoría (sin ruta ni contador dedicados), pero el dato de una pieza sin proveedor sigue intacto y consultable', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'PROV2026-SIN', aseguradora: 'GNP' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'PROV2026-PED', siniestro_id: s.id, fecha_prevista: '2026-12-01' })).data;
+  const pieza = (await req('POST', '/api/piezas', { pedido_id: p.id, descripcion: 'Faro' })).data; // sin proveedor_id
+
+  // (1) el dato NO se tocó: la pieza capturada sin proveedor conserva su estatus real.
+  assert.equal(pieza.estatus, 'Sin proveedor', 'el estatus interno de una pieza sin proveedor no cambia -- solo se retiró de la interfaz');
+  const relectura = (await req('GET', `/api/piezas?pedido_id=${p.id}`)).data;
+  assert.ok(relectura.some(z => z.id === pieza.id && z.estatus === 'Sin proveedor'), 'sigue siendo consultable por la vía genérica de piezas');
+  const porEstatus = (await req('GET', `/api/piezas?pedido_id=${p.id}&estatus=${encodeURIComponent('Sin proveedor')}`)).data;
+  assert.ok(porEstatus.some(z => z.id === pieza.id), 'el filtro genérico por estatus sigue funcionando por API, aunque ya no haya un botón dedicado en el tablero');
+
+  // (2) la ruta y el contador dedicados ya no existen.
+  const rutaVieja = await req('GET', '/api/reportes/piezas-sin-proveedor');
+  assert.equal(rutaVieja.status, 404, 'la ruta dedicada /api/reportes/piezas-sin-proveedor se retiró');
+  const resumen = (await req('GET', '/api/reportes/resumen')).data;
+  assert.equal(resumen.sinProveedor, undefined, 'el contador "sinProveedor" ya no se expone en el resumen');
+
+  // (3) editar la pieza (p. ej. solo el número de parte) sin tocar el proveedor no debe alterar su
+  // estatus por accidente -- la corrección del formulario (frontend) depende de que el backend siga
+  // aceptando 'Sin proveedor' como un valor válido si alguien lo reenvía explícitamente.
+  const editada = await req('PATCH', `/api/piezas/${pieza.id}`, { numero_parte: 'NP-123', estatus: 'Sin proveedor' });
+  assert.equal(editada.status, 200);
+  assert.equal(editada.data.estatus, 'Sin proveedor', 'el backend sigue aceptando el valor -- la responsabilidad de no reenviarlo sin querer es del formulario');
+
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
