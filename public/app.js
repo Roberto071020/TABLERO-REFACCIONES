@@ -5,6 +5,13 @@ function esc(s){
 }
 function fmtMoney(n){ return '$'+Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:2}); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Solicitud de Daniela (7-sep-2026): "Sin proveedor" deja de mostrarse como categoría del tablero -- ya
+// no hay pestaña, filtro, contador ni opción de formulario dedicados a ella (InPart siempre vincula un
+// proveedor; la categoría no correspondía al flujo real y generaba confusión). El VALOR internamente
+// sigue existiendo tal cual (una pieza capturada a mano sin proveedor sigue guardando ese estatus, sin
+// tocar nada de lo ya capturado) -- este helper solo cambia cómo se MUESTRA ese valor puntual, donde
+// todavía haga falta un indicador (p. ej. una columna de estatus), sin presentarlo como una categoría.
+function etiquetaEstatusPieza(estatus){ return estatus==='Sin proveedor' ? 'Por asignar' : estatus; }
 // Reporte de Roberto (3-sep-2026): la Línea de tiempo (y otras pantallas con hora) mostraban los eventos
 // 6 horas adelantados -- ej. algo que pasó a las 14:01 hora de CDMX se veía como "20:01". Causa: SQLite
 // guarda datetime('now') en UTC crudo, sin marca de zona, y se imprimía tal cual en el navegador. México
@@ -233,7 +240,7 @@ async function doGlobalSearch(){
       ${r.proveedores.length===0?'<div class="empty">Sin coincidencias.</div>':r.proveedores.map(pv=>`<div class="result-item" onclick="closeModal();goProveedor(${pv.id})"><b>${esc(pv.razon_social)}</b> · ${esc(pv.correo||'')}${pv.contacto?' · '+esc(pv.contacto):''}</div>`).join('')}
     </div>
     <div class="results-group"><h4>Piezas (${r.piezas.length})</h4>
-      ${r.piezas.length===0?'<div class="empty">Sin coincidencias.</div>':r.piezas.map(z=>`<div class="result-item" onclick="closeModal();goSiniestro(${z.siniestro_id})"><b>${esc(z.descripcion)}</b>${z.numero_parte?' · N.P. '+esc(z.numero_parte):''} · siniestro ${esc(z.siniestro_numero)} · pedido ${esc(z.pedido_numero)} · ${esc(z.estatus)}</div>`).join('')}
+      ${r.piezas.length===0?'<div class="empty">Sin coincidencias.</div>':r.piezas.map(z=>`<div class="result-item" onclick="closeModal();goSiniestro(${z.siniestro_id})"><b>${esc(z.descripcion)}</b>${z.numero_parte?' · N.P. '+esc(z.numero_parte):''} · siniestro ${esc(z.siniestro_numero)} · pedido ${esc(z.pedido_numero)} · ${esc(etiquetaEstatusPieza(z.estatus))}</div>`).join('')}
     </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
   `, true);
@@ -290,7 +297,6 @@ async function viewInicio(){
   ${verRefacciones?`<div class="grid-cards">
     <div class="card azul" onclick="abrirDetalleTarjeta('pedidosNuevos','Pedidos nuevos')"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
     <div class="card rojo" onclick="abrirDetalleTarjeta('piezasVencidas','Piezas vencidas')"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
-    <div class="card ambar" onclick="abrirListaSinProveedor()"><div class="num">${r.sinProveedor}</div><div class="label">Piezas sin proveedor</div></div>
     <div class="card ambar" onclick="abrirListaPedidosSinPiezas()"><div class="num">${r.pedidosSinPiezas}</div><div class="label">Pedidos sin piezas capturadas</div></div>
     <div class="card ambar" onclick="abrirDetalleTarjeta('piezasPorConfirmar','Piezas por confirmar')"><div class="num">${r.piezasPorConfirmar}</div><div class="label">Por confirmar</div></div>
     <div class="card azul" onclick="abrirDetalleTarjeta('recibidosParciales','Pedidos recibidos parciales')"><div class="num">${r.recibidosParciales}</div><div class="label">Recibidos parciales</div></div>
@@ -402,17 +408,6 @@ async function abrirDetalleTarjeta(clave, titulo){
       <td><span class="link" onclick="closeModal();goSiniestro(${f.id})">${esc(f.numero)}</span></td>
       <td>${esc(f.detalle||'—')}</td>
     </tr>`).join('')}
-    </tbody></table>`}
-    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
-  `, true);
-}
-async function abrirListaSinProveedor(){
-  const filas = await api('GET','/api/reportes/piezas-sin-proveedor');
-  showModal(`
-    <h3>Piezas sin proveedor asignado (${filas.length})</h3>
-    ${filas.length===0?'<div class="empty">Ninguna.</div>':`
-    <table><thead><tr><th>Siniestro</th><th>Pedido</th><th>Pieza</th></tr></thead><tbody>
-    ${filas.map(f=>`<tr><td><span class="link" onclick="closeModal();goSiniestro(${f.siniestro_id})">${esc(f.siniestro_numero)}</span></td><td>${esc(f.pedido_numero)}</td><td>${esc(f.descripcion)}</td></tr>`).join('')}
     </tbody></table>`}
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
   `, true);
@@ -534,7 +529,7 @@ async function viewCorreos(){
   if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación con estos filtros.</div>'; return html; }
   html += `<table><thead><tr><th>Motivo</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Asunto</th><th></th></tr></thead><tbody>
   ${pendientes.map(c=>`<tr>
-    <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span>${c.incompleto?' <span class="badge rojo" title="Sin proveedor con correo valido asignado a las piezas pendientes; hay que completarlo a mano antes de aprobar">Incompleto</span>':''}</td>
+    <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span>${c.incompleto?' <span class="badge rojo" title="Falta un proveedor con correo válido asignado a las piezas pendientes; complétalo a mano antes de aprobar">Incompleto</span>':''}</td>
     <td><a class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero)}</a></td>
     <td>${esc(c.pedido_numero)}</td>
     <td>${esc(c.aseguradora)}</td>
@@ -557,7 +552,7 @@ async function abrirRevisarCorreo(id){
     <h3>Revisar correo — ${esc(c.siniestro_numero)} / Pedido ${esc(c.pedido_numero)}</h3>
     <p class="subtle">Ajusta lo que haga falta antes de aprobar. Sigue en modo borrador: no se envía nada de verdad.</p>
     ${c.incompleto?'<p class="subtle" style="color:#b91c1c;">Este borrador quedo incompleto: ninguna pieza pendiente tiene un proveedor con correo valido asignado (o hay varios proveedores distintos). Agrega el destinatario a mano antes de aprobar.</p>':''}
-    <div class="field"><label>Destinatario</label><input id="fcor_dest" value="${esc(c.destinatarios||'')}" placeholder="Sin proveedor asignado — escribe el correo aqui"></div>
+    <div class="field"><label>Destinatario</label><input id="fcor_dest" value="${esc(c.destinatarios||'')}" placeholder="Escribe aquí el correo del proveedor"></div>
     <div class="field"><label>Copia</label><textarea id="fcor_copia">${esc(c.copia||'')}</textarea></div>
     <div class="field"><label>Asunto</label><input id="fcor_asunto" value="${esc(c.asunto||'')}"></div>
     <div class="field"><label>Cuerpo</label><textarea id="fcor_cuerpo" style="min-height:160px;">${esc(c.cuerpo||'')}</textarea></div>
@@ -794,7 +789,10 @@ async function viewLista(){
   const filas = r.filas;
   const totalPaginas = Math.max(1, Math.ceil(r.total / r.pageSize));
   const proveedores = await api('GET','/api/proveedores');
-  const ESTATUS_PIEZA = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
+  // Solicitud de Daniela (7-sep-2026): 'Sin proveedor' ya no aparece como opción de filtro (deja de ser
+  // una categoría del tablero). Si una pieza ya capturada tuviera ese estatus, sigue existiendo tal cual
+  // en sus datos -- solo ya no hay una forma dedicada de filtrar/buscar por esa categoría en pantalla.
+  const ESTATUS_PIEZA = ['Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
   const hoy = todayISO();
   function alertaColor(f){
     if(!f.pieza_id) return 'ambar';
@@ -840,7 +838,7 @@ async function viewLista(){
       <td>${esc(f.pedido_numero)}</td>
       <td>${esc(f.proveedor_nombre||'—')}</td>
       <td>${f.pieza_id ? esc(f.descripcion) : '<i>Pendiente de capturar piezas</i>'}</td>
-      <td>${esc(f.pieza_estatus||'Sin piezas')}</td>
+      <td>${esc(f.pieza_estatus?etiquetaEstatusPieza(f.pieza_estatus):'Sin piezas')}</td>
       <td>${esc(f.fecha_prometida||'—')}</td>
       <td><span class="badge ${alertaColor(f)}">&nbsp;</span></td>
     </tr>`).join('')}
@@ -1409,9 +1407,9 @@ async function viewSiniestro(id){
     body = `<table><thead><tr><th>Pedido</th><th>Pieza</th><th>Proveedor</th><th>F. prometida</th><th>Estatus</th><th>Recepción</th><th></th></tr></thead><tbody>
     ${allz.map(o=>`<tr>
       <td>${esc(o.p.numero)}</td><td>${esc(o.z.descripcion)}${o.z.observaciones?`<div class="subtle">${esc(o.z.observaciones)}</div>`:''}</td>
-      <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Sin proveedor</span>'}</td>
+      <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Por asignar</span>'}</td>
       <td>${esc(o.z.fecha_prometida||'')}</td>
-      <td>${esc(o.z.estatus)}</td>
+      <td>${esc(etiquetaEstatusPieza(o.z.estatus))}</td>
       <td>${o.z.fecha_recepcion?fmtFechaHora(o.z.fecha_recepcion):'—'}</td>
       <td>
         ${!['Recibida físicamente','Cancelada'].includes(o.z.estatus)?`<button class="btn small secondary" onclick="marcarRecibida(${o.z.id})">Marcar recibida</button>`:''}
@@ -2791,7 +2789,14 @@ async function marcarRecibida(piezaId){
 }
 
 /* ===================== FORMULARIOS: PIEZAS / INCIDENCIAS / RESPUESTAS / ARCHIVOS ===================== */
-const ESTATUS_PIEZA_OPCIONES = ['Sin proveedor','Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
+// Solicitud de Daniela (7-sep-2026): 'Sin proveedor' ya no se ofrece como opción nueva al editar una
+// pieza (deja de ser una categoría del tablero). OJO: el formulario de edición SIEMPRE envía el valor
+// seleccionado del <select> al guardar (ver guardarEdicionPieza) -- si simplemente se quitara esta opción
+// de la lista, editar una pieza que YA está en 'Sin proveedor' habría cambiado su estatus sin que nadie
+// lo pidiera, la primera vez que alguien abriera y guardara ese formulario (ej. solo para corregir la
+// descripción). abrirFormEditarPieza() agrega el valor actual de vuelta si no está en esta lista, para
+// que el dato existente nunca se toque por accidente.
+const ESTATUS_PIEZA_OPCIONES = ['Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
 async function abrirFormNuevaPieza(){
   const pedidoId = document.getElementById('piezaPedidoSel').value;
   const proveedores = await api('GET','/api/proveedores');
@@ -2803,7 +2808,7 @@ async function abrirFormNuevaPieza(){
       <div class="field"><label>Tipo</label><select id="fz_tipo"><option>Original</option><option>Genérica</option><option>Usada</option></select></div>
     </div>
     <div class="row-flex">
-      <div class="field"><label>Proveedor</label><select id="fz_prov"><option value="">Sin proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}">${esc(pv.razon_social)}</option>`).join('')}</select></div>
+      <div class="field"><label>Proveedor</label><select id="fz_prov"><option value="">Selecciona proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}">${esc(pv.razon_social)}</option>`).join('')}</select></div>
       <div class="field"><label>Cantidad</label><input id="fz_cant" type="number" value="1" min="1"></div>
     </div>
     <div class="field"><label>Fecha prometida</label><input id="fz_fecha" type="date" value="${todayISO()}"></div>
@@ -2835,8 +2840,8 @@ async function abrirFormEditarPieza(id){
       <div class="field"><label>Tipo</label><select id="fez_tipo">${['Original','Genérica','Usada'].map(t=>`<option ${z.tipo===t?'selected':''}>${t}</option>`).join('')}</select></div>
     </div>
     <div class="row-flex">
-      <div class="field"><label>Proveedor</label><select id="fez_prov"><option value="">Sin proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}" ${z.proveedor_id===pv.id?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}</select></div>
-      <div class="field"><label>Estatus</label><select id="fez_estatus">${ESTATUS_PIEZA_OPCIONES.map(o=>`<option ${z.estatus===o?'selected':''}>${o}</option>`).join('')}</select></div>
+      <div class="field"><label>Proveedor</label><select id="fez_prov"><option value="">Selecciona proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}" ${z.proveedor_id===pv.id?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}</select></div>
+      <div class="field"><label>Estatus</label><select id="fez_estatus">${(ESTATUS_PIEZA_OPCIONES.includes(z.estatus)?ESTATUS_PIEZA_OPCIONES:[z.estatus,...ESTATUS_PIEZA_OPCIONES]).map(o=>`<option value="${esc(o)}" ${z.estatus===o?'selected':''}>${esc(etiquetaEstatusPieza(o))}</option>`).join('')}</select></div>
     </div>
     <div class="row-flex">
       <div class="field"><label>Cantidad</label><input id="fez_cant" type="number" min="1" value="${z.cantidad}"></div>
@@ -2986,7 +2991,7 @@ async function abrirGenerador(pedidoId){
     showModal(`<h3>Generador de correo</h3><p><span class="badge verde">No requiere correo</span></p><p>${esc(r.mensaje)}</p><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
     return;
   }
-  const avisoSinProveedor = (r.piezasSinProveedor && r.piezasSinProveedor.length) ? `<div class="banner ambar">${r.piezasSinProveedor.length} pieza(s) sin proveedor asignado no se incluyeron en ningún correo: ${esc(r.piezasSinProveedor.join(', '))}. Asígnales proveedor primero si también necesitan seguimiento.</div>` : '';
+  const avisoSinProveedor = (r.piezasSinProveedor && r.piezasSinProveedor.length) ? `<div class="banner ambar">${r.piezasSinProveedor.length} pieza(s) pendientes de asignar proveedor no se incluyeron en ningún correo: ${esc(r.piezasSinProveedor.join(', '))}. Asígnales proveedor primero si también necesitan seguimiento.</div>` : '';
   const content = r.borradores.map((d,idx)=>`
     <div class="email-block" id="email-${idx}">
       <div style="display:flex;justify-content:space-between;align-items:center;"><b>${esc(d.proveedor_nombre)}</b><span class="badge ${d.tipo_plantilla==='incidencia'?'morado':'azul'}">${esc(d.tipo_plantilla)}</span></div>
