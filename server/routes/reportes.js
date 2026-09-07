@@ -128,9 +128,12 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const desdeVentanaResumen = aplicaVentanaOperativa(req.query) ? VENTANA_OPERATIVA_DESDE : '0001-01-01';
   const pedidosNuevos = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Nuevo' AND fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   const piezasVencidas = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus NOT IN ('Recibida físicamente','Cancelada') AND p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND z.fecha_prometida != '' AND z.fecha_prometida < ? AND p.fecha_creacion >= ?`).get(hoy, desdeVentanaResumen).n;
-  const sinProveedor = db.prepare(`SELECT COUNT(*) n FROM piezas z JOIN pedidos p ON p.id=z.pedido_id WHERE z.estatus='Sin proveedor' AND p.fecha_creacion >= ?`).get(desdeVentanaResumen).n;
-  // Triage documento de Daniela (DEF-016): "sinProveedor" solo contaba piezas ya capturadas sin proveedor,
-  // pero un pedido sin NINGUNA pieza capturada todavía es un vacío más grande y no aparecía en ningún lado.
+  // Solicitud de Daniela (7-sep-2026): "Sin proveedor" deja de mostrarse como categoría del tablero
+  // (InPart siempre vincula un proveedor; la categoría no correspondía al flujo real y generaba
+  // confusión). Se retira el contador "sinProveedor" de este resumen y su tarjeta en Inicio -- el dato
+  // NO se borra ni se toca en la base (una pieza capturada sin proveedor sigue guardando internamente
+  // estatus='Sin proveedor', ver server/routes/piezas.js), solo deja de tener un contador/tarjeta
+  // dedicados. Sigue siendo consultable, si hiciera falta, con GET /api/piezas?estatus=Sin proveedor.
   const pedidosSinPiezas = db.prepare(`SELECT COUNT(*) n FROM pedidos p WHERE p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND p.fecha_creacion >= ? AND NOT EXISTS (SELECT 1 FROM piezas z WHERE z.pedido_id = p.id)`).get(desdeVentanaResumen).n;
   const recibidosParciales = db.prepare(`SELECT COUNT(*) n FROM pedidos WHERE estatus_operativo='Recibido parcial' AND fecha_creacion >= ?`).get(desdeVentanaResumen).n;
   // Requerimiento de Daniela: ahora refleja la bandeja real de correos preparados en espera de su aprobación.
@@ -240,7 +243,7 @@ router.get('/resumen', requireAuth, (req, res)=>{
     WHERE tipo='no_autorizado_inicial' AND decision_en IS NOT NULL AND decision_en != ''
   `).get().prom;
 
-  res.json({ pedidosNuevos, piezasVencidas, sinProveedor, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
+  res.json({ pedidosNuevos, piezasVencidas, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
     tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
@@ -274,17 +277,10 @@ router.get('/buscar', requireAuth, (req, res)=>{
 });
 
 
-// Hallazgo A-04 (Informe_funcional_tablero_refacciones_para_Claude.docx): las tarjetas de "Sin
-// proveedor" en Inicio deben abrir exactamente lo que cuentan. Dos listas separadas porque son dos
-// causas distintas: piezas ya capturadas sin proveedor asignado, y pedidos que todavía no tienen
-// NINGUNA pieza capturada (ninguna de las dos aparecía completa en Kanban como "Prov.: -").
-router.get('/piezas-sin-proveedor', requireAuth, (req, res)=>{
-  const conVentana = aplicaVentanaOperativa(req.query);
-  const filas = db.prepare(`SELECT z.id, z.descripcion, p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero
-    FROM piezas z JOIN pedidos p ON p.id=z.pedido_id JOIN siniestros s ON s.id=p.siniestro_id
-    WHERE z.estatus='Sin proveedor'${conVentana ? ' AND p.fecha_creacion >= ?' : ''} ORDER BY p.creado_en DESC`).all(...(conVentana ? [VENTANA_OPERATIVA_DESDE] : []));
-  res.json(filas);
-});
+// Hallazgo A-04 (Informe_funcional_tablero_refacciones_para_Claude.docx) -- SUPERADO por la solicitud de
+// Daniela del 7-sep-2026: la ruta dedicada '/piezas-sin-proveedor' (que alimentaba la tarjeta "Piezas sin
+// proveedor" de Inicio) se retiró junto con esa tarjeta. "Pedidos sin piezas capturadas" es un concepto
+// DISTINTO (un pedido que todavía no tiene NINGUNA pieza registrada) y se conserva sin cambios.
 router.get('/pedidos-sin-piezas', requireAuth, (req, res)=>{
   const conVentana = aplicaVentanaOperativa(req.query);
   const filas = db.prepare(`SELECT p.id as pedido_id, p.numero as pedido_numero, s.id as siniestro_id, s.numero as siniestro_numero

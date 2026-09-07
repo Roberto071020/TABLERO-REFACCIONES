@@ -70,7 +70,7 @@ router.get('/generar-borrador/:pedidoId', requireAuth, (req, res)=>{
     };
   });
 
-  res.json({ requiereCorreo: borradores.length > 0, borradores, piezasSinProveedor: piezasSinProveedor.map(z=>z.descripcion), mensaje: borradores.length===0 ? 'Todas las piezas pendientes están sin proveedor asignado; asígnalo antes de generar un correo.' : null });
+  res.json({ requiereCorreo: borradores.length > 0, borradores, piezasSinProveedor: piezasSinProveedor.map(z=>z.descripcion), mensaje: borradores.length===0 ? 'Ninguna pieza pendiente tiene proveedor asignado todavía; asígnalo antes de generar un correo.' : null });
 });
 
 // Aprobar y registrar (F-15: guarda proveedor_id explícito, evitando el cruce entre proveedores del reporte).
