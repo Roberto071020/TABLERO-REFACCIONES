@@ -1,0 +1,636 @@
+const express = require('express');
+const db = require('../db');
+const { requireAuth, requireRole } = require('../auth');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision, requisitosAdmisionFaltantes } = require('../utils');
+const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "solo registro", autorizado por Roberto (3-sep-2026)
+const router = express.Router();
+
+const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
+function esGenerico(v){ return !v || PLACEHOLDERS.includes(String(v).trim().toLowerCase()); }
+function calcularCompleto(row){
+  return (!esGenerico(row.vehiculo) && !esGenerico(row.placas)) ? 1 : 0;
+}
+
+// Triage Daniela, item 10 (matriz de roles): el PATCH general de siniestros cubre campos de varios
+// módulos especializados (admisión, técnica, expediente, valuación/autorización, producción, calidad,
+// entrega, finiquito). El frontend ya oculta los botones de captura a quien no es el rol dueño de cada
+// módulo, pero el backend no lo exigía: cualquier usuario autenticado podía escribir esos campos llamando
+// la API directamente. Esto formaliza en el servidor la misma separación que ya existe en pantalla, para
+// que "solo lectura" sea real y no solo una convención de la interfaz. Los campos generales del expediente
+// (vehículo, placas, cliente, notas, etc.) siguen abiertos a cualquier usuario autenticado, como siempre.
+const GRUPOS_CAMPOS_RESTRINGIDOS = [
+  { campos:['cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias','estado_admision','motivo_admision','ingreso_tipo','ingreso_seguro','requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado','es_particular','deducible_aplica'],
+    roles:['atencion_cliente','vanessa','admin','jefe'], nombre:'admisión' },
+  { campos:['estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia','tipo_reparacion'],
+    roles:['orlando','admin','jefe'], nombre:'revisión técnica' },
+  { campos:['fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'],
+    roles:['orlando','vanessa','admin','jefe'], nombre:'captura y envío' },
+  { campos:['estado_expediente','sistema_valuacion','expediente_folio','expediente_listo_fecha'],
+    // Orlando absorbe temporalmente la captura de Vanessa (incapacidad, 31-ago-2026).
+    roles:['vanessa','orlando','admin','jefe'], nombre:'expediente digital' },
+  { campos:['valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
+      'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
+      'piezas_autorizadas_cambio','estado_valuacion'],
+    roles:['orlando','admin','jefe'], nombre:'valuación/autorización' },
+  { campos:['estado_produccion','entrega_compromiso_gnp'], roles:['beto','orlando','admin','jefe'], nombre:'producción' },
+  // Puntos 5-8 del documento PORTAL SC (Orlando, 8-sep-2026): flujo de Autosurtidos. Daniela cotiza
+  // (autosurtido_cotizado_en) y regresa el expediente a Alejandra, quien agenda la cita de ingreso
+  // (cita_fecha, ya cubierto por el grupo de admisión), anota el reingreso físico y carga el inventario
+  // condicional (los tres restantes).
+  { campos:['autosurtido_cotizado_en'], roles:['operativo','admin','jefe'], nombre:'cotización de autosurtido (Daniela)' },
+  { campos:['autosurtido_reingreso_en','autosurtido_inventario_cargado','autosurtido_inventario_cargado_en'],
+    roles:['atencion_cliente','admin','jefe'], nombre:'reingreso e inventario de autosurtido (Alejandra)' },
+  { campos:['estado_calidad'], roles:['beto','orlando','admin','jefe'], nombre:'calidad' },
+  { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada'],
+    roles:['beto','atencion_cliente','admin','jefe'], nombre:'entrega' },
+  { campos:['finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios','postventa_resultado'],
+    roles:['atencion_cliente','admin','jefe'], nombre:'finiquito/encuesta' }
+];
+function campoRestringidoSinPermiso(body, rol){
+  for(const g of GRUPOS_CAMPOS_RESTRINGIDOS){
+    if(g.campos.some(c=> body[c] !== undefined) && !g.roles.includes(rol)) return g.nombre;
+  }
+  return null;
+}
+
+router.get('/', requireAuth, (req, res)=>{
+  archivarSiniestrosVencidos(db);
+  const { aseguradora, q, archivado } = req.query;
+  let sql = 'SELECT * FROM siniestros WHERE 1=1';
+  const params = [];
+  if(aseguradora){ sql += ' AND aseguradora = ?'; params.push(aseguradora); }
+  if(q){ sql += ' AND (numero LIKE ? OR placas LIKE ? OR vehiculo LIKE ?)'; const like = `%${q}%`; params.push(like,like,like); }
+  // Módulo Alejandra (Fase 1): el módulo de Daniela (rol operativo) solo debe ver expedientes
+  // relevantes para refacciones. 'por_definir' se sigue mostrando porque ella puede ser quien lo determine
+  // al dar de alta el primer pedido. Solo se oculta lo marcado explícitamente como 'no'.
+  if(req.session.user.rol === 'operativo'){ sql += " AND requiere_refacciones != 'no'"; }
+  // Requerimiento de Daniela: archivar a los 3 meses de la entrega sin borrar nada, solo para no saturar
+  // la vista diaria. Por default se ocultan los archivados; ?archivado=1 los muestra únicamente a ellos;
+  // ?archivado=all muestra ambos (para búsqueda/historial).
+  if(archivado === '1'){ sql += ' AND archivado = 1'; }
+  else if(archivado !== 'all'){ sql += ' AND archivado = 0'; }
+  sql += ' ORDER BY creado_en DESC';
+  res.json(db.prepare(sql).all(...params));
+});
+
+router.get('/:id', requireAuth, (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  // Detalle de qué falta exactamente para quedar disponible para revisión (sección 3.1 de la propuesta
+  // de Orlando) -- ya sellado (fecha_hora_disponible_revision) no hace falta recalcular nada.
+  const admisionFaltantes = s.fecha_hora_disponible_revision ? [] : requisitosAdmisionFaltantes(db, s);
+  res.json({ ...s, semaforo: calcularSemaforo(s), admision_faltantes: admisionFaltantes });
+});
+
+router.post('/', requireAuth, (req, res)=>{
+  const b = req.body;
+  if(!b.numero || !String(b.numero).trim()) return res.status(400).json({ error:'El número de siniestro es obligatorio.' });
+  const existente = db.prepare('SELECT * FROM siniestros WHERE numero = ?').get(String(b.numero).trim());
+  if(existente) return res.status(409).json({ error:'Ya existe un siniestro con ese número (no se crean duplicados).', duplicado: existente });
+  if(!b.aseguradora) return res.status(400).json({ error:'La aseguradora es obligatoria.' });
+  // Módulo Alejandra (Fase 1): cuando ella da de alta el expediente desde recepción, los datos
+  // básicos de contacto son obligatorios. No se exige a otros roles, para no alterar el flujo actual de Daniela.
+  if(req.session.user.rol === 'atencion_cliente'){
+    if(!b.cliente_nombre || !String(b.cliente_nombre).trim()) return res.status(400).json({ error:'El nombre del cliente es obligatorio.' });
+    if(!b.cliente_telefono || !String(b.cliente_telefono).trim()) return res.status(400).json({ error:'El teléfono del cliente es obligatorio.' });
+    if(!b.cliente_correo || !String(b.cliente_correo).trim()) return res.status(400).json({ error:'El correo del cliente es obligatorio.' });
+  }
+  const requiereRefacciones = ['si','no','por_definir'].includes(b.requiere_refacciones) ? b.requiere_refacciones : 'por_definir';
+
+  const completo = calcularCompleto(b);
+  const piezasIniciales = b.piezas_autorizadas_cambio!==undefined && b.piezas_autorizadas_cambio!=='' ? Number(b.piezas_autorizadas_cambio) : null;
+  const rutaInicial = calcularRutaAseguradora(b.aseguradora, piezasIniciales);
+  const sistemaValuacionInicial = (b.sistema_valuacion && String(b.sistema_valuacion).trim()) || sistemaValuacionSugerido(b.aseguradora);
+  const esParticular = (b.es_particular===1||b.es_particular===true||b.es_particular==='1') ? 1 : 0;
+  const llavesEntregadasIni = (b.llaves_entregadas===1||b.llaves_entregadas===true||b.llaves_entregadas==='1') ? 1 : 0;
+  const dadoSeguridadIni = (b.dado_seguridad_colocado===1||b.dado_seguridad_colocado===true||b.dado_seguridad_colocado==='1') ? 1 : 0;
+  // deducible_aplica: informativo del alta (¿aplica o no?), tri-estado; NO es cubre_deducible (eso se
+  // pregunta aparte, en la entrega, cuando ya quedó validado con la aseguradora y en firme).
+  const deducibleAplicaIni = (b.deducible_aplica===''||b.deducible_aplica===undefined||b.deducible_aplica===null) ? null
+    : ((b.deducible_aplica===1||b.deducible_aplica===true||b.deducible_aplica==='1') ? 1 : 0);
+  // Documento de Alejandra (2-sep-2026): "Fecha de admisión" ya no se captura a mano en el alta normal
+  // -- el formulario "Nuevo expediente" la manda ya resuelta (hoy) porque ahí sí representa que la unidad
+  // está físicamente presente. Aquí solo se respeta lo que venga en el body (o queda null si no viene),
+  // para no romper el patrón de "reingreso citado" (un expediente que se cita a futuro sin que el
+  // vehículo haya llegado todavía no debe traer fecha_admision).
+  const fechaAdmisionIni = (b.fecha_admision!==undefined && b.fecha_admision!==null && String(b.fecha_admision).trim()!=='')
+    ? b.fecha_admision : null;
+  const info = db.prepare(`INSERT INTO siniestros (numero,aseguradora,vehiculo,anio_modelo,placas,vin,fecha_ingreso,ubicacion,responsable,estatus_general,notas,completo,creado_por,
+      cliente_nombre,cliente_telefono,cliente_correo,cliente_notas,orden_admision,canal_origen,etapa_actual,prioridad,requiere_refacciones,
+      ingreso_tipo,ingreso_seguro,piezas_autorizadas_cambio,aseguradora_ruta_refacciones,aseguradora_regla_aplicada,sistema_valuacion,
+      es_particular,llaves_entregadas,dado_seguridad_colocado,deducible_aplica,fecha_admision)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?)`)
+    .run(String(b.numero).trim(), b.aseguradora, b.vehiculo||'', b.anio_modelo||'', b.placas||'', b.vin||'',
+         b.fecha_ingreso || new Date().toISOString().slice(0,10), b.ubicacion||'Piso', b.responsable||req.session.user.nombre,
+         b.estatus_general||'Abierto', b.notas||'', completo, req.session.user.id,
+         b.cliente_nombre||'', b.cliente_telefono||'', b.cliente_correo||'', b.cliente_notas||'', b.orden_admision||'',
+         b.canal_origen||'', b.etapa_actual||'Preingreso', b.prioridad||'', requiereRefacciones,
+         b.ingreso_tipo||'', b.ingreso_seguro!==undefined?(b.ingreso_seguro?1:0):null, piezasIniciales, rutaInicial.ruta, rutaInicial.regla, sistemaValuacionInicial,
+         esParticular, llavesEntregadasIni, dadoSeguridadIni, deducibleAplicaIni, fechaAdmisionIni);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user,
+    valor_nuevo: `Siniestro ${b.numero} (${b.aseguradora})` });
+
+  // Módulo Alejandra (Fase 2): alta de expediente -> tarea automática de mensaje inicial (regla del punto 7 del documento).
+  if(req.session.user.rol === 'atencion_cliente'){
+    db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,responsable_id,fecha_limite,estado,origen,disparador,creado_por)
+      VALUES (?,?,?,?,?,'pendiente','automatica','alta_expediente',?)`)
+      .run(info.lastInsertRowid, 'mensaje', 'Enviar mensaje inicial: explicar el proceso y confirmar datos de recepción con el cliente.',
+           req.session.user.id, new Date().toISOString().slice(0,10), req.session.user.id);
+  }
+
+  const creado = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(info.lastInsertRowid);
+  whatsappFaseA.procesarCreacionSiniestro(db, creado); // solo registro interno, no envía nada
+  res.status(201).json({ ...creado, advertencia: completo ? null : 'Faltan datos (vehículo/placas). Queda marcado como Pendiente de completar.' });
+});
+
+// Punto 2 del documento PORTAL SC (Orlando, 8-sep-2026): "en el tablero de Alejandra, que le permita
+// editar los datos capturados del siniestro, ya que en ocasiones los captura erróneamente y no hay modo
+// de poder editarlo." El formulario "Editar" ya existía para vehículo/placas/año/notas/cliente, pero el
+// NÚMERO de siniestro (el dato que más le importa a Orlando cuando se equivoca al capturarlo) nunca fue
+// editable -- no estaba en la lista de campos del PATCH general. Se agrega aquí, con la MISMA validación
+// de duplicados que ya usa el alta (POST): nunca se permite dejar dos siniestros con el mismo número.
+function numeroDuplicado(numero, idPropio){
+  const fila = db.prepare('SELECT * FROM siniestros WHERE numero = ? AND id != ?').get(String(numero).trim(), idPropio);
+  return fila || null;
+}
+
+router.patch('/:id', requireAuth, (req, res)=>{
+  const anterior = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!anterior) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  const moduloSinPermiso = campoRestringidoSinPermiso(req.body, req.session.user.rol);
+  if(moduloSinPermiso) return res.status(403).json({ error: `No tienes permiso para modificar campos de ${moduloSinPermiso}.` });
+  if(req.body.numero !== undefined){
+    const numeroNuevo = String(req.body.numero || '').trim();
+    if(!numeroNuevo) return res.status(400).json({ error:'El número de siniestro no puede quedar vacío.' });
+    const dup = numeroDuplicado(numeroNuevo, req.params.id);
+    if(dup) return res.status(409).json({ error:'Ya existe otro siniestro con ese número (no se crean duplicados).', duplicado: dup });
+  }
+  const campos = ['numero','aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
+    'cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen','etapa_actual','prioridad',
+    'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada',
+    'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio','entrega_compromiso_gnp',
+    // Documento Maestro / Fase B: recepción, admisión y revisión técnica (Orlando)
+    'cita_fecha','grua_operador','grua_hora','fecha_admision','kilometraje','combustible_nivel','llaves_entregadas','pertenencias',
+    'estado_admision','motivo_admision','estado_revision_tecnica','riesgo_seguridad','riesgo_seguridad_motivo','estado_evidencia',
+    'requiere_dado_seguridad','dado_seguridad_colocado','grupo_whatsapp_creado','es_particular','deducible_aplica',
+    // MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): tipo de reparación, lo captura Orlando en revisión técnica
+    'tipo_reparacion',
+    // Documento Maestro / Fase C: captura y armado de expediente (Vanessa)
+    'estado_expediente','sistema_valuacion','expediente_folio','expediente_listo_fecha',
+    // Documento Maestro / Fase D: valuación y autorización
+    'valuacion_folio','valuacion_version','valuacion_importe','valuacion_fecha_envio','valuacion_fecha_respuesta','valuacion_observaciones',
+    'estado_autorizacion','autorizacion_fecha_envio','autorizacion_fecha_respuesta','autorizador','autorizacion_importe','autorizacion_restricciones',
+    // Documento Maestro / Fase F: control de calidad, entrega, finiquito y encuesta
+    'estado_calidad','entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega',
+    'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios','postventa_resultado','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada',
+    // Propuesta Orlando/Vanessa fusionados: Excel capturado, fotos/carpeta completas, enviado al propietario
+    'fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha',
+    // Documento PORTAL SC (Orlando, 8-sep-2026), puntos 7 y 8: flujo de Autosurtidos.
+    'autosurtido_cotizado_en','autosurtido_reingreso_en','autosurtido_inventario_cargado','autosurtido_inventario_cargado_en'];
+  const nuevo = { ...anterior };
+  campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
+  if(req.body.numero !== undefined) nuevo.numero = String(req.body.numero).trim();
+  nuevo.completo = calcularCompleto(nuevo);
+
+  // Punto 4 del documento PORTAL SC (Orlando, 8-sep-2026): timestamp AUTOMÁTICO, nunca capturado a mano
+  // -- se sella solo la PRIMERA vez que estado_revision_tecnica pasa a 'revision_terminada' (mismo patrón
+  // "gana el primer registro" que fecha_borrador_captura/excel_capturado_fecha). Si ya se había marcado
+  // y alguien vuelve a mandar 'revision_terminada' (p. ej. re-guardar el mismo formulario), no se
+  // sobrescribe -- sigue reflejando cuándo se terminó la revisión la primera vez.
+  if(nuevo.estado_revision_tecnica === 'revision_terminada' && anterior.estado_revision_tecnica !== 'revision_terminada' && !anterior.revision_tecnica_terminada_en){
+    nuevo.revision_tecnica_terminada_en = new Date().toISOString().replace('T',' ').slice(0,19);
+  } else {
+    nuevo.revision_tecnica_terminada_en = anterior.revision_tecnica_terminada_en;
+  }
+  // Si la revisión deja de estar en 'revision_terminada' (se reabre), el sello se limpia -- ya no es
+  // cierto que "terminó" en ese momento; si se vuelve a marcar terminada después, se vuelve a sellar.
+  if(anterior.estado_revision_tecnica === 'revision_terminada' && nuevo.estado_revision_tecnica !== 'revision_terminada'){
+    nuevo.revision_tecnica_terminada_en = null;
+  }
+
+  // Punto 8: "carga de inventario condicional" -- se sella sola la primera vez que se marca (mismo
+  // patrón que excel_capturado_fecha), y a partir de aquí se normaliza a booleano real.
+  nuevo.autosurtido_inventario_cargado = (nuevo.autosurtido_inventario_cargado===1||nuevo.autosurtido_inventario_cargado===true||nuevo.autosurtido_inventario_cargado==='1') ? 1 : 0;
+  if(nuevo.autosurtido_inventario_cargado && !anterior.autosurtido_inventario_cargado && !nuevo.autosurtido_inventario_cargado_en){
+    nuevo.autosurtido_inventario_cargado_en = new Date().toISOString().slice(0,10);
+  }
+  // Punto 8: mientras el expediente sea autosurtido y ya haya reingresado, no puede pasar a Vanessa
+  // (estado_expediente no puede salir de su valor por defecto) sin la carga de inventario condicional.
+  // Antes del reingreso no aplica -- el expediente ni siquiera debería estar en captura todavía.
+  if(nuevo.tipo_reparacion === 'AUTO_SURTIDO' && anterior.autosurtido_reingreso_en
+      && !nuevo.autosurtido_inventario_cargado
+      && req.body.estado_expediente !== undefined && req.body.estado_expediente
+      && req.body.estado_expediente !== anterior.estado_expediente){
+    return res.status(400).json({ error:'Este expediente es autosurtido y ya reingresó: falta la carga de inventario condicional (Alejandra) antes de poder pasarlo a captura.' });
+  }
+
+  // Propuesta Orlando/Vanessa: "quién registra la fecha de entrega del borrador a captura" — Roberto
+  // confirmó que gana la primera vez que se registra, sin importar quién la mandó. Si ya tenía valor,
+  // se ignora cualquier intento posterior de sobrescribirla (no error: transición sin fricción).
+  if(anterior.fecha_borrador_captura){
+    nuevo.fecha_borrador_captura = anterior.fecha_borrador_captura;
+  }
+  // Al marcar por primera vez Excel capturado / fotos completas / enviado al propietario, se sella la
+  // fecha automáticamente si no se mandó una explícita — así ninguno de los dos tiene que capturarla aparte.
+  const hoyISO = new Date().toISOString().slice(0,10);
+  if(nuevo.excel_capturado && !anterior.excel_capturado && !nuevo.excel_capturado_fecha) nuevo.excel_capturado_fecha = hoyISO;
+  if(nuevo.fotos_completas && !anterior.fotos_completas && !nuevo.fotos_completas_fecha) nuevo.fotos_completas_fecha = hoyISO;
+  if(nuevo.enviado_propietario && !anterior.enviado_propietario && !nuevo.enviado_propietario_fecha) nuevo.enviado_propietario_fecha = hoyISO;
+  // Roberto (28-ago-2026): sella sola la primera vez que el expediente queda listo para valuar, para
+  // poder medir después cuánto tardó él mismo en capturarlo y enviarlo a evaluación (valuacion_fecha_envio).
+  if(nuevo.estado_expediente === 'listo_para_valuacion' && anterior.estado_expediente !== 'listo_para_valuacion' && !nuevo.expediente_listo_fecha) nuevo.expediente_listo_fecha = hoyISO;
+  nuevo.excel_capturado = nuevo.excel_capturado ? 1 : 0;
+  nuevo.fotos_completas = nuevo.fotos_completas ? 1 : 0;
+  nuevo.enviado_propietario = nuevo.enviado_propietario ? 1 : 0;
+
+  // F-17/F-21 del documento maestro: una excepción o condición fuera de lo normal debe traer motivo,
+  // igual que Daniela exige motivo de cancelación en pedidos. Mismo criterio aquí para admisión y riesgo.
+  if(['condicionado','no_admitido'].includes(nuevo.estado_admision) && !(nuevo.motivo_admision && String(nuevo.motivo_admision).trim())){
+    return res.status(400).json({ error:'Indica el motivo cuando la admisión queda condicionada o no admitida.' });
+  }
+  const riesgoActivo = nuevo.riesgo_seguridad===1 || nuevo.riesgo_seguridad===true || nuevo.riesgo_seguridad==='1';
+  if(riesgoActivo && !(nuevo.riesgo_seguridad_motivo && String(nuevo.riesgo_seguridad_motivo).trim())){
+    return res.status(400).json({ error:'Indica el motivo técnico cuando se marca riesgo de seguridad.' });
+  }
+  nuevo.riesgo_seguridad = riesgoActivo ? 1 : (nuevo.riesgo_seguridad ? 1 : 0);
+  nuevo.llaves_entregadas = (nuevo.llaves_entregadas===1||nuevo.llaves_entregadas===true||nuevo.llaves_entregadas==='1') ? 1 : (nuevo.llaves_entregadas ? 1 : 0);
+  nuevo.es_particular = (nuevo.es_particular===1||nuevo.es_particular===true||nuevo.es_particular==='1') ? 1 : (nuevo.es_particular ? 1 : 0);
+  // tipo_reparacion tiene CHECK(NULL o uno de los 6 valores) -- '' (Sin definir) se normaliza a NULL.
+  if(nuevo.tipo_reparacion === '') nuevo.tipo_reparacion = null;
+  // deducible_aplica: tri-estado (NULL=sin definir, 1=sí aplica, 0=no aplica) -- normalizar lo que llegue del select.
+  if(nuevo.deducible_aplica === ''){
+    nuevo.deducible_aplica = null;
+  } else if(nuevo.deducible_aplica !== null && nuevo.deducible_aplica !== undefined){
+    nuevo.deducible_aplica = (nuevo.deducible_aplica===1||nuevo.deducible_aplica===true||nuevo.deducible_aplica==='1') ? 1 : 0;
+  }
+
+  // Propuesta de Orlando (sección 3.1): si el vehículo tiene daño de suspensión, se exige el dado de
+  // seguridad como cuarto requisito antes de aparecer disponible para su revisión.
+  nuevo.requiere_dado_seguridad = (nuevo.requiere_dado_seguridad===1||nuevo.requiere_dado_seguridad===true||nuevo.requiere_dado_seguridad==='1') ? 1 : (nuevo.requiere_dado_seguridad ? 1 : 0);
+  nuevo.dado_seguridad_colocado = (nuevo.dado_seguridad_colocado===1||nuevo.dado_seguridad_colocado===true||nuevo.dado_seguridad_colocado==='1') ? 1 : (nuevo.dado_seguridad_colocado ? 1 : 0);
+
+  // Flujo de reparación (31-ago-2026), punto 6 autorizado por Roberto: "los de GNP que se quedan en piso
+  // siempre tienen una fecha de entrega establecida por el supervisor... que se debe cumplir sí o sí."
+  // Una vez marcado entrega_compromiso_gnp, la fecha de entrega queda bloqueada para todos salvo admin/jefe.
+  nuevo.entrega_compromiso_gnp = (nuevo.entrega_compromiso_gnp===1||nuevo.entrega_compromiso_gnp===true||nuevo.entrega_compromiso_gnp==='1') ? 1 : (nuevo.entrega_compromiso_gnp ? 1 : 0);
+  if(nuevo.entrega_compromiso_gnp === 1 && anterior.entrega_compromiso_gnp !== 1){
+    nuevo.entrega_compromiso_establecido_en = new Date().toISOString();
+  } else {
+    nuevo.entrega_compromiso_establecido_en = anterior.entrega_compromiso_establecido_en;
+  }
+  if(anterior.entrega_compromiso_gnp === 1 && req.body.fecha_entrega_prevista !== undefined
+      && String(req.body.fecha_entrega_prevista) !== String(anterior.fecha_entrega_prevista || '')
+      && !['admin','jefe'].includes(req.session.user.rol)){
+    return res.status(403).json({ error:'Esta fecha de entrega es un compromiso obligatorio de GNP establecido por el supervisor; solo Roberto puede moverla.' });
+  }
+
+  // Documento Maestro / Fase C, tabla 9: "criterio de salida: expediente digital validado y listo para
+  // valuación." No se puede marcar listo si hay documentos faltantes o ilegibles pendientes (misma lógica
+  // que el cierre condicionado de Daniela: el sistema bloquea, no solo advierte).
+  if(nuevo.estado_expediente === 'listo_para_valuacion'){
+    const pendientes = db.prepare(`SELECT tipo_documento FROM documentos_expediente WHERE siniestro_id = ? AND estado IN ('faltante','no_legible')`).all(req.params.id);
+    if(pendientes.length){
+      return res.status(400).json({ error:'No se puede marcar el expediente como listo para valuación: hay documentos faltantes o no legibles.',
+        detalle: pendientes.map(p=>p.tipo_documento) });
+    }
+  }
+  // Punto 10 del documento de Orlando (2-sep-2026): la condición para que el expediente pase de
+  // Orlando/Vanessa a Roberto (valuación) exige los 3 checks completos -- fotos de revisión entregadas,
+  // expediente digital armado y envío del expediente al propietario -- no solo la bandera manual.
+  if(nuevo.estado_expediente === 'listo_para_valuacion'){
+    const faltan = [];
+    if(!anterior.fotos_completas) faltan.push('Fotos/carpeta completas');
+    if(!anterior.enviado_propietario) faltan.push('Enviado al propietario');
+    if(faltan.length){
+      return res.status(400).json({ error:'No se puede marcar el expediente como listo para valuación: falta completar captura y envío.',
+        detalle: faltan });
+    }
+  }
+
+  // Documento Maestro / Fase D, tabla 10: "criterio de salida: valuación enviada y resolución registrada."
+  const ESTADOS_VALUACION_CON_ENVIO = ['enviada','observada','ajustada','autorizada_parcial','autorizada_total','rechazada'];
+  if(ESTADOS_VALUACION_CON_ENVIO.includes(nuevo.estado_valuacion) && !(nuevo.valuacion_fecha_envio && String(nuevo.valuacion_fecha_envio).trim())){
+    return res.status(400).json({ error:'Indica la fecha de envío de la valuación antes de marcarla en este estado.' });
+  }
+  // Tabla 11: "criterio de salida: alcance autorizado y restricciones conocidas." Autorizada/parcial exige
+  // quién autorizó y cuándo respondió (mismos datos que pide la tabla: "fecha envío/respuesta, autorizador").
+  if(['autorizada','parcial'].includes(nuevo.estado_autorizacion)){
+    if(!(nuevo.autorizacion_fecha_respuesta && String(nuevo.autorizacion_fecha_respuesta).trim())){
+      return res.status(400).json({ error:'Indica la fecha de respuesta de la autorización.' });
+    }
+    if(!(nuevo.autorizador && String(nuevo.autorizador).trim())){
+      return res.status(400).json({ error:'Indica quién autorizó (ajustador/plataforma/propietario).' });
+    }
+  }
+
+  // Documento Maestro / Fase F, tabla 16: "criterio de salida: checklist completo, defectos cerrados y
+  // liberación registrada." No se puede liberar calidad con rubros rechazados pendientes.
+  if(nuevo.estado_calidad === 'liberado'){
+    const rechazados = db.prepare(`SELECT dimension FROM checklist_calidad WHERE siniestro_id = ? AND resultado = 'rechazado'`).all(req.params.id);
+    if(rechazados.length){
+      return res.status(400).json({ error:'No se puede liberar calidad: hay rubros del checklist rechazados sin corregir.',
+        detalle: rechazados.map(r=>r.dimension) });
+    }
+  }
+  // Finiquito firmado exige que la unidad ya se haya entregado.
+  if(nuevo.finiquito_estado === 'firmado' && !nuevo.fecha_entrega_real){
+    return res.status(400).json({ error:'No se puede firmar el finiquito antes de registrar la entrega de la unidad.' });
+  }
+  // Tabla 19: "cualquier incidencia convertida en tarea." Una inconformidad en el finiquito genera
+  // automáticamente una tarea de seguimiento para Alejandra (mismo patrón que el resto de automatizaciones).
+  const nuevaInconformidad = nuevo.finiquito_estado === 'inconformidad_abierta' && anterior.finiquito_estado !== 'inconformidad_abierta';
+
+  // Propuesta: "unidades por avisar autorización" (panorama de Alejandra) — mismo patrón que
+  // refacciones_completas: cuando la autorización se resuelve, se crea una tarea de aviso al cliente.
+  const autorizacionReciénResuelta = ['autorizada','parcial'].includes(nuevo.estado_autorizacion) && !['autorizada','parcial'].includes(anterior.estado_autorizacion);
+
+  // Depuración SC Control (31-ago-2026, autorizado por Roberto): si este PATCH general es el que marca
+  // estatus_general='Cerrado' (en vez de pasar por /cerrar), aplica el mismo efecto -- sale de inmediato
+  // de las bandejas operativas reutilizando `archivado`, igual que el endpoint dedicado. No lo desarchiva
+  // si ya lo estaba (nunca revierte un archivado_en existente).
+  if(nuevo.estatus_general === 'Cerrado' && anterior.estatus_general !== 'Cerrado' && !anterior.archivado){
+    nuevo.archivado = 1;
+    nuevo.archivado_en = new Date().toISOString().replace('T',' ').slice(0,19);
+  }
+
+  // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
+  // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
+  const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
+  nuevo.aseguradora_ruta_refacciones = ruta.ruta;
+  nuevo.aseguradora_regla_aplicada = ruta.regla;
+
+  db.prepare(`UPDATE siniestros SET numero=?,aseguradora=?,vehiculo=?,anio_modelo=?,placas=?,vin=?,fecha_ingreso=?,ubicacion=?,responsable=?,estatus_general=?,notas=?,completo=?,
+      cliente_nombre=?,cliente_telefono=?,cliente_correo=?,cliente_notas=?,orden_admision=?,canal_origen=?,etapa_actual=?,prioridad=?,
+      requiere_refacciones=?,deducible=?,forma_pago=?,fecha_entrega_prevista=?,fecha_entrega_real=?,postventa_programada=?,postventa_completada=?,
+      estado_valuacion=?,estado_produccion=?,estado_calidad=?,ingreso_tipo=?,ingreso_seguro=?,piezas_autorizadas_cambio=?,entrega_compromiso_gnp=?,entrega_compromiso_establecido_en=?,
+      aseguradora_ruta_refacciones=?,aseguradora_regla_aplicada=?,
+      cita_fecha=?,grua_operador=?,grua_hora=?,fecha_admision=?,kilometraje=?,combustible_nivel=?,llaves_entregadas=?,pertenencias=?,
+      estado_admision=?,motivo_admision=?,estado_revision_tecnica=?,riesgo_seguridad=?,riesgo_seguridad_motivo=?,estado_evidencia=?,
+      requiere_dado_seguridad=?,dado_seguridad_colocado=?,grupo_whatsapp_creado=?,es_particular=?,tipo_reparacion=?,deducible_aplica=?,
+      estado_expediente=?,sistema_valuacion=?,expediente_folio=?,expediente_listo_fecha=?,
+      valuacion_folio=?,valuacion_version=?,valuacion_importe=?,valuacion_fecha_envio=?,valuacion_fecha_respuesta=?,valuacion_observaciones=?,
+      estado_autorizacion=?,autorizacion_fecha_envio=?,autorizacion_fecha_respuesta=?,autorizador=?,autorizacion_importe=?,autorizacion_restricciones=?,
+      entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
+      finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,postventa_resultado=?,deducible_pagado_confirmado_en=?,entrega_encuesta_gnp_solicitada=?,
+      fecha_borrador_captura=?,excel_capturado=?,excel_capturado_fecha=?,fotos_completas=?,fotos_completas_fecha=?,enviado_propietario=?,enviado_propietario_fecha=?,
+      revision_tecnica_terminada_en=?,autosurtido_cotizado_en=?,autosurtido_reingreso_en=?,autosurtido_inventario_cargado=?,autosurtido_inventario_cargado_en=?,
+      archivado=?,archivado_en=?,
+      actualizado_en=datetime('now') WHERE id=?`)
+    .run(nuevo.numero, nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
+      nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
+      nuevo.requiere_refacciones, nuevo.deducible, nuevo.forma_pago, nuevo.fecha_entrega_prevista, nuevo.fecha_entrega_real, nuevo.postventa_programada, nuevo.postventa_completada,
+      nuevo.estado_valuacion, nuevo.estado_produccion, nuevo.estado_calidad, nuevo.ingreso_tipo, nuevo.ingreso_seguro, nuevo.piezas_autorizadas_cambio, nuevo.entrega_compromiso_gnp, nuevo.entrega_compromiso_establecido_en,
+      nuevo.aseguradora_ruta_refacciones, nuevo.aseguradora_regla_aplicada,
+      nuevo.cita_fecha, nuevo.grua_operador, nuevo.grua_hora, nuevo.fecha_admision, nuevo.kilometraje, nuevo.combustible_nivel, nuevo.llaves_entregadas, nuevo.pertenencias,
+      nuevo.estado_admision, nuevo.motivo_admision, nuevo.estado_revision_tecnica, nuevo.riesgo_seguridad, nuevo.riesgo_seguridad_motivo, nuevo.estado_evidencia,
+      nuevo.requiere_dado_seguridad, nuevo.dado_seguridad_colocado, nuevo.grupo_whatsapp_creado, nuevo.es_particular, nuevo.tipo_reparacion, nuevo.deducible_aplica,
+      nuevo.estado_expediente, nuevo.sistema_valuacion, nuevo.expediente_folio, nuevo.expediente_listo_fecha,
+      nuevo.valuacion_folio, nuevo.valuacion_version, nuevo.valuacion_importe, nuevo.valuacion_fecha_envio, nuevo.valuacion_fecha_respuesta, nuevo.valuacion_observaciones,
+      nuevo.estado_autorizacion, nuevo.autorizacion_fecha_envio, nuevo.autorizacion_fecha_respuesta, nuevo.autorizador, nuevo.autorizacion_importe, nuevo.autorizacion_restricciones,
+      nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
+      nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios, nuevo.postventa_resultado, nuevo.deducible_pagado_confirmado_en, (nuevo.entrega_encuesta_gnp_solicitada===undefined||nuevo.entrega_encuesta_gnp_solicitada===null||nuevo.entrega_encuesta_gnp_solicitada==='')?null:(nuevo.entrega_encuesta_gnp_solicitada?1:0),
+      nuevo.fecha_borrador_captura, nuevo.excel_capturado, nuevo.excel_capturado_fecha, nuevo.fotos_completas, nuevo.fotos_completas_fecha, nuevo.enviado_propietario, nuevo.enviado_propietario_fecha,
+      nuevo.revision_tecnica_terminada_en, nuevo.autosurtido_cotizado_en, nuevo.autosurtido_reingreso_en, nuevo.autosurtido_inventario_cargado, nuevo.autosurtido_inventario_cargado_en,
+      nuevo.archivado, nuevo.archivado_en,
+      req.params.id);
+  auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  whatsappFaseA.procesarTransicionSiniestro(db, { anterior, nuevo }); // solo registro interno, no envía nada
+  if(nuevaInconformidad){
+    db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+      VALUES (?,?,?,?,'pendiente','automatica','inconformidad_finiquito',?)`)
+      .run(req.params.id, 'seguimiento', 'Dar seguimiento a la inconformidad registrada en el finiquito.', new Date().toISOString().slice(0,10), req.session.user.id);
+  }
+  if(autorizacionReciénResuelta){
+    const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='autorizacion_resuelta' AND estado IN ('pendiente','en_proceso')`).get(req.params.id);
+    if(!yaExiste){
+      db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+        VALUES (?,?,?,?,'pendiente','automatica','autorizacion_resuelta',?)`)
+        .run(req.params.id, 'mensaje', 'Autorización resuelta: avisar al cliente y explicar el siguiente paso.', new Date().toISOString().slice(0,10), req.session.user.id);
+    }
+  }
+
+  // Modificación 7 (Modificaciones_Tablero_SC_Control.docx): hoy Beto se entera del expediente autorizado
+  // hasta que le imprimen y dejan la OT físicamente, sin contexto previo. En cuanto la autorización se
+  // resuelve (equivalente digital a "Roberto lo libera"), se le avisa de una vez en el sistema -- no
+  // depende de que alguien le entregue el papel.
+  if(autorizacionReciénResuelta){
+    const yaExisteAvisoBeto = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='ot_lista_beto' AND estado IN ('pendiente','en_proceso')`).get(req.params.id);
+    if(!yaExisteAvisoBeto){
+      db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+        VALUES (?,?,?,?,'pendiente','automatica','ot_lista_beto',?)`)
+        .run(req.params.id, 'aviso', 'Expediente autorizado: ya puedes revisar la orden de trabajo y proveedores asignados, aunque todavía no llegue la hoja impresa.', new Date().toISOString().slice(0,10), req.session.user.id);
+    }
+  }
+
+  // Propuesta de Orlando (sección 3.1): si este PATCH tocó algún requisito de admisión (llaves, dado de
+  // seguridad, tipo de ingreso, fecha de admisión), reevalúa si el vehículo ya queda disponible para su
+  // revisión. verificarDisponibleParaRevision es idempotente: si ya estaba sellado, no hace nada.
+  const camposAdmisionTocados = ['llaves_entregadas','requiere_dado_seguridad','dado_seguridad_colocado','ingreso_tipo','fecha_admision'].some(c => req.body[c] !== undefined);
+  if(camposAdmisionTocados){
+    verificarDisponibleParaRevision(db, req.params.id, req.session.user);
+  }
+
+  // Propuesta de Orlando (sección 3.3): al cerrar su parte (Excel + orden de admisión + fotos listos =
+  // estado_revision_tecnica='revision_terminada'), se sella la hora de cierre una sola vez y se avisa a
+  // Roberto con una tarea visible en el expediente -- sin esperar a que Vanessa termine el expediente
+  // digital, que sigue siendo el criterio real para la bandeja de valuación (no se toca esa compuerta).
+  if(nuevo.estado_revision_tecnica === 'revision_terminada' && anterior.estado_revision_tecnica !== 'revision_terminada'){
+    db.prepare("UPDATE siniestros SET fecha_hora_revision_concluida=datetime('now') WHERE id=? AND fecha_hora_revision_concluida IS NULL").run(req.params.id);
+    const yaExisteAviso = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='revision_lista_para_evaluar'`).get(req.params.id);
+    if(!yaExisteAviso){
+      db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+        VALUES (?,?,?,?,'pendiente','automatica','revision_lista_para_evaluar',?)`)
+        .run(req.params.id, 'mensaje', 'Orlando cerró su revisión: Excel, orden de admisión y fotos listos para evaluar.', new Date().toISOString().slice(0,10), req.session.user.id);
+    }
+  }
+
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
+});
+
+// Proceso_Completo_Servicio_Cristian.docx (secciones 8-9): dos avisos propios de Roberto que hoy manda
+// por correo y que quiere ver reflejados en el tablero, cada uno disparando tareas automáticas a quien
+// corresponde -- mismo patrón que 'ot_lista_beto' / 'autorizacion_resuelta' (tareas visibles en la
+// bitácora del expediente, no una bandeja personal). Ambas exclusivas de admin/jefe (el propietario).
+
+// Sección 8: "ya está todo autorizado pero seguimos esperando que Impart asigne proveedor" -- avisa a
+// Alejandra (para que informe al cliente que va en tiempo, aunque falte proveedor) y a Daniela (para
+// que lo tenga en su radar de seguimiento).
+router.patch('/:id/avisar-proveedores-pendientes', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  if(!['autorizada','parcial'].includes(s.estado_autorizacion)){
+    return res.status(400).json({ error:'La valuación debe estar autorizada (total o parcial) antes de avisar que faltan proveedores.' });
+  }
+  if(s.proveedores_aviso_pendiente_en){
+    return res.status(400).json({ error:'Ya se avisó de proveedores pendientes el ' + s.proveedores_aviso_pendiente_en.slice(0,16).replace('T',' ') + '.' });
+  }
+  const ahora = new Date().toISOString();
+  db.prepare(`UPDATE siniestros SET proveedores_aviso_pendiente_en=? WHERE id=?`).run(ahora, req.params.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, accion:'aviso_proveedores_pendientes', usuario:req.session.user });
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,'pendiente','automatica','proveedores_pendientes_aviso',?)`)
+    .run(req.params.id, 'mensaje', 'Valuación ya autorizada, todavía en espera de que se asignen proveedores. Alejandra: informar al cliente que va en tiempo. Daniela: dar seguimiento en Impart hasta que queden asignados.', ahora.slice(0,10), req.session.user.id);
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
+});
+
+// Sección 9: el "suelta" del expediente completo (ya autorizado y con proveedor) -- reemplaza el
+// correo que hoy manda Roberto a todo el equipo. Avisa a Alejandra (informar al cliente que ya se
+// puede programar) y a Daniela (seguimiento del pedido en Impart).
+router.patch('/:id/enviar-expediente-completo', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  if(!['autorizada','parcial'].includes(s.estado_autorizacion)){
+    return res.status(400).json({ error:'La valuación debe estar autorizada (total o parcial) antes de enviar el expediente completo.' });
+  }
+  if(s.expediente_completo_enviado_en){
+    return res.status(400).json({ error:'El expediente completo ya se envió el ' + s.expediente_completo_enviado_en.slice(0,16).replace('T',' ') + '.' });
+  }
+  const ahora = new Date().toISOString();
+  db.prepare(`UPDATE siniestros SET expediente_completo_enviado_en=? WHERE id=?`).run(ahora, req.params.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, accion:'expediente_completo_enviado', usuario:req.session.user });
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,'pendiente','automatica','expediente_completo_enviado',?)`)
+    .run(req.params.id, 'mensaje', 'Expediente completo: evaluación autorizada, orden de trabajo y proveedores ya asignados. Alejandra: informar al cliente y coordinar entrada a producción. Daniela: dar seguimiento a los pedidos en Impart.', ahora.slice(0,10), req.session.user.id);
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id));
+});
+
+
+// Requerimientos de Daniela — Registrar entrega de la unidad.
+// Permitido a Daniela (operativo), la persona de seguimiento a clientes (atencion_cliente) y admin.
+router.patch('/:id/entrega', requireAuth, requireRole('operativo','atencion_cliente','admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  // Sección 9 del documento maestro: "el expediente no pasa a listo para entrega hasta que todos los
+  // retrabajos críticos estén cerrados."
+  const retrabajosCriticos = db.prepare(`SELECT origen FROM retrabajos WHERE siniestro_id = ? AND severidad = 'critica' AND estado != 'cerrado'`).all(s.id);
+  if(retrabajosCriticos.length){
+    return res.status(400).json({ error:'No se puede registrar la entrega: hay retrabajos críticos sin cerrar.', detalle: retrabajosCriticos.map(r=>r.origen) });
+  }
+  const fecha = req.body.fecha_entrega_real || new Date().toISOString().slice(0,10);
+  // Registrar/editar la entrega es una decisión fresca: si antes se había bloqueado el archivo automático, se reactiva.
+  db.prepare("UPDATE siniestros SET fecha_entrega_real=?, no_auto_archivar=0, actualizado_en=datetime('now') WHERE id=?").run(fecha, s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'entrega_registrada', campo:'fecha_entrega_real',
+    valor_anterior: s.fecha_entrega_real, valor_nuevo: fecha, usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
+// Requerimientos de Daniela — Cierre de siniestro condicionado.
+// Solo puede cerrarse cuando todos los pedidos están en un estado terminal (Recibido completo / Cancelado)
+// y la unidad ya fue entregada (fecha_entrega_real capturada). Permitido a Daniela (operativo), Jefe y admin.
+const ESTATUS_TERMINALES_PEDIDO = ['Recibido completo','Cancelado'];
+router.patch('/:id/cerrar', requireAuth, requireRole('operativo','jefe','admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+
+  const pedidos = db.prepare('SELECT numero, estatus_operativo FROM pedidos WHERE siniestro_id = ?').all(s.id);
+  const pendientes = pedidos.filter(p => !ESTATUS_TERMINALES_PEDIDO.includes(p.estatus_operativo));
+  const problemas = [];
+  if(pendientes.length){
+    problemas.push(`Pedidos sin recibir/cancelar: ${pendientes.map(p=>p.numero).join(', ')}`);
+  }
+  if(!s.fecha_entrega_real){
+    problemas.push('Falta registrar la fecha de entrega de la unidad.');
+  }
+  if(problemas.length){
+    return res.status(400).json({ error:'No se puede cerrar el siniestro todavía.', detalle: problemas });
+  }
+
+  // Depuración SC Control (31-ago-2026, autorizado por Roberto): un expediente Cerrado debe salir de
+  // inmediato de todas las bandejas operativas (Kanban, lista maestra, panorama de Beto, bandejas de
+  // Orlando/Vanessa, resumen de Inicio, etc.), no hasta que se cumplan los 90 días del archivo automático.
+  // Se reutiliza el mecanismo de `archivado` ya existente (mismo campo que usa archivarSiniestrosVencidos)
+  // en vez de tocar cada consulta por separado: todas esas bandejas ya filtran por archivado=0, así que
+  // marcarlo aquí las saca de operación en el acto sin duplicar lógica. El historial completo sigue
+  // disponible sin límite de tiempo vía GET /api/siniestros?archivado=1 (pantalla "Historial / Terminados").
+  db.prepare("UPDATE siniestros SET estatus_general='Cerrado', archivado=1, archivado_en=datetime('now'), actualizado_en=datetime('now') WHERE id=?").run(s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'cierre', campo:'estatus_general',
+    valor_anterior: s.estatus_general, valor_nuevo: 'Cerrado', usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
+
+// Desarchivar manualmente (correcciones/consultas puntuales). Mismo permiso que cerrar/administrar.
+router.patch('/:id/desarchivar', requireAuth, requireRole('operativo','jefe','admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  db.prepare("UPDATE siniestros SET archivado=0, archivado_en=NULL, no_auto_archivar=1 WHERE id=?").run(s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'desarchivado_manual', usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
+// Reporte técnico de Roberto (2-sep-2026), punto 5: hasta hoy no existía ninguna forma de borrar
+// un expediente de forma permanente (solo "archivar", que lo saca de las bandejas pero conserva el
+// dato). Esto es EXCLUSIVO para depurar registros de prueba/verificación que nunca debieron quedar
+// en producción -- no reemplaza "archivar" ni "cerrar" para expedientes reales. Por eso exige escribir
+// el número exacto del expediente como confirmación (mismo patrón que "escribe el nombre del repo para
+// borrarlo"), es solo para rol admin, y borra en cascada TODO lo relacionado (pedidos, piezas,
+// incidencias, comunicaciones, órdenes de trabajo y sus operaciones, retrabajos, tareas, hitos,
+// mensajes de IA, evidencias, checklist de calidad, complementos, archivos adjuntos, etc.) dentro de
+// una sola transacción, para no dejar huérfanos.
+router.delete('/:id', requireAuth, requireRole('admin'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  const confirmacion = String(req.body && req.body.confirmar_numero || '').trim();
+  if(confirmacion !== s.numero){
+    return res.status(400).json({ error:'Para borrar de forma permanente escribe el número exacto del expediente como confirmación.', numero_esperado: s.numero });
+  }
+
+  // node:sqlite (DatabaseSync) no trae el helper db.transaction() de better-sqlite3 -- se maneja
+  // la transacción a mano con BEGIN/COMMIT/ROLLBACK.
+  db.exec('BEGIN');
+  try {
+    const pedidoIds = db.prepare('SELECT id FROM pedidos WHERE siniestro_id = ?').all(s.id).map(r => r.id);
+    const piezaIds = pedidoIds.length ? db.prepare(`SELECT id FROM piezas WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).all(...pedidoIds).map(r => r.id) : [];
+    const incidenciaIds = piezaIds.length ? db.prepare(`SELECT id FROM incidencias WHERE pieza_id IN (${piezaIds.map(()=>'?').join(',')})`).all(...piezaIds).map(r => r.id) : [];
+    const otIds = db.prepare('SELECT id FROM ordenes_trabajo WHERE siniestro_id = ?').all(s.id).map(r => r.id);
+    const opIds = otIds.length ? db.prepare(`SELECT id FROM ot_operaciones WHERE ot_id IN (${otIds.map(()=>'?').join(',')})`).all(...otIds).map(r => r.id) : [];
+
+    // Archivos adjuntos de todo lo que cuelga de este expediente (incluye los ligados a operaciones de la OT).
+    const entidadesArchivo = [['siniestro', [s.id]], ['pedido', pedidoIds], ['pieza', piezaIds], ['incidencia', incidenciaIds]];
+    for(const [tipo, ids] of entidadesArchivo){
+      if(ids.length) db.prepare(`DELETE FROM archivos WHERE entidad_tipo = ? AND entidad_id IN (${ids.map(()=>'?').join(',')})`).run(tipo, ...ids);
+    }
+    if(opIds.length) db.prepare(`DELETE FROM archivos WHERE ot_operacion_id IN (${opIds.map(()=>'?').join(',')})`).run(...opIds);
+
+    if(piezaIds.length){
+      db.prepare(`DELETE FROM incidencias WHERE pieza_id IN (${piezaIds.map(()=>'?').join(',')})`).run(...piezaIds);
+      db.prepare(`DELETE FROM discrepancias_proveedor WHERE pieza_id IN (${piezaIds.map(()=>'?').join(',')})`).run(...piezaIds);
+    }
+    if(pedidoIds.length){
+      db.prepare(`DELETE FROM comunicaciones WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).run(...pedidoIds);
+      db.prepare(`DELETE FROM exclusiones_envio WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).run(...pedidoIds);
+      db.prepare(`DELETE FROM piezas WHERE pedido_id IN (${pedidoIds.map(()=>'?').join(',')})`).run(...pedidoIds);
+    }
+    db.prepare('DELETE FROM pedidos WHERE siniestro_id = ?').run(s.id);
+
+    if(opIds.length){
+      db.prepare(`DELETE FROM retrabajos WHERE ot_operacion_id IN (${opIds.map(()=>'?').join(',')})`).run(...opIds);
+      db.prepare(`DELETE FROM ot_operaciones WHERE id IN (${opIds.map(()=>'?').join(',')})`).run(...opIds);
+    }
+    db.prepare('DELETE FROM retrabajos WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM ordenes_trabajo WHERE siniestro_id = ?').run(s.id);
+
+    db.prepare('DELETE FROM mensajes_ia WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM siniestro_hitos WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM eventos_cliente WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM tareas WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM danos_evidencia WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM documentos_expediente WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM complementos WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM checklist_calidad WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM discrepancias_proveedor WHERE siniestro_id = ?').run(s.id);
+    db.prepare('DELETE FROM vales_pendientes WHERE siniestro_id = ?').run(s.id);
+
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'borrado_permanente', usuario:req.session.user,
+      valor_anterior:`${s.numero} (${s.aseguradora||'—'}) — ${pedidoIds.length} pedido(s), ${piezaIds.length} pieza(s)` });
+    db.prepare('DELETE FROM siniestros WHERE id = ?').run(s.id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  res.json({ ok: true, borrado: { id: s.id, numero: s.numero } });
+});
+
+module.exports = router;

@@ -1,0 +1,4075 @@
+/* ===================== HELPERS ===================== */
+function esc(s){
+  if(s===null||s===undefined) return '';
+  return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtMoney(n){ return '$'+Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:2}); }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Solicitud de Daniela (7-sep-2026): "Sin proveedor" deja de mostrarse como categoría del tablero -- ya
+// no hay pestaña, filtro, contador ni opción de formulario dedicados a ella (InPart siempre vincula un
+// proveedor; la categoría no correspondía al flujo real y generaba confusión). El VALOR internamente
+// sigue existiendo tal cual (una pieza capturada a mano sin proveedor sigue guardando ese estatus, sin
+// tocar nada de lo ya capturado) -- este helper solo cambia cómo se MUESTRA ese valor puntual, donde
+// todavía haga falta un indicador (p. ej. una columna de estatus), sin presentarlo como una categoría.
+function etiquetaEstatusPieza(estatus){ return estatus==='Sin proveedor' ? 'Por asignar' : estatus; }
+// Reporte de Roberto (3-sep-2026): la Línea de tiempo (y otras pantallas con hora) mostraban los eventos
+// 6 horas adelantados -- ej. algo que pasó a las 14:01 hora de CDMX se veía como "20:01". Causa: SQLite
+// guarda datetime('now') en UTC crudo, sin marca de zona, y se imprimía tal cual en el navegador. México
+// ya no tiene horario de verano (se eliminó en 2022), así que Ciudad de México es UTC-6 fijo todo el año.
+// Este helper interpreta el string del servidor como UTC y lo muestra en hora de CDMX.
+function fmtFechaHora(s){
+  if(!s) return '';
+  let iso = String(s).trim();
+  if(!iso) return '';
+  if(iso.includes(' ') && !iso.includes('T')) iso = iso.replace(' ', 'T');
+  if(!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return esc(s);
+  return d.toLocaleString('es-MX', { timeZone:'America/Mexico_City', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+}
+// Punto 4 del documento PORTAL SC (Orlando, 8-sep-2026): "ideal que la nomenclatura de fecha sea en el
+// formato día/mes/año." Varios campos de solo FECHA (sin hora) -- fecha_borrador_captura,
+// excel_capturado_fecha, etc. -- venían de un <input type="date"> y se mostraban tal cual (AAAA-MM-DD,
+// el formato nativo del input), nunca pasaban por un formateador. fmtFechaHora ya usa DD/MM/AAAA para
+// fecha+hora; este helper hermano hace lo mismo pero solo con la fecha, sin inventar una hora que no
+// existe para estos campos.
+function fmtFecha(s){
+  if(!s) return '';
+  const str = String(s).trim();
+  if(!str) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+  if(!m) return esc(str);
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+function uidLocal(){ return 'tmp'+Math.random().toString(36).slice(2); }
+// Punto 3 del documento PORTAL SC (Orlando, 8-sep-2026): "los siniestros de MAPFRE, manejarlos sin la
+// terminación ya sea 1, 2 o 3, solo los números que vienen en la ODA -- no habría forma de confundirse ya
+// que los datos adicionales del auto (marca, tipo, color, placa, VIN) serían diferentes." Deliberadamente
+// NO se recorta el número que se captura de forma automática: los números reales de MAPFRE son cadenas
+// largas que legítimamente pueden terminar en 1, 2 o 3 como parte del número real (ver el ejemplo del
+// seed: 4264105314000171) -- recortar a ciegas el último carácter corrompería números correctos. En vez
+// de eso, se muestra un recordatorio junto al campo cuando la aseguradora es Mapfre, para que quien
+// captura no agregue esa terminación por su cuenta; la protección real contra duplicados (mismo número
+// base, otro vehículo) sigue siendo la validación de "ya existe un siniestro con ese número" que ya existe
+// tanto en el alta como en la edición.
+function actualizarHintMapfre(idSelectAseguradora, idHint){
+  const sel = document.getElementById(idSelectAseguradora);
+  const hint = document.getElementById(idHint);
+  if(!sel || !hint) return;
+  hint.style.display = sel.value === 'Mapfre' ? 'block' : 'none';
+}
+
+let currentUser = null;
+const ASEGURADORAS = ['GNP','ANA','Inbursa','Allianz','La Latinoamericana','Mapfre','Afirme','Zurich'];
+
+
+async function api(method, url, body, opts={}){
+  const res = await fetch(url, {
+    method, headers: body ? {'Content-Type':'application/json'} : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  let data = null;
+  const ct = res.headers.get('content-type')||'';
+  if(ct.includes('application/json')) data = await res.json().catch(()=>null);
+  // Bug reportado por Daniela: un 401 del propio login (contraseña incorrecta) se mostraba como
+  // "Sesión expirada", ocultando el motivo real. Ese mensaje genérico solo aplica cuando SÍ había
+  // una sesión iniciada y dejó de ser válida — nunca al intentar iniciar sesión por primera vez.
+  if(res.status === 401 && !opts.esLogin){
+    currentUser = null;
+    renderLogin();
+    throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
+  }
+  if(!res.ok){
+    const msg = (data && data.error) || ('Error ' + res.status);
+    if(!opts.silent) toast(msg, 'error');
+    const err = new Error(msg); err.data = data; err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+/* ===================== TOASTS (reemplaza alert/confirm bloqueantes — F-04) ===================== */
+function toast(msg, type='info', ms=4500){
+  const root = document.getElementById('toastRoot');
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type==='error'?'error':type==='success'?'success':type==='warn'?'warn':'');
+  el.textContent = msg;
+  root.appendChild(el);
+  setTimeout(()=>{ el.remove(); }, ms);
+}
+function confirmDialog(mensaje, { titulo='Confirmar', textoOk='Confirmar', peligro=false } = {}){
+  return new Promise(resolve=>{
+    showModal(`
+      <h3>${esc(titulo)}</h3>
+      <p>${esc(mensaje)}</p>
+      <div class="modal-actions">
+        <button class="btn secondary" id="cfDlgCancel">Cancelar</button>
+        <button class="btn ${peligro?'danger':''}" id="cfDlgOk">${esc(textoOk)}</button>
+      </div>
+    `);
+    document.getElementById('cfDlgCancel').onclick = ()=>{ closeModal(); resolve(false); };
+    document.getElementById('cfDlgOk').onclick = ()=>{ closeModal(); resolve(true); };
+  });
+}
+function showModal(html, wide=false){
+  document.getElementById('modalRoot').innerHTML = `<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal ${wide?'wide':''}">${html}</div></div>`;
+}
+function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+/* ===================== LOGIN ===================== */
+function renderLogin(){
+  document.getElementById('topHeader').classList.add('hidden');
+  document.getElementById('footerNote').classList.add('hidden');
+  document.getElementById('app').innerHTML = '';
+  document.getElementById('loginRoot').innerHTML = `
+  <div class="login-wrap">
+    <div class="login-card">
+      <img class="login-logo" src="/img/logo.png" alt="Servicio Cristian">
+      <h2>Servicio Cristian</h2>
+      <p class="subtle">Tablero de Seguimiento de Refacciones</p>
+      <div class="field"><label>Correo</label><input id="loginEmail" type="email" placeholder="daniela@serviciocristian.mx"></div>
+      <div class="field"><label>Contraseña</label><input id="loginPass" type="password" onkeydown="if(event.key==='Enter')hacerLogin()"></div>
+      <div class="field errmsg" id="loginError"></div>
+      <button class="btn" style="width:100%" onclick="hacerLogin()">Entrar</button>
+    </div>
+  </div>`;
+}
+async function hacerLogin(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPass').value;
+  try{
+    const r = await api('POST','/api/auth/login', { email, password }, { silent:true, esLogin:true });
+    currentUser = r.user;
+    document.getElementById('loginRoot').innerHTML = '';
+    document.getElementById('topHeader').classList.remove('hidden');
+    document.getElementById('footerNote').classList.remove('hidden');
+    document.getElementById('userChip').textContent = currentUser.nombre + ' · ' + currentUser.rol;
+    goTo('inicio');
+  }catch(e){
+    document.getElementById('loginError').textContent = e.message;
+  }
+}
+async function hacerLogout(){
+  await api('POST','/api/auth/logout');
+  currentUser = null;
+  renderLogin();
+}
+function abrirCambiarPassword(){
+  showModal(`
+    <h3>Cambiar contraseña</h3>
+    <div class="field"><label>Contraseña actual</label><input id="pwActual" type="password"></div>
+    <div class="field"><label>Contraseña nueva (mínimo 8 caracteres)</label><input id="pwNueva" type="password"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarPassword()">Guardar</button></div>
+  `);
+}
+async function guardarPassword(){
+  const actual = document.getElementById('pwActual').value;
+  const nueva = document.getElementById('pwNueva').value;
+  try{
+    await api('PATCH','/api/auth/password', { actual, nueva });
+    toast('Contraseña actualizada.', 'success');
+    closeModal();
+  }catch(e){}
+}
+
+/* ===================== ESTADO / NAV ===================== */
+let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{}, filtrosHistorial:{} };
+
+// Triage documento de Daniela (DEF-023/REQ-022): traducir los códigos internos de auditoría a texto
+// legible en la línea de tiempo, en vez de mostrar el nombre técnico crudo (alta_carga_masiva, etc.).
+const LABEL_ACCION = {
+  alta: 'Alta', edicion: 'Edición', eliminacion: 'Eliminación', restauracion: 'Restaurado desde papelera',
+  sustitucion: 'Archivo sustituido', cierre: 'Cierre', cierre_automatico: 'Cierre automático',
+  alta_carga_masiva: 'Alta por carga masiva (Inpart)', actualizacion_carga_masiva: 'Actualizado por carga masiva (Inpart)',
+  archivado_automatico: 'Archivado automático (90 días sin movimiento)', desarchivado_manual: 'Reactivado manualmente',
+  completado_desde_libreta: 'Datos completados desde la libreta', automatico: 'Cambio automático del sistema',
+  cambio_por_incidencia: 'Cambio por incidencia registrada', entrega_proveedor: 'Marcada como entregada por el proveedor',
+  recepcion_fisica: 'Recepción física confirmada', entrega_registrada: 'Entrega al cliente registrada',
+  incidencia_registrada: 'Incidencia registrada', respuesta_registrada: 'Respuesta del proveedor registrada',
+  correo_aprobado: 'Correo aprobado (borrador/sandbox)', correo_descartado: 'Correo descartado',
+  exclusion_temporal: 'Proveedor excluido de un envío puntual', reversion: 'Carga masiva revertida',
+  login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador'
+};
+const LABEL_CAMPO = {
+  estatus_operativo: 'Estatus operativo', estatus_inpart: 'Estatus Inpart', fecha_prevista: 'Fecha promesa',
+  vehiculo: 'Vehículo', placas: 'Placas', vin: 'VIN', proveedor_id: 'Proveedor', precio: 'Precio', estatus: 'Estatus'
+};
+// Triage documento de Daniela (DEF-024/REQ-020): semáforo visual de completitud por sección.
+function renderSemaforo(sem){
+  if(!sem) return '';
+  const COLOR = { completo:'verde', en_proceso:'ambar', pendiente:'gris' };
+  const LABEL = { admision:'Admisión', expediente:'Expediente', valuacion:'Valuación', produccion:'Producción', calidad:'Calidad' };
+  return Object.entries(sem).map(([k,v])=>`<span class="badge ${COLOR[v]||'gris'}" title="${LABEL[k]}: ${v.replace('_',' ')}">${LABEL[k]}</span>`).join(' ');
+}
+// Hallazgo M-05 (Informe Daniela): las bandejas propias de refacciones (Kanban, Incidencias, Lista
+// maestra, Piezas recibidas) se veían en el menú de TODOS los roles, aunque Orlando/Vanessa/Beto/Alejandra
+// tienen sus propias pestañas dedicadas y nunca las usan -- se acotan a quien realmente las opera.
+const TABS = [
+  {k:'inicio', label:'Inicio'},
+  {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
+  {k:'pendientes-hoy', label:'Pendientes de hoy', roles:['atencion_cliente','admin','jefe']},
+  {k:'kanban', label:'Kanban', roles:['operativo','admin','jefe']},
+  {k:'autosurtidos', label:'Autosurtidos', roles:['operativo','admin','jefe']},
+  {k:'incidencias', label:'Incidencias', roles:['operativo','admin','jefe']},
+  {k:'correos', label:'Correos pendientes', roles:['operativo','admin']},
+  {k:'lista', label:'Lista maestra', roles:['operativo','admin','jefe']},
+  // Depuración SC Control (31-ago-2026, autorizado por Roberto): expedientes Cerrados salen de
+  // inmediato de las bandejas operativas (ver PATCH /:id y /:id/cerrar); esta pantalla es el punto de
+  // acceso explícito a ese historial completo, sin límite de 90 días, para consultas de garantía o
+  // quejas posteriores que pida la aseguradora.
+  {k:'historial', label:'Historial / Terminados', roles:['atencion_cliente','operativo','admin','jefe']},
+  {k:'recibidas', label:'Piezas recibidas', roles:['operativo','admin','jefe']},
+  {k:'proveedores', label:'Proveedores', roles:['operativo','admin','jefe']},
+  {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
+  {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
+  {k:'expediente', label:'Armado de expediente', roles:['vanessa','orlando','operativo','admin','jefe']},
+  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
+  {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
+  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
+  {k:'reglas', label:'Reglas', roles:['admin','jefe']},
+  {k:'respaldos', label:'Respaldos', roles:['admin']}
+];
+function renderTabs(){
+  const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
+  document.getElementById('mainTabs').innerHTML = visibles.map(t=>
+    `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}</button>`).join('') +
+    `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
+}
+function goTo(view){ state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
+// Hallazgo de Daniela (26-ago-2026): el menu ocupaba casi toda la pantalla en movil. Se colapsa
+// detras de un boton "Menu" (ver CSS .nav-toggle / nav.tabs.open) y se cierra solo al navegar, porque
+// renderTabs() reconstruye el <nav> desde cero sin la clase "open" en cada render().
+function toggleMenuMovil(){
+  const nav = document.getElementById('mainTabs');
+  if(nav) nav.classList.toggle('open');
+}
+function goSiniestro(id){
+  if(state.view !== 'siniestro') state.origenSiniestro = state.view;
+  state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render();
+}
+function goProveedor(id){ state.view='proveedor'; state.proveedorId=id; render(); }
+function setSubtabSiniestro(tab){ state.subtabSiniestro = tab; render(); }
+function setFiltroListaMaestra(campo, valor){ state.filtros[campo] = valor; state.filtros.page = 1; render(); }
+function setFiltroQLive(valor){ state.filtros.q = valor; }
+
+
+async function doGlobalSearch(){
+  const q = document.getElementById('globalSearch').value.trim();
+  if(!q) return;
+  const r = await api('GET','/api/reportes/buscar?q='+encodeURIComponent(q));
+  // F-20: se muestra una LISTA agrupada de coincidencias, nunca se abre automáticamente la primera.
+  showModal(`
+    <h3>Resultados para "${esc(q)}"</h3>
+    <p class="subtle">Tipo detectado si fuera número: ${esc(r.tipoDetectado)} (regla R-02)</p>
+    <div class="results-group"><h4>Siniestros (${r.siniestros.length})</h4>
+      ${r.siniestros.length===0?'<div class="empty">Sin coincidencias.</div>':r.siniestros.map(s=>`<div class="result-item" onclick="closeModal();goSiniestro(${s.id})"><b>${esc(s.numero)}</b> · ${esc(s.aseguradora)} · ${esc(s.vehiculo||'')} · ${esc(s.placas||'')}${s.vin?' · VIN '+esc(s.vin):''}</div>`).join('')}
+    </div>
+    <div class="results-group"><h4>Pedidos (${r.pedidos.length})</h4>
+      ${r.pedidos.length===0?'<div class="empty">Sin coincidencias.</div>':r.pedidos.map(p=>`<div class="result-item" onclick="closeModal();goSiniestro(${p.siniestro_id})"><b>${esc(p.numero)}</b> · siniestro ${esc(p.siniestro_numero)}</div>`).join('')}
+    </div>
+    <div class="results-group"><h4>Proveedores (${r.proveedores.length})</h4>
+      ${r.proveedores.length===0?'<div class="empty">Sin coincidencias.</div>':r.proveedores.map(pv=>`<div class="result-item" onclick="closeModal();goProveedor(${pv.id})"><b>${esc(pv.razon_social)}</b> · ${esc(pv.correo||'')}${pv.contacto?' · '+esc(pv.contacto):''}</div>`).join('')}
+    </div>
+    <div class="results-group"><h4>Piezas (${r.piezas.length})</h4>
+      ${r.piezas.length===0?'<div class="empty">Sin coincidencias.</div>':r.piezas.map(z=>`<div class="result-item" onclick="closeModal();goSiniestro(${z.siniestro_id})"><b>${esc(z.descripcion)}</b>${z.numero_parte?' · N.P. '+esc(z.numero_parte):''} · siniestro ${esc(z.siniestro_numero)} · pedido ${esc(z.pedido_numero)} · ${esc(etiquetaEstatusPieza(z.estatus))}</div>`).join('')}
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `, true);
+}
+
+/* ===================== RENDER PRINCIPAL ===================== */
+async function render(){
+  renderTabs();
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="empty">Cargando…</div>';
+  try{
+    if(state.view==='inicio') app.innerHTML = await viewInicio();
+    else if(state.view==='clientes') app.innerHTML = await viewClientes();
+    else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
+    else if(state.view==='kanban') app.innerHTML = await viewKanban();
+    else if(state.view==='autosurtidos') app.innerHTML = await viewAutosurtidos();
+    else if(state.view==='ov-pendientes-revision') app.innerHTML = await viewOvPendientesRevision();
+    else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
+    else if(state.view==='lista') app.innerHTML = await viewLista();
+    else if(state.view==='historial') app.innerHTML = await viewHistorial();
+    else if(state.view==='recibidas') app.innerHTML = await viewPiezasRecibidas();
+    else if(state.view==='proveedores') app.innerHTML = await viewProveedores();
+    else if(state.view==='proveedor') app.innerHTML = await viewProveedorDetalle(state.proveedorId);
+    else if(state.view==='correos') app.innerHTML = await viewCorreos();
+    else if(state.view==='carga') app.innerHTML = await viewCargaMasiva();
+    else if(state.view==='tecnica') app.innerHTML = await viewTecnica();
+    else if(state.view==='expediente') app.innerHTML = await viewExpediente();
+    else if(state.view==='valuacion') app.innerHTML = await viewValuacion();
+    else if(state.view==='produccion') app.innerHTML = await viewProduccion();
+    else if(state.view==='calidad') app.innerHTML = await viewCalidad();
+    else if(state.view==='reglas') app.innerHTML = viewReglas();
+    else if(state.view==='respaldos') app.innerHTML = await viewRespaldos();
+    else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
+  }catch(e){
+    if(e.message !== 'Sesión expirada. Vuelve a iniciar sesión.') app.innerHTML = `<div class="empty">No se pudo cargar la vista: ${esc(e.message)}</div>`;
+  }
+}
+
+/* ===================== VISTA: INICIO ===================== */
+async function viewInicio(){
+  const r = await api('GET','/api/reportes/resumen');
+  const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
+  const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
+  const verBeto = currentUser && ['beto','admin','jefe'].includes(currentUser.rol);
+  const verRoberto = currentUser && ['admin','jefe'].includes(currentUser.rol);
+  // Punto 1 del documento de Orlando (2-sep-2026): la información de piezas/pedidos (refacciones) no debe
+  // mostrarse en la pantalla principal de quien no la opera -- se acota a quien sí la usa (Daniela/refacciones).
+  const verRefacciones = currentUser && ['operativo','admin','jefe'].includes(currentUser.rol);
+  const colaBeto = verBeto ? await api('GET','/api/reportes/panorama-beto') : [];
+  const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
+  return `
+  <h2>Resumen diario</h2>
+  <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
+  ${verRefacciones && r.pendientesCompletar>0?`<div class="banner ambar">${r.pendientesCompletar} siniestro(s) están "Pendiente de completar" — les falta vehículo o placas. Complétalos desde su ficha.</div>`:''}
+  ${verRefacciones?`<div class="grid-cards">
+    <div class="card azul" onclick="abrirDetalleTarjeta('pedidosNuevos','Pedidos nuevos')"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
+    <div class="card rojo" onclick="abrirDetalleTarjeta('piezasVencidas','Piezas vencidas')"><div class="num">${r.piezasVencidas}</div><div class="label">Piezas vencidas</div></div>
+    <div class="card ambar" onclick="abrirListaPedidosSinPiezas()"><div class="num">${r.pedidosSinPiezas}</div><div class="label">Pedidos sin piezas capturadas</div></div>
+    <div class="card ambar" onclick="abrirDetalleTarjeta('piezasPorConfirmar','Piezas por confirmar')"><div class="num">${r.piezasPorConfirmar}</div><div class="label">Por confirmar</div></div>
+    <div class="card azul" onclick="abrirDetalleTarjeta('recibidosParciales','Pedidos recibidos parciales')"><div class="num">${r.recibidosParciales}</div><div class="label">Recibidos parciales</div></div>
+    <div class="card rojo" onclick="abrirDetalleTarjeta('piezasMalSurtidas','Piezas mal surtidas')"><div class="num">${r.piezasMalSurtidas}</div><div class="label">Mal surtidas</div></div>
+    <div class="card ambar" onclick="abrirDetalleTarjeta('piezasEnDevolucion','Piezas en devolución')"><div class="num">${r.piezasEnDevolucion}</div><div class="label">En devolución</div></div>
+    <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('incidenciasAbiertas','Incidencias abiertas')"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
+    <div class="card verde" onclick="abrirDetalleTarjeta('cierresHoy','Piezas recibidas hoy')"><div class="num">${r.cierresHoy}</div><div class="label">Recibidas hoy</div></div>
+    <div class="card ${r.discrepanciasAbiertas>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('discrepanciasAbiertas','Discrepancias con proveedor')"><div class="num">${r.discrepanciasAbiertas}</div><div class="label">Discrepancias con proveedor</div></div>
+    <div class="card ${r.valesPendientesSinSurtir>0?'ambar':'verde'}" onclick="abrirDetalleTarjeta('valesPendientesSinSurtir','Vales pendientes de surtir')"><div class="num">${r.valesPendientesSinSurtir}</div><div class="label">Vales pendientes de surtir</div></div>
+    <div class="card ${r.correosIncompletos>0?'rojo':'verde'}" onclick="abrirCorreosIncompletos()"><div class="num">${r.correosIncompletos}</div><div class="label">Correos incompletos por completar</div></div>
+    <div class="card ${r.complementosReautorizacionVencidos>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('complementosReautorizacionVencidos','Reautorizaciones vencidas (24h)')"><div class="num">${r.complementosReautorizacionVencidos}</div><div class="label">Reautorizaciones vencidas (24h)</div></div>
+  </div>`:''}
+  ${verOrlandoVanessa ? `
+  <div class="section">
+    <h3>Revisión técnica y captura (Orlando + Vanessa)</h3>
+    <p class="subtle">Panorama único que cubre revisión de daños y captura del expediente, para operar ambas partes sin cambiar de usuario.</p>
+    <div class="grid-cards">
+      <div class="card ambar" onclick="goTo('ov-pendientes-revision')"><div class="num">${r.ovPendientesRevision}</div><div class="label">Pendientes de revisión</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('ovEnRevision','En revisión')"><div class="num">${r.ovEnRevision}</div><div class="label">En revisión</div></div>
+      <div class="card rojo" onclick="abrirDetalleTarjeta('ovEsperandoDesarme','Esperando apoyo/desarme')"><div class="num">${r.ovEsperandoDesarme}</div><div class="label">Esperando apoyo/desarme</div></div>
+      <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('ovComplementosPendientes','Complementos pendientes')"><div class="num">${r.ovComplementosPendientes}</div><div class="label">Complementos pendientes</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('ovBorradoresPorCapturar','Borradores por capturar a Excel')"><div class="num">${r.ovBorradoresPorCapturar}</div><div class="label">Borradores por capturar a Excel</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('ovFotosPorCompletar','Fotos/carpetas por completar')"><div class="num">${r.ovFotosPorCompletar}</div><div class="label">Fotos/carpetas por completar</div></div>
+      <div class="card verde" onclick="abrirDetalleTarjeta('ovListosParaEnviar','Listos para enviar al propietario')"><div class="num">${r.ovListosParaEnviar}</div><div class="label">Listos para enviar al propietario</div></div>
+    </div>
+  </div>` : ''}
+  ${verRoberto ? `
+  <div class="section">
+    <h3>Valuación y autorización (Roberto)</h3>
+    <p class="subtle">Lo que hoy se maneja por correo y Excel (captura a evaluación, complementos, avisos al equipo), en un solo lugar.</p>
+    <div class="grid-cards">
+      <div class="card azul" onclick="goTo('valuacion')"><div class="num">${r.rbListosParaValuar}</div><div class="label">Listos para valuar</div></div>
+      <div class="card azul" onclick="goTo('valuacion')"><div class="num">${r.rbEnEsperaEvaluacion}</div><div class="label">En espera de evaluación</div></div>
+      <div class="card ${r.rbComplementosAbiertos>0?'ambar':'verde'}" onclick="goTo('valuacion')"><div class="num">${r.rbComplementosAbiertos}</div><div class="label">Complementos abiertos</div></div>
+      <div class="card ${r.rbFaltaAvisoProveedores>0?'ambar':'verde'}" onclick="goTo('valuacion')"><div class="num">${r.rbFaltaAvisoProveedores}</div><div class="label">Autorizados, falta avisar proveedores</div></div>
+      <div class="card ${r.rbListosExpedienteCompleto>0?'verde':'gris'}" onclick="goTo('valuacion')"><div class="num">${r.rbListosExpedienteCompleto}</div><div class="label">Listos para enviar expediente completo</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('rbTiempoPromedioValuarDias','Tiempo en valuar — detalle por expediente')"><div class="num">${r.rbTiempoPromedioValuarDias!=null?r.rbTiempoPromedioValuarDias+'d':'—'}</div><div class="label">Tiempo promedio en valuar</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('rbTiempoPromedioComplementoOrlandoDias','Tiempo de Orlando en complementos — detalle')"><div class="num">${r.rbTiempoPromedioComplementoOrlandoDias!=null?r.rbTiempoPromedioComplementoOrlandoDias+'d':'—'}</div><div class="label">Tiempo promedio de Orlando en complementos</div></div>
+    </div>
+  </div>` : ''}
+  ${verBeto ? `
+  <div class="section">
+    <h3>Panorama de patio (Beto)</h3>
+    <div class="grid-cards">
+      <div class="card ${r.betoReingresosSinRecibir>0?'rojo':'verde'}" onclick="goTo('produccion')"><div class="num">${r.betoReingresosSinRecibir}</div><div class="label">Reingresos sin recibir</div></div>
+      <div class="card ambar" onclick="goTo('produccion')"><div class="num">${r.betoPorVencer}</div><div class="label">Por vencer (1-2 días)</div></div>
+      <div class="card verde" onclick="goTo('produccion')"><div class="num">${r.betoListasParaIniciar}</div><div class="label">Listas para iniciar (piso)</div></div>
+      <div class="card azul" onclick="goTo('produccion')"><div class="num">${r.betoOtRapidasSinAsignar}</div><div class="label">OT rápidas sin asignar</div></div>
+      <div class="card rojo" onclick="goTo('produccion')"><div class="num">${r.betoVencidas}</div><div class="label">Vencidas</div></div>
+    </div>
+    ${r.betoEnProcesoDesglose.length?`<p class="subtle" style="margin-top:8px;">En proceso: ${r.betoEnProcesoDesglose.map(x=>`${LABEL_PROD[x.estado]||x.estado} (${x.n})`).join(' · ')}</p>`:''}
+    <h4 style="margin-top:14px;">Orden sugerido de trabajo</h4>
+    <p class="subtle">Calculado solo con lo que ya está en el sistema (fecha promesa, OT, refacciones) — no necesitas capturar nada extra.</p>
+    ${colaBeto.length===0?'<div class="empty">Sin unidades autorizadas pendientes de producción.</div>':`
+    <table><thead><tr><th>#</th><th>Siniestro</th><th>Vehículo</th><th>Situación</th><th>OT</th><th>F. promesa</th><th>Antigüedad</th><th>Motivo</th></tr></thead><tbody>
+    ${colaBeto.slice(0,20).map((x,i)=>`<tr>
+      <td><span class="badge ${x.prioridad===1?'rojo':x.prioridad===2?'ambar':(x.prioridad===3||x.prioridad===3.5)?'azul':'gris'}">${x.prioridad}</span></td>
+      <td><span class="link" onclick="goSiniestro(${x.id})">${esc(x.numero)}</span></td>
+      <td>${esc(x.vehiculo||'—')} ${esc(x.placas?('· '+x.placas):'')}</td>
+      <td>${x.reingreso_citado?'<span class="badge ambar">Reingreso citado</span>':x.situacion==='en_piso'?'<span class="badge verde">En piso</span>':'<span class="badge gris">En proceso</span>'}</td>
+      <td>${esc(x.ot_numero||'—')}</td>
+      <td>${esc(x.fecha_entrega_prevista||'—')} ${x.entrega_compromiso_gnp?'<span class="badge rojo">GNP</span>':''}</td>
+      <td class="subtle">${x.dias_en_taller!=null?x.dias_en_taller+' día(s)':'—'}</td>
+      <td class="subtle">${esc(x.motivo)}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>` : ''}
+  ${verClientes ? `
+  <div class="section">
+    <h3>Atención a clientes</h3>
+    <p class="subtle">Seguimiento del lado del cliente (módulo de Alejandra), aparte de las refacciones.</p>
+    <div class="grid-cards">
+      <div class="card azul" onclick="abrirDetalleTarjeta('citasHoy','Citas del día')"><div class="num">${r.citasHoy}</div><div class="label">Citas del día</div></div>
+      <div class="card verde" onclick="abrirDetalleTarjeta('entregasProgramadas','Entregas programadas')"><div class="num">${r.entregasProgramadas}</div><div class="label">Entregas programadas</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('porAvisarAutorizacion','Por avisar autorización')"><div class="num">${r.porAvisarAutorizacion}</div><div class="label">Por avisar autorización</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('refaccionesPorAvisar','Refacciones por avisar')"><div class="num">${r.refaccionesPorAvisar}</div><div class="label">Refacciones por avisar</div></div>
+      <div class="card ${r.expedientesSinActualizar>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('expedientesSinActualizar','Sin respuesta reciente (+3 días)')"><div class="num">${r.expedientesSinActualizar}</div><div class="label">Sin respuesta reciente (+3 días)</div></div>
+      <div class="card ambar" onclick="abrirDetalleTarjeta('tareasPendientes','Tareas pendientes')"><div class="num">${r.tareasPendientes}</div><div class="label">Tareas pendientes</div></div>
+      <div class="card ${r.tareasVencidas>0?'rojo':'verde'}" onclick="abrirDetalleTarjeta('tareasVencidas','Tareas vencidas')"><div class="num">${r.tareasVencidas}</div><div class="label">Tareas vencidas</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('hitosListosSinEnviar','Hitos listos, sin avisar al cliente')"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Hitos listos, sin avisar al cliente</div></div>
+      <div class="card morado" style="border-left:4px solid #7c3aed" onclick="abrirDetalleTarjeta('mensajesIaPendientes','Mensajes de IA por revisar')"><div class="num">${r.mensajesIaPendientes}</div><div class="label">Mensajes de IA por revisar</div></div>
+    </div>
+  </div>` : ''}
+  <div class="section">
+    <h3>Indicadores por aseguradora</h3>
+    ${r.porAseguradora.length===0?'<div class="empty">Sin datos.</div>':`
+    <table><thead><tr><th>Aseguradora</th><th>Pedidos abiertos</th></tr></thead><tbody>
+    ${r.porAseguradora.map(x=>`<tr><td>${esc(x.aseguradora)}</td><td>${x.abiertos}</td></tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+
+/* ===================== Hallazgo A-04: indicadores que abren exactamente lo que cuentan ===================== */
+// Hallazgo M-04: acceso directo desde Inicio a la cola de correos incompletos, ya filtrada.
+function abrirCorreosIncompletos(){
+  state.filtrosCorreos = { incompleto:'1', page:1 };
+  goTo('correos');
+}
+// Roberto (28-ago-2026): "quiero que se haga con todos, no solo con pendientes de revisión" -- un solo
+// renderer genérico para cualquier tarjeta del resumen diario, usando la ruta genérica del backend
+// (/api/reportes/detalle/:clave), que siempre regresa filas {id, numero, detalle} de un siniestro.
+async function abrirDetalleTarjeta(clave, titulo){
+  const filas = await api('GET','/api/reportes/detalle/'+clave).catch(()=>[]);
+  showModal(`
+    <h3>${esc(titulo)} (${filas.length})</h3>
+    ${filas.length===0?'<div class="empty">Ninguno.</div>':`
+    <table><thead><tr><th>Siniestro</th><th>Detalle</th></tr></thead><tbody>
+    ${filas.map(f=>`<tr>
+      <td><span class="link" onclick="closeModal();goSiniestro(${f.id})">${esc(f.numero)}</span></td>
+      <td>${esc(f.detalle||'—')}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `, true);
+}
+async function abrirListaPedidosSinPiezas(){
+  const filas = await api('GET','/api/reportes/pedidos-sin-piezas');
+  showModal(`
+    <h3>Pedidos sin ninguna pieza capturada (${filas.length})</h3>
+    ${filas.length===0?'<div class="empty">Ninguno.</div>':`
+    <table><thead><tr><th>Siniestro</th><th>Pedido</th></tr></thead><tbody>
+    ${filas.map(f=>`<tr><td><span class="link" onclick="closeModal();goSiniestro(${f.siniestro_id})">${esc(f.siniestro_numero)}</span></td><td>${esc(f.pedido_numero)}</td></tr>`).join('')}
+    </tbody></table>`}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `, true);
+}
+
+/* ===================== VISTA: PENDIENTES DE REVISIÓN (Orlando/Vanessa) ===================== */
+// Punto 2 del documento de Orlando (2-sep-2026): pantalla propia por columnas, ya no popup, con las
+// columnas que pidió (siniestro, detalle del vehículo, placa, fecha de pase a expediente) y la etiqueta
+// de "Complemento piezas" (punto 5) cuando el expediente ya venía de revisión y regresa con un complemento.
+async function viewOvPendientesRevision(){
+  const filas = await api('GET','/api/reportes/pendientes-revision');
+  return `
+  <h2>Pendientes de revisión</h2>
+  <p class="subtle">Expedientes con la información de admisión ya cargada por Alejandra, disponibles para revisar, y que siguen pendientes por parte de Orlando y/o Vanessa antes de enviarse a Roberto a valuación.</p>
+  ${filas.length===0?'<div class="empty">Ninguno pendiente por ahora.</div>':`
+  <table><thead><tr><th>Siniestro</th><th>Detalle</th><th>Placa</th><th>Fecha de pase a expediente</th><th></th></tr></thead><tbody>
+  ${filas.map(f=>`<tr>
+    <td>${esc(f.numero)}</td>
+    <td>${esc(f.vehiculo||'Sin vehículo')} ${f.anio_modelo?('· '+esc(f.anio_modelo)):''} ${f.tiene_complemento_pendiente?'<span class="badge morado">Complemento piezas</span>':''}</td>
+    <td>${esc(f.placas||'—')}</td>
+    <td>${esc(f.fecha_hora_disponible_revision||'—')}</td>
+    <td><button class="btn small secondary" onclick="goSiniestro(${f.id})">Ver expediente</button></td>
+  </tr>`).join('')}
+  </tbody></table>`}`;
+}
+
+/* ===================== VISTA: KANBAN ===================== */
+const KANBAN_COLS = ['Nuevo','Por revisar','Esperando proveedor','En tránsito','Entrega vencida','Recibido parcial','Recibido completo','Con incidencia','Cancelado','Cerrado'];
+async function viewKanban(){
+  const pedidos = await api('GET','/api/reportes/kanban');
+  let html = `<h2>Tablero Kanban</h2><p class="subtle">Todos los estatus tienen columna propia — ningún pedido desaparece (corrección F-03). Haz clic en una tarjeta para abrir el siniestro.</p><div class="kanban">`;
+  KANBAN_COLS.forEach(col=>{
+    const items = pedidos.filter(p=>p.estatus_operativo===col);
+    html += `<div class="kcol"><h4>${esc(col)} <span class="badge gris">${items.length}</span></h4>`;
+    items.forEach(p=>{
+      html += `<div class="kcard" onclick="goSiniestro(${p.siniestro_id})">
+        <div class="sin">${esc(p.siniestro_numero)} <span class="ase">${esc(p.aseguradora)}</span></div>
+        <div class="subtle">Pedido ${esc(p.numero)} · ${esc(p.vehiculo||'')}</div>
+        <div class="subtle">Prov.: ${esc(p.proveedores.join(', ')||'—')}</div>
+        <div class="subtle" style="font-size:11px;">Pedido creado: ${esc(p.fecha_creacion||'—')}</div>
+        <div class="row">
+          <span class="badge ${p.vencidas>0?'rojo':'azul'}">${p.pendientes} pend.</span>
+          ${p.incidenciasAbiertas>0?`<span class="badge morado">${p.incidenciasAbiertas} inc.</span>`:`<span class="subtle">${esc(p.fecha_prevista||'')}</span>`}
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+/* ===================== VISTA: CORREOS PENDIENTES DE APROBACION (requerimiento de Daniela) ===================== */
+async function viewCorreos(){
+  const f = state.filtrosCorreos || (state.filtrosCorreos = { page:1 });
+  const params = new URLSearchParams();
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
+  if(f.incompleto) params.set('incompleto', f.incompleto);
+  if(f.orden) params.set('orden', f.orden);
+  if(f.disparador) params.set('disparador', f.disparador);
+  if(f.desde) params.set('desde', f.desde);
+  if(f.hasta) params.set('hasta', f.hasta);
+  if(f.q) params.set('q', f.q);
+  params.set('page', f.page||1);
+  params.set('pageSize', 25);
+  const [r, proveedores, estadoGmail] = await Promise.all([
+    api('GET','/api/comunicaciones/pendientes?'+params.toString()),
+    api('GET','/api/proveedores'),
+    api('GET','/api/comunicaciones/estado-gmail', null, { silent:true }).catch(()=>({ configurado:false }))
+  ]);
+  const pendientes = r.filas;
+  const totalPaginas = Math.max(1, Math.ceil(r.total / r.pageSize));
+  const LABEL_DISPARADOR = { pedido_nuevo:'Pedido nuevo', vencimiento_dia1:'Vencimiento (día 1)', seguimiento_2dias:'Seguimiento (2 días hábiles)', manual:'Manual' };
+  // Hallazgo C-03 (parcial, sin credenciales reales): estado de conexión visible de entrada, para no
+  // enterarse hasta que un envío individual rebota con 503.
+  let html = `<h2>Correos pendientes de aprobación (${r.total})</h2>
+  <p class="subtle">${estadoGmail.configurado?'<span class="badge verde">Gmail conectado</span> el envío automático está disponible.':'<span class="badge gris">Gmail no configurado</span> el envío automático todavía no está disponible — aprueba y copia/pega el correo manualmente como siempre.'}</p>
+  <p class="subtle">El sistema los prepara solo (pedido nuevo, primer día de vencimiento, seguimiento a 2 días hábiles). Nada se envía sin que lo apruebes aquí.</p>
+  <div class="filters no-print">
+    <select onchange="state.filtrosCorreos.aseguradora=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Todas las aseguradoras</option>
+      ${ASEGURADORAS.map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+    <select onchange="state.filtrosCorreos.proveedor_id=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Todos los proveedores</option>
+      ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
+    </select>
+    <select onchange="state.filtrosCorreos.incompleto=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Completos e incompletos</option>
+      <option value="1" ${f.incompleto==='1'?'selected':''}>Solo incompletos</option>
+      <option value="0" ${f.incompleto==='0'?'selected':''}>Solo completos</option>
+    </select>
+    <select onchange="state.filtrosCorreos.orden=this.value;state.filtrosCorreos.page=1;render()">
+      <option value="">Más reciente primero</option>
+      <option value="antiguo" ${f.orden==='antiguo'?'selected':''}>Más antiguo primero</option>
+    </select>
+    <select onchange="state.filtrosCorreos.disparador=this.value;state.filtrosCorreos.page=1;render()" title="Punto 5 (reporte Daniela 31-ago-2026)">
+      <option value="">Todos los motivos</option>
+      ${Object.entries(LABEL_DISPARADOR).map(([k,label])=>`<option value="${k}" ${f.disparador===k?'selected':''}>${label}</option>`).join('')}
+    </select>
+    <input type="date" title="Fecha de envío desde" value="${esc(f.desde||'')}" onchange="state.filtrosCorreos.desde=this.value;state.filtrosCorreos.page=1;render()">
+    <input type="date" title="Fecha de envío hasta" value="${esc(f.hasta||'')}" onchange="state.filtrosCorreos.hasta=this.value;state.filtrosCorreos.page=1;render()">
+    <input placeholder="Buscar por siniestro, pedido o asunto" value="${esc(f.q||'')}" oninput="state.filtrosCorreos.q=this.value" onkeydown="if(event.key==='Enter'){state.filtrosCorreos.page=1;render();}" style="min-width:200px">
+    <button class="btn small" onclick="state.filtrosCorreos.page=1;render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosCorreos={page:1};render()">Limpiar filtros</button>
+  </div>`;
+  if(pendientes.length===0){ html += '<div class="empty">No hay correos pendientes de aprobación con estos filtros.</div>'; return html; }
+  html += `<table><thead><tr><th>Motivo</th><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Asunto</th><th></th></tr></thead><tbody>
+  ${pendientes.map(c=>`<tr>
+    <td><span class="badge ambar">${esc(LABEL_DISPARADOR[c.disparador]||c.disparador)}</span>${c.incompleto?' <span class="badge rojo" title="Falta un proveedor con correo válido asignado a las piezas pendientes; complétalo a mano antes de aprobar">Incompleto</span>':''}</td>
+    <td><a class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero)}</a></td>
+    <td>${esc(c.pedido_numero)}</td>
+    <td>${esc(c.aseguradora)}</td>
+    <td>${esc(c.asunto)}</td>
+    <td><button class="btn small" onclick="abrirRevisarCorreo(${c.id})">Revisar</button></td>
+  </tr>`).join('')}
+  </tbody></table>
+  <div class="paginacion no-print">
+    <button class="btn small secondary" ${f.page<=1?'disabled':''} onclick="state.filtrosCorreos.page=${(f.page||1)-1};render()">« Anterior</button>
+    <span class="subtle">Página ${f.page||1} de ${totalPaginas}</span>
+    <button class="btn small secondary" ${(f.page||1)>=totalPaginas?'disabled':''} onclick="state.filtrosCorreos.page=${(f.page||1)+1};render()">Siguiente »</button>
+  </div>`;
+  return html;
+}
+async function abrirRevisarCorreo(id){
+  let c;
+  try{ c = await api('GET','/api/comunicaciones/'+id, null, { silent:true }); }catch(e){}
+  if(!c || c.estado !== 'pendiente_aprobacion'){ toast('Este correo ya no está pendiente (alguien más lo revisó).', 'warn'); render(); return; }
+  showModal(`
+    <h3>Revisar correo — ${esc(c.siniestro_numero)} / Pedido ${esc(c.pedido_numero)}</h3>
+    <p class="subtle">Ajusta lo que haga falta antes de aprobar. Sigue en modo borrador: no se envía nada de verdad.</p>
+    ${c.incompleto?'<p class="subtle" style="color:#b91c1c;">Este borrador quedo incompleto: ninguna pieza pendiente tiene un proveedor con correo valido asignado (o hay varios proveedores distintos). Agrega el destinatario a mano antes de aprobar.</p>':''}
+    <div class="field"><label>Destinatario</label><input id="fcor_dest" value="${esc(c.destinatarios||'')}" placeholder="Escribe aquí el correo del proveedor"></div>
+    <div class="field"><label>Copia</label><textarea id="fcor_copia">${esc(c.copia||'')}</textarea></div>
+    <div class="field"><label>Asunto</label><input id="fcor_asunto" value="${esc(c.asunto||'')}"></div>
+    <div class="field"><label>Cuerpo</label><textarea id="fcor_cuerpo" style="min-height:160px;">${esc(c.cuerpo||'')}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cerrar</button>
+      <button class="btn danger" onclick="descartarCorreoPendiente(${c.id})">Descartar</button>
+      <button class="btn secondary" onclick="aprobarCorreoPendiente(${c.id})">Solo aprobar (lo envío yo)</button>
+      <button class="btn" onclick="aprobarYEnviarCorreoPendiente(${c.id})">Aprobar y enviar por Gmail</button>
+    </div>
+  `, true);
+}
+async function aprobarCorreoPendiente(id){
+  const destinatarios = document.getElementById('fcor_dest').value.trim();
+  if(!destinatarios){ toast('Falta el destinatario.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/comunicaciones/${id}/aprobar`, {
+      destinatarios, copia: document.getElementById('fcor_copia').value,
+      asunto: document.getElementById('fcor_asunto').value, cuerpo: document.getElementById('fcor_cuerpo').value
+    });
+    toast('Correo aprobado (sigue en modo borrador/sandbox).', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function aprobarYEnviarCorreoPendiente(id){
+  const destinatarios = document.getElementById('fcor_dest').value.trim();
+  if(!destinatarios){ toast('Falta el destinatario.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/comunicaciones/${id}/aprobar`, {
+      destinatarios, copia: document.getElementById('fcor_copia').value,
+      asunto: document.getElementById('fcor_asunto').value, cuerpo: document.getElementById('fcor_cuerpo').value
+    });
+  }catch(e){ return; }
+  try{
+    await api('POST', `/api/comunicaciones/${id}/enviar`, {}, { silent:true });
+    toast('Correo aprobado y enviado por Gmail.', 'success');
+  }catch(e){
+    // Hallazgo C-03: distingue "ya se había enviado" (reintento/doble clic, nunca se duplica) de
+    // "Gmail no está configurado todavía" (Roberto no ha entregado GMAIL_USER/GMAIL_APP_PASSWORD).
+    if(e.status === 409){
+      toast('Este correo ya se había enviado por Gmail — no se vuelve a mandar.', 'warn');
+    }else{
+      toast('Correo aprobado. El envío automático por Gmail no está configurado todavía — cópialo y envíalo tú.', 'warn');
+    }
+  }
+  closeModal(); render();
+}
+async function descartarCorreoPendiente(id){
+  const ok = await confirmDialog('¿Descartar este correo preparado automáticamente? No se enviará ni se volverá a preparar para este mismo caso.', { textoOk:'Sí, descartar', peligro:true });
+  if(!ok) return;
+  await api('PATCH', `/api/comunicaciones/${id}/descartar`, {});
+  toast('Correo descartado.', 'success');
+  closeModal(); render();
+}
+
+/* ===================== VISTA: CARGA MASIVA (rediseño item 3/4/6 del triage) ===================== */
+let cargaMasivaValidada = null;
+async function viewCargaMasiva(){
+  cargaMasivaValidada = null;
+  const lotes = await api('GET','/api/carga-masiva/lotes');
+  // Punto 2 (reporte Daniela 31-ago-2026): no había, a simple vista, una fecha de "última sincronización"
+  // -- existía la tabla de lotes recientes pero había que interpretarla. Se agrega un aviso explícito arriba
+  // con la fecha/usuario del último lote confirmado y su resumen de nuevos vs. actualizados.
+  const ultimoConfirmado = lotes.find(l=>l.estado!=='revertida');
+  let resumenUltimo = null;
+  if(ultimoConfirmado){ try{ resumenUltimo = JSON.parse(ultimoConfirmado.resumen||'{}'); }catch(e){ resumenUltimo = {}; } }
+  return `
+  <h2>Carga masiva</h2>
+  ${ultimoConfirmado
+    ? `<p class="subtle"><span class="badge azul">Última sincronización: ${esc(ultimoConfirmado.creado_en)}</span> por ${esc(ultimoConfirmado.usuario_nombre||'—')} — ${resumenUltimo.pedidosCreados||0} pedido(s) nuevo(s), ${resumenUltimo.pedidosActualizados||0} actualizado(s), ${resumenUltimo.piezasCreadas||0} pieza(s) nueva(s).</p>`
+    : `<p class="subtle"><span class="badge gris">Todavía no hay ninguna carga masiva registrada.</span></p>`}
+  <p class="subtle">Pega el contenido CSV (con encabezado) para incorporar o actualizar expedientes, pedidos, piezas y proveedores. Cada fila puede traer una pieza; varias filas con el mismo numero_pedido se agrupan en un solo pedido. Primero se valida, después confirmas antes de registrar.</p>
+  <p class="subtle">Columnas esperadas: numero_siniestro, aseguradora, vehiculo, placas, vin, fecha_ingreso, responsable, numero_pedido, fecha_creacion_pedido, fecha_prevista, estatus_inpart, estatus_operativo, numero_parte, descripcion_pieza, tipo_pieza, cantidad, precio, estatus_inpart_pieza, fecha_prometida_pieza, proveedor, contacto_proveedor, telefono_proveedor, correo_proveedor</p>
+  <div class="field"><textarea id="fcm_csv" style="min-height:180px;font-family:monospace;" placeholder="numero_siniestro,aseguradora,...,fecha_prevista,..."></textarea></div>
+  <div class="modal-actions" style="justify-content:flex-start;">
+    <button class="btn" onclick="validarCargaMasiva()">Validar</button>
+    <input type="file" id="fcm_archivo" accept=".csv,.txt" style="display:none" onchange="cargarArchivoCsv(event)">
+    <button class="btn secondary" onclick="document.getElementById('fcm_archivo').click()">Cargar desde archivo…</button>
+  </div>
+  <div id="cargaMasivaResultado" style="margin-top:16px;"></div>
+  <div class="section" style="margin-top:20px;">
+    <h3>Lotes recientes</h3>
+    ${lotes.length===0?'<div class="empty">Sin cargas registradas todavía.</div>':`
+    <table><thead><tr><th>Fecha</th><th>Usuario</th><th>Estado</th><th>Resumen</th><th></th></tr></thead><tbody>
+    ${lotes.map(l=>{ let r={}; try{ r=JSON.parse(l.resumen||'{}'); }catch(e){}
+      return `<tr>
+      <td>${fmtFechaHora(l.creado_en)}</td><td>${esc(l.usuario_nombre||'—')}</td>
+      <td><span class="badge ${l.estado==='revertida'?'rojo':'verde'}">${l.estado==='revertida'?'Revertida':'Confirmada'}</span></td>
+      <td class="subtle">${r.pedidosCreados||0} pedidos nuevos, ${r.pedidosActualizados||0} actualizados, ${r.piezasCreadas||0} piezas nuevas</td>
+      <td>${l.estado!=='revertida'?`<button class="btn small danger" onclick="revertirLoteCargaMasiva(${l.id})">Revertir</button>`:''}</td>
+    </tr>`; }).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+function cargarArchivoCsv(ev){
+  const file = ev.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{ document.getElementById('fcm_csv').value = reader.result; };
+  reader.readAsText(file, 'utf-8');
+}
+async function validarCargaMasiva(){
+  const csv = document.getElementById('fcm_csv').value;
+  if(!csv || !csv.trim()){ toast('Pega o carga un archivo CSV primero.', 'error'); return; }
+  try{
+    const r = await api('POST','/api/carga-masiva/validar', { csv });
+    cargaMasivaValidada = r;
+    const validos = r.pedidos.filter(p=>p.errores.length===0);
+    const conError = r.pedidos.filter(p=>p.errores.length>0);
+    const conAdvertencia = r.pedidos.filter(p=>p.errores.length===0 && p.advertencias.length>0);
+    const cont = document.getElementById('cargaMasivaResultado');
+    cont.innerHTML = `
+    <div class="grid-cards">
+      <div class="card verde"><div class="num">${validos.length}</div><div class="label">Pedidos listos</div></div>
+      <div class="card rojo"><div class="num">${conError.length}</div><div class="label">Pedidos con error</div></div>
+      <div class="card ambar"><div class="num">${conAdvertencia.length}</div><div class="label">Con advertencia (revisar)</div></div>
+      <div class="card azul"><div class="num">${r.resumen.piezasTotal}</div><div class="label">Piezas detectadas</div></div>
+    </div>
+    ${conError.length>0?`<h3>Pedidos con error (no se registrarán)</h3><table><thead><tr><th>Línea</th><th>Siniestro</th><th>Pedido</th><th>Motivo</th></tr></thead><tbody>
+      ${conError.map(p=>`<tr><td>${p.fila}</td><td>${esc(p.dato.numero_siniestro)}</td><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.errores.join(' '))}</td></tr>`).join('')}
+      </tbody></table>`:''}
+    ${conAdvertencia.length>0?`<h3 style="margin-top:14px;">Advertencias (sí se registrarán, pero revisa)</h3><table><thead><tr><th>Pedido</th><th>Advertencia</th></tr></thead><tbody>
+      ${conAdvertencia.map(p=>`<tr><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.advertencias.join(' '))}</td></tr>`).join('')}
+      </tbody></table>`:''}
+    ${validos.length>0?`<h3 style="margin-top:14px;">Listos para registrar</h3><table><thead><tr><th>Siniestro</th><th>Pedido</th><th>Aseguradora</th><th>Fecha promesa</th><th>Piezas</th><th>Acción</th></tr></thead><tbody>
+      ${validos.map(p=>`<tr><td>${esc(p.dato.numero_siniestro)}</td><td>${esc(p.dato.numero_pedido)}</td><td>${esc(p.dato.aseguradora)}</td><td>${esc(p.dato.fecha_prevista)}</td><td>${p.piezas.length}</td><td>${p.accion==='crear'?'<span class="badge verde">Nuevo</span>':'<span class="badge azul">Actualizar</span>'}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="modal-actions" style="justify-content:flex-start;margin-top:10px;"><button class="btn" onclick="confirmarCargaMasiva()">Confirmar y registrar ${validos.length} pedido(s)</button></div>`:''}`;
+  }catch(e){}
+}
+async function confirmarCargaMasiva(){
+  if(!cargaMasivaValidada) return;
+  const validos = cargaMasivaValidada.pedidos.filter(p=>p.errores.length===0);
+  if(validos.length===0) return;
+  const ok = await confirmDialog(`¿Registrar ${validos.length} pedido(s) válidos? Los que tienen error no se tocan.`, { textoOk:'Sí, registrar' });
+  if(!ok) return;
+  try{
+    const r = await api('POST','/api/carga-masiva/confirmar', { pedidos: validos });
+    toast(`Carga completa: ${r.siniestrosCreados} siniestro(s) nuevo(s), ${r.pedidosCreados} pedido(s) nuevos, ${r.pedidosActualizados} actualizados, ${r.piezasCreadas} pieza(s) nueva(s).`, 'success');
+    cargaMasivaValidada = null;
+    document.getElementById('fcm_csv').value = '';
+    let extra = '';
+    if(r.conflictos_detalle && r.conflictos_detalle.length){
+      extra += `<div class="banner ambar">${r.conflictos_detalle.length} conflicto(s): datos ya capturados distintos a los del archivo, no se sobrescribieron. <br>${r.conflictos_detalle.map(c=>`Siniestro ${esc(c.numero)}, campo ${esc(c.campo)}: ya tenía "${esc(c.valorActual)}", el archivo traía "${esc(c.valorNuevo)}".`).join('<br>')}</div>`;
+    }
+    if(r.omitidos && r.omitidos.length) extra += `<p class="subtle">${r.omitidos.length} pedido(s) se omitieron por datos incompletos.</p>`;
+    document.getElementById('cargaMasivaResultado').innerHTML = extra;
+    render();
+  }catch(e){}
+}
+async function revertirLoteCargaMasiva(loteId){
+  const ok = await confirmDialog('¿Revertir este lote? Los pedidos y piezas que creó quedarán cancelados (no se borra nada, queda todo en el historial).', { textoOk:'Sí, revertir' });
+  if(!ok) return;
+  try{
+    const r = await api('POST', `/api/carga-masiva/${loteId}/revertir`, {});
+    toast(`Lote revertido: ${r.pedidosCancelados} pedido(s) y ${r.piezasCanceladas} pieza(s) cancelados.`, 'success');
+    render();
+  }catch(e){}
+}
+
+/* ===================== VISTA: INCIDENCIAS (bandeja dedicada) ===================== */
+/* ===================== Puntos 5-8 PORTAL SC (Orlando, 8-sep-2026): tablero de Autosurtidos (Daniela) ==== */
+async function viewAutosurtidos(){
+  // Candidatos: expedientes de autosurtido ya enviados y no archivados. La visibilidad final (punto 6:
+  // "para que el expediente sea visible... deberá contar con todos los campos debidamente requisitados")
+  // se filtra en el cliente comparando cada candidato contra su propia tabla de piezas -- no hay un solo
+  // query de servidor para "todas las piezas de todos los siniestros" en este módulo, así que se resuelve
+  // aquí, expediente por expediente.
+  // La ruta GET /api/siniestros solo filtra por aseguradora/q/archivado -- tipo_reparacion y
+  // enviado_propietario se filtran aquí, del lado del cliente, para no tocar esa ruta compartida por
+  // el resto del sistema.
+  const todos = await api('GET','/api/siniestros');
+  const candidatos = todos.filter(s=>s.tipo_reparacion==='AUTO_SURTIDO' && s.enviado_propietario===1);
+  const listos = [];
+  for(const s of candidatos){
+    const piezas = await api('GET','/api/autosurtido-piezas?siniestro_id='+s.id);
+    if(piezas.length > 0 && piezas.every(p=>p.requisitada)) listos.push({ s, piezas });
+  }
+  return `
+  <h2>Autosurtidos</h2>
+  <p class="subtle">Expedientes de auto surtido enviados con todas sus piezas requisitadas (pieza, costo, tiempo de entrega y proveedor completos) -- listos para que Daniela cotice.</p>
+  ${listos.length===0?'<div class="empty">Sin expedientes listos para cotizar todavía.</div>':`
+  <table><thead><tr><th>Siniestro</th><th>Piezas</th><th>Cotización</th><th>Reingreso</th><th>Inventario</th><th></th></tr></thead><tbody>
+  ${listos.map(({s,piezas})=>`<tr>
+    <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+    <td>${piezas.length}</td>
+    <td>${s.autosurtido_cotizado_en?`<span class="badge verde">${fmtFecha(s.autosurtido_cotizado_en)}</span>`:'<span class="badge ambar">Pendiente</span>'}</td>
+    <td>${s.autosurtido_reingreso_en?`<span class="badge verde">${fmtFecha(s.autosurtido_reingreso_en)}</span>`:'<span class="badge gris">Sin registrar</span>'}</td>
+    <td>${s.autosurtido_inventario_cargado?'<span class="badge verde">Cargado</span>':'<span class="badge ambar">Pendiente</span>'}</td>
+    <td><button class="btn small secondary" onclick="goSiniestro(${s.id})">Abrir</button></td>
+  </tr>`).join('')}
+  </tbody></table>`}`;
+}
+
+async function viewIncidencias(){
+  const abiertas = await api('GET','/api/incidencias?estado=abierta');
+  const enProceso = await api('GET','/api/incidencias?estado=en_proceso');
+  const todas = [...abiertas, ...enProceso];
+  return `
+  <h2>Incidencias abiertas</h2>
+  <p class="subtle">Piezas incorrectas, dañadas, incompletas o con fecha incumplida que bloquean el cierre del pedido hasta resolverse (regla F-11).</p>
+  ${todas.length===0?'<div class="empty">Sin incidencias abiertas. 🎉</div>':`
+  <table><thead><tr><th>Siniestro</th><th>Pedido</th><th>Pieza</th><th>Tipo</th><th>Acción solicitada</th><th>Responsable</th><th>Fecha compromiso</th><th>Estado</th><th></th></tr></thead><tbody>
+  ${todas.map(i=>`<tr>
+    <td><span class="link" onclick="goSiniestro(${i.siniestro_id})">${esc(i.siniestro_numero)}</span></td>
+    <td>${esc(i.pedido_numero)}</td>
+    <td>${esc(i.pieza_descripcion)}</td>
+    <td>${esc(i.tipo)}</td>
+    <td>${esc(i.accion_solicitada||'—')}</td>
+    <td>${esc(i.responsable||'—')}</td>
+    <td>${esc(i.fecha_compromiso||'—')}</td>
+    <td><span class="badge ${i.estado==='abierta'?'rojo':'ambar'}">${esc(i.estado)}</span></td>
+    <td><button class="btn small secondary" onclick="goSiniestro(${i.siniestro_id})">Abrir</button></td>
+  </tr>`).join('')}
+  </tbody></table>`}`;
+}
+
+/* ===================== VISTA: LISTA MAESTRA ===================== */
+/* ===================== Hallazgo A-06: vista "Piezas recibidas" ===================== */
+async function viewPiezasRecibidas(){
+  const f = state.filtrosRecibidas || (state.filtrosRecibidas = {});
+  const params = new URLSearchParams();
+  if(f.desde) params.set('desde', f.desde);
+  if(f.hasta) params.set('hasta', f.hasta);
+  if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
+  if(f.q) params.set('q', f.q);
+  const filas = await api('GET','/api/reportes/piezas-recibidas?'+params.toString());
+  const proveedores = await api('GET','/api/proveedores');
+  return `
+  <h2>Piezas recibidas</h2>
+  <p class="subtle">Qué pieza llegó, cuándo, quién la recibió y de qué proveedor/pedido/siniestro es — más reciente arriba.</p>
+  <div class="filters no-print">
+    <input placeholder="Buscar siniestro, pedido o pieza" value="${esc(f.q||'')}" oninput="state.filtrosRecibidas.q=this.value" onkeydown="if(event.key==='Enter')render()" style="min-width:180px">
+    <label class="subtle">Desde <input type="date" value="${esc(f.desde||'')}" onchange="state.filtrosRecibidas.desde=this.value;render()"></label>
+    <label class="subtle">Hasta <input type="date" value="${esc(f.hasta||'')}" onchange="state.filtrosRecibidas.hasta=this.value;render()"></label>
+    <select onchange="state.filtrosRecibidas.proveedor_id=this.value;render()">
+      <option value="">Todos los proveedores</option>
+      ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
+    </select>
+    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosRecibidas={};render()">Limpiar filtros</button>
+  </div>
+  <table><thead><tr><th>Fecha y hora</th><th>Recibido por</th><th>Proveedor</th><th>Pedido</th><th>Siniestro</th><th>Pieza</th></tr></thead>
+  <tbody>
+  ${filas.length===0?'<tr><td colspan="6" class="empty">Sin piezas recibidas con los filtros actuales.</td></tr>':filas.map(z=>`
+    <tr>
+      <td>${fmtFechaHora(z.fecha_recepcion)}</td>
+      <td>${z.recibido_por_nombre?esc(z.recibido_por_nombre):(/\[Auto:/.test(z.observaciones||'')?'<span class="badge gris" title="Pedido marcado recibido completo; el sistema sincronizó sus piezas sin que una persona confirmara cada una a mano.">Automático (sistema)</span>':'—')}</td>
+      <td>${esc(z.proveedor_nombre||'—')}</td>
+      <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.pedido_numero)}</span></td>
+      <td><span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.siniestro_numero)}</span></td>
+      <td>${esc(z.descripcion)}${z.numero_parte?' · N.P. '+esc(z.numero_parte):''}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  `;
+}
+async function viewLista(){
+  const f = state.filtros;
+  const params = new URLSearchParams();
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.estatus) params.set('estatus', f.estatus);
+  if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
+  if(f.q) params.set('q', f.q);
+  if(f.orden) params.set('orden', f.orden);
+  params.set('page', f.page||1);
+  params.set('pageSize', 50);
+  const r = await api('GET','/api/reportes/lista-maestra?'+params.toString());
+  const filas = r.filas;
+  const totalPaginas = Math.max(1, Math.ceil(r.total / r.pageSize));
+  const proveedores = await api('GET','/api/proveedores');
+  // Solicitud de Daniela (7-sep-2026): 'Sin proveedor' ya no aparece como opción de filtro (deja de ser
+  // una categoría del tablero). Si una pieza ya capturada tuviera ese estatus, sigue existiendo tal cual
+  // en sus datos -- solo ya no hay una forma dedicada de filtrar/buscar por esa categoría en pantalla.
+  const ESTATUS_PIEZA = ['Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
+  const hoy = todayISO();
+  function alertaColor(f){
+    if(!f.pieza_id) return 'ambar';
+    if(f.pieza_estatus==='Incorrecta/dañada'||f.pieza_estatus==='Devuelta') return 'rojo';
+    if(['Recibida físicamente','Cancelada'].includes(f.pieza_estatus)) return 'verde';
+    if(f.pieza_estatus==='Sin proveedor') return 'ambar';
+    if(f.fecha_prometida && f.fecha_prometida < hoy) return 'rojo';
+    return 'azul';
+  }
+  return `
+  <h2>Lista maestra</h2>
+  <div class="filters no-print">
+    <input placeholder="Búsqueda global" value="${esc(f.q||'')}" oninput="setFiltroQLive(this.value)" onkeydown="if(event.key==='Enter')render()" style="min-width:180px">
+    <select onchange="setFiltroListaMaestra('aseguradora', this.value)">
+      <option value="">Todas las aseguradoras</option>
+      ${ASEGURADORAS.map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+    <select onchange="setFiltroListaMaestra('estatus', this.value)">
+      <option value="">Todos los estatus de pieza</option>
+      ${ESTATUS_PIEZA.map(a=>`<option value="${a}" ${f.estatus===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+    <select onchange="setFiltroListaMaestra('proveedor_id', this.value)">
+      <option value="">Todos los proveedores</option>
+      ${proveedores.map(pv=>`<option value="${pv.id}" ${String(f.proveedor_id)===String(pv.id)?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}
+    </select>
+    <select onchange="setFiltroListaMaestra('orden', this.value)" title="Punto 4 (reporte Daniela 31-ago-2026): el backend ya soportaba ordenar por fecha prometida (A-01), pero no había control en pantalla para elegirlo.">
+      <option value="" ${!f.orden?'selected':''}>Orden: más reciente primero (fecha de creación)</option>
+      <option value="prometida" ${f.orden==='prometida'?'selected':''}>Orden: fecha prometida más próxima primero</option>
+    </select>
+    <button class="btn small" onclick="state.filtros.page=1;render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtros={};render()">Limpiar filtros</button>
+    <button class="btn small" onclick="exportarCSV()">Exportar CSV</button>
+    <button class="btn small secondary" onclick="exportarExpedientesCSV()">Exportar expedientes (CSV)</button>
+    <button class="btn secondary small" onclick="window.print()">Imprimir / PDF</button>
+  </div>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Esquema</th><th>Pedido</th><th>Proveedor</th><th>Pieza</th><th>Estatus</th><th>Fecha prometida</th><th>Alerta</th></tr></thead>
+  <tbody>
+  ${filas.length===0?'<tr><td colspan="9" class="empty">Sin resultados con los filtros actuales.</td></tr>':filas.map(f=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${f.siniestro_id})">${esc(f.siniestro_numero)}</span></td>
+      <td>${esc(f.aseguradora)}</td>
+      <td><span class="badge ${f.esquema_surtido&&f.esquema_surtido.startsWith('Autosurtido')?'ambar':f.esquema_surtido&&f.esquema_surtido.includes('pendiente')?'rojo':'gris'}">${esc(f.esquema_surtido||'—')}</span></td>
+      <td>${esc(f.pedido_numero)}</td>
+      <td>${esc(f.proveedor_nombre||'—')}</td>
+      <td>${f.pieza_id ? esc(f.descripcion) : '<i>Pendiente de capturar piezas</i>'}</td>
+      <td>${esc(f.pieza_estatus?etiquetaEstatusPieza(f.pieza_estatus):'Sin piezas')}</td>
+      <td>${esc(f.fecha_prometida||'—')}</td>
+      <td><span class="badge ${alertaColor(f)}">&nbsp;</span></td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${r.total} fila(s) en total (${filas.length} en esta página). Los pedidos sin piezas capturadas también se muestran (corrección F-05).</p>
+  <div class="paginacion no-print">
+    <button class="btn small secondary" ${(f.page||1)<=1?'disabled':''} onclick="state.filtros.page=${(f.page||1)-1};render()">« Anterior</button>
+    <span class="subtle">Página ${f.page||1} de ${totalPaginas}</span>
+    <button class="btn small secondary" ${(f.page||1)>=totalPaginas?'disabled':''} onclick="state.filtros.page=${(f.page||1)+1};render()">Siguiente »</button>
+  </div>`;
+}
+function exportarCSV(){
+  const f = state.filtros;
+  const params = new URLSearchParams();
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.estatus) params.set('estatus', f.estatus);
+  if(f.proveedor_id) params.set('proveedor_id', f.proveedor_id);
+  if(f.q) params.set('q', f.q);
+  if(f.orden) params.set('orden', f.orden);
+  window.location.href = '/api/reportes/lista-maestra.csv?'+params.toString();
+}
+// Incluye TODOS los expedientes (con o sin pedido capturado), a diferencia del CSV de Lista maestra
+// que parte de los pedidos y por eso no muestra los siniestros que todavía no tienen ninguno.
+function exportarExpedientesCSV(){
+  const f = state.filtros;
+  const params = new URLSearchParams();
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.q) params.set('q', f.q);
+  window.location.href = '/api/reportes/siniestros.csv?'+params.toString();
+}
+
+/* ===================== VISTA: HISTORIAL / TERMINADOS ===================== */
+// Depuración SC Control (31-ago-2026, autorizado por Roberto): un expediente Cerrado ya no aparece en
+// ninguna bandeja operativa (queda archivado=1 de inmediato, ver server/routes/siniestros.js). Esta
+// pantalla es el único lugar donde se sigue pudiendo buscar/consultar esos expedientes sin límite de
+// tiempo -- para cuando la aseguradora pida algo de garantía o el cliente tenga una queja meses después.
+// No borra nada ni cambia el archivo automático a 90 días; solo reutiliza GET /api/siniestros?archivado=1.
+async function viewHistorial(){
+  const f = state.filtrosHistorial;
+  const params = new URLSearchParams();
+  params.set('archivado','1');
+  if(f.aseguradora) params.set('aseguradora', f.aseguradora);
+  if(f.q) params.set('q', f.q);
+  const filas = await api('GET','/api/siniestros?'+params.toString());
+  return `
+  <h2>Historial / Terminados</h2>
+  <p class="subtle">Expedientes ya cerrados o archivados. No aparecen en ninguna bandeja de trabajo diario, pero quedan disponibles aquí sin límite de tiempo para consultas de garantía o quejas posteriores.</p>
+  <div class="filters no-print">
+    <input placeholder="Buscar por número, placas o vehículo" value="${esc(f.q||'')}" oninput="state.filtrosHistorial.q=this.value" onkeydown="if(event.key==='Enter')render()" style="min-width:220px">
+    <select onchange="state.filtrosHistorial.aseguradora=this.value;render()">
+      <option value="">Todas las aseguradoras</option>
+      ${ASEGURADORAS.map(a=>`<option value="${a}" ${f.aseguradora===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosHistorial={};render()">Limpiar filtros</button>
+  </div>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Estatus</th><th>Fecha de entrega</th><th>En historial desde</th></tr></thead>
+  <tbody>
+  ${filas.length===0?'<tr><td colspan="6" class="empty">Sin expedientes en el historial con estos filtros.</td></tr>':filas.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td><span class="badge ${s.estatus_general==='Cerrado'?'verde':'gris'}">${esc(s.estatus_general)}</span></td>
+      <td>${esc(s.fecha_entrega_real||'—')}</td>
+      <td>${esc((s.archivado_en||'').slice(0,10)||'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${filas.length} expediente(s) en el historial.</p>`;
+}
+
+/* ===================== VISTA: PROVEEDORES ===================== */
+// Hallazgo M-02 (Informe Daniela): la lista de proveedores no tenía forma de acotarse -- se agrega
+// búsqueda (razón social/contacto/correo) y filtro de activo/inactivo (el catálogo es chico, se filtra en pantalla).
+async function viewProveedores(){
+  const todos = await api('GET','/api/proveedores');
+  const f = state.filtrosProveedores || (state.filtrosProveedores = {});
+  const qNorm = (f.q||'').trim().toLowerCase();
+  const proveedores = todos.filter(pv=>{
+    if(f.activo === '1' && !pv.activo) return false;
+    if(f.activo === '0' && pv.activo) return false;
+    if(f.sinCorreo === '1' && pv.correo && pv.correo.trim()) return false;
+    if(!qNorm) return true;
+    return [pv.razon_social, pv.contacto, pv.correo].some(v=>String(v||'').toLowerCase().includes(qNorm));
+  });
+  return `
+  <h2>Proveedores</h2>
+  <div class="filters no-print">
+    <input placeholder="Buscar por razón social, contacto o correo" value="${esc(f.q||'')}" oninput="state.filtrosProveedores.q=this.value" onkeydown="if(event.key==='Enter')render()" style="min-width:220px">
+    <select onchange="state.filtrosProveedores.activo=this.value;render()">
+      <option value="">Activos e inactivos</option>
+      <option value="1" ${f.activo==='1'?'selected':''}>Solo activos</option>
+      <option value="0" ${f.activo==='0'?'selected':''}>Solo inactivos</option>
+    </select>
+    <select onchange="state.filtrosProveedores.sinCorreo=this.value;render()" title="Punto 7 (reporte Daniela 31-ago-2026)">
+      <option value="">Con y sin correo</option>
+      <option value="1" ${f.sinCorreo==='1'?'selected':''}>Solo sin correo</option>
+    </select>
+    <button class="btn small" onclick="render()">Buscar</button>
+    <button class="btn secondary small" onclick="state.filtrosProveedores={};render()">Limpiar filtros</button>
+  </div>
+  <table><thead><tr><th>Razón social</th><th>Contacto</th><th>Correo</th><th>Activo</th><th></th></tr></thead><tbody>
+  ${proveedores.length===0?'<tr><td colspan="5" class="empty">Sin proveedores con estos filtros.</td></tr>':proveedores.map(pv=>`<tr>
+    <td><span class="link" onclick="goProveedor(${pv.id})">${esc(pv.razon_social)}</span></td>
+    <td>${esc(pv.contacto||'')}</td><td>${esc(pv.correo||'')}</td>
+    <td>${pv.activo?'<span class="badge verde">Activo</span>':'<span class="badge gris">Inactivo</span>'}</td>
+    <td><button class="btn small secondary" onclick="goProveedor(${pv.id})">Ver ficha</button></td>
+  </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${proveedores.length} de ${todos.length} proveedor(es).</p>`;
+}
+async function viewProveedorDetalle(id){
+  const pv = await api('GET','/api/proveedores/'+id);
+  const activos = pv.piezas.filter(z=>!['Recibida físicamente','Cancelada'].includes(z.estatus));
+  const vencidas = activos.filter(z=>z.fecha_prometida && z.fecha_prometida < todayISO());
+  const incidencias = pv.piezas.filter(z=>z.estatus==='Incorrecta/dañada'||z.estatus==='Devuelta');
+  return `
+  <button class="btn ghost small no-print" onclick="goTo('proveedores')">← Volver a proveedores</button>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+    <div>
+      <h2 style="margin-top:10px;margin-bottom:2px;">${esc(pv.razon_social)} ${pv.activo?'':'<span class="badge gris">Inactivo</span>'}</h2>
+      <p class="subtle">${esc(pv.contacto||'')} · ${esc(pv.correo||'')} · Tel. ${esc(pv.telefono||'—')}${pv.telefono_alterno?' · Alterno '+esc(pv.telefono_alterno):''}</p>
+    </div>
+    <button class="btn small secondary no-print" onclick="abrirFormEditarProveedor(${pv.id})">Editar</button>
+  </div>
+  <div class="grid-cards">
+    <div class="card azul"><div class="num">${activos.length}</div><div class="label">Piezas activas</div></div>
+    <div class="card rojo"><div class="num">${vencidas.length}</div><div class="label">Piezas vencidas</div></div>
+    <div class="card ambar"><div class="num">${incidencias.length}</div><div class="label">Incidencias</div></div>
+    <div class="card verde"><div class="num">${pv.tiempoPromedioDias!=null?pv.tiempoPromedioDias+' días':'—'}</div><div class="label">Tiempo prom. de entrega</div></div>
+  </div>
+  <div class="section">
+    <h3>Reglas especiales</h3>
+    <p>${esc(pv.regla_especial) || 'Sin reglas especiales registradas.'}</p>
+    <p class="subtle">Nota: ya no existe un bloqueo permanente de correos por proveedor (corrección F-14). Las exclusiones son solo por envío, desde el generador de correo, con motivo obligatorio.</p>
+  </div>
+  <div class="section">
+    <h3>Correos (filtrados por este proveedor — corrección F-15)</h3>
+    ${pv.comunicaciones.length===0?'<div class="empty">Sin correos registrados.</div>':`
+    <table><thead><tr><th>Fecha</th><th>Asunto</th><th>Respuesta</th></tr></thead><tbody>
+    ${pv.comunicaciones.map(c=>`<tr><td>${fmtFechaHora(c.fecha_envio)}</td><td>${esc(c.asunto)}</td><td>${c.respuesta_texto?esc(c.respuesta_texto):'<span class="badge ambar">Pendiente</span>'}</td></tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+
+/* ===================== VISTA: FICHA DE SINIESTRO ===================== */
+async function viewSiniestro(id){
+  const s = await api('GET','/api/siniestros/'+id);
+  const peds = await api('GET','/api/pedidos?siniestro_id='+id);
+  const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
+  const subtabs = [
+    ...(esAtencionCliente ? [['cliente','Cliente']] : []),
+    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],['produccion','Producción'],['calidad','Calidad / entrega'],
+    ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
+  ];
+  const ESTATUS_OPERATIVO = KANBAN_COLS;
+
+  let body = '';
+  if(state.subtabSiniestro==='cliente'){
+    const eventos = await api('GET','/api/eventos-cliente?siniestro_id='+id);
+    const tareas = await api('GET','/api/tareas?siniestro_id='+id);
+    const hitos = await api('GET','/api/hitos?siniestro_id='+id);
+    const mensajesIa = await api('GET','/api/mensajes-ia?siniestro_id='+id);
+    const ESTADOS_TAREA = {pendiente:'ambar', en_proceso:'azul', completada:'verde', cancelada:'gris'};
+    // Propuesta de Alejandra (27-ago-2026): estados más específicos para distinguir "no se ha hecho"
+    // de "está detenido esperando algo puntual".
+    const ESTADOS_HITO = {pendiente:'gris', en_complemento:'rojo', esperando_autorizacion:'ambar', en_proceso:'azul',
+      generado:'ambar', revisado:'azul', autorizado:'azul', completado:'verde', enviado:'verde', bloqueado:'rojo', no_aplica:'gris'};
+    const LABEL_HITO = {pendiente:'Pendiente', en_complemento:'En complemento', esperando_autorizacion:'Esperando autorización',
+      en_proceso:'En proceso', generado:'Generado', revisado:'Revisado', autorizado:'Autorizado', completado:'Completado',
+      enviado:'Enviado', bloqueado:'Bloqueado', no_aplica:'No aplica'};
+    const ESTADOS_IA = {generado:'ambar', aprobado:'azul', enviado:'verde'};
+    body = `
+    <h3>Hitos del expediente</h3>
+    <p class="subtle">Secuencia real de avisos al cliente. Los marcados "condicional" pueden omitirse con motivo.</p>
+    <table><thead><tr><th>#</th><th>Hito</th><th>Estado</th><th>Detalle</th><th></th></tr></thead><tbody>
+    ${hitos.map(h=>`<tr>
+      <td>${h.orden}</td>
+      <td>${esc(h.titulo)}${h.condicional?' <span class="badge gris">condicional</span>':''}</td>
+      <td><span class="badge ${ESTADOS_HITO[h.estado]||'gris'}">${LABEL_HITO[h.estado]||h.estado}</span></td>
+      <td class="subtle">${h.estado==='no_aplica'?esc(h.motivo_no_aplica||''):(['en_complemento','bloqueado'].includes(h.estado)?esc(h.detalle||''):(h.fecha_estado?esc(h.fecha_estado):''))}</td>
+      <td>
+        ${!['enviado'].includes(h.estado) || h.condicional ? `<button class="btn small secondary" onclick="abrirFormHito(${h.id})">Actualizar</button>` : ''}
+        <button class="btn small ghost" onclick="abrirFormIA(${id}, ${h.hito_id})">Preparar con IA</button>
+      </td>
+    </tr>`).join('')}
+    </tbody></table>
+    <h3 style="margin-top:18px;">Tareas</h3>
+    <div style="margin-bottom:8px;"><button class="btn small" onclick="abrirFormNuevaTarea(${id})">+ Nueva tarea</button></div>
+    ${tareas.length===0?'<div class="empty">Sin tareas registradas.</div>':`
+    <table><thead><tr><th>Descripción</th><th>Responsable</th><th>Fecha límite</th><th>Origen</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${tareas.map(t=>`<tr>
+      <td>${esc(t.descripcion)}</td><td>${esc(t.responsable_nombre||'—')}</td>
+      <td>${t.fecha_limite && t.fecha_limite < todayISO() && !['completada','cancelada'].includes(t.estado) ? `<span class="badge rojo">${esc(t.fecha_limite)} vencida</span>` : esc(t.fecha_limite||'—')}</td>
+      <td>${t.origen==='automatica'?'Automática':'Manual'}</td>
+      <td><span class="badge ${ESTADOS_TAREA[t.estado]||'gris'}">${esc(t.estado)}</span></td>
+      <td>${!['completada','cancelada'].includes(t.estado)?`<button class="btn small secondary" onclick="marcarTareaCompletada(${t.id})">Completar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <h3 style="margin-top:18px;">Bitácora de comunicaciones con el cliente</h3>
+    <div style="margin-bottom:8px;"><button class="btn small" onclick="abrirFormNuevoEvento(${id})">+ Registrar comunicación</button></div>
+    ${eventos.length===0?'<div class="empty">Sin comunicaciones registradas todavía.</div>':`<ul class="timeline">
+    ${eventos.map(e=>`<li><b>${fmtFechaHora(e.creado_en)}</b> — <span class="badge ${e.direccion==='entrante'?'azul':'ambar'}">${e.direccion==='entrante'?'Cliente → taller':'Taller → cliente'}</span>
+      ${e.canal?` · ${esc(e.canal)}`:''}${e.tipo_evento?` · ${esc(e.tipo_evento)}`:''}<br>${esc(e.mensaje)}
+      ${e.compromiso?`<br><span class="subtle">Compromiso: ${esc(e.compromiso)}</span>`:''}
+      <span class="subtle"> (${esc(e.autor_nombre||'—')})</span></li>`).join('')}
+    </ul>`}
+    <h3 style="margin-top:18px;">Mensajes preparados con IA</h3>
+    <p class="subtle">Borradores armados con el contexto del expediente para pegar en tu ChatGPT. El envío siempre queda a tu criterio.</p>
+    ${mensajesIa.length===0?'<div class="empty">Sin mensajes preparados todavía.</div>':`
+    <table><thead><tr><th>Hito</th><th>Borrador</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${mensajesIa.map(m=>`<tr>
+      <td>${esc(m.hito_titulo||'General')}</td>
+      <td style="max-width:280px;white-space:pre-wrap;">${esc((m.borrador||'').slice(0,180))}${(m.borrador||'').length>180?'…':''}</td>
+      <td><span class="badge ${ESTADOS_IA[m.estado]||'gris'}">${esc(m.estado)}</span></td>
+      <td>
+        ${m.estado==='generado'?`<button class="btn small secondary" onclick="cambiarEstadoMensajeIa(${m.id},'aprobado')">Marcar revisado</button>`:''}
+        ${m.estado!=='enviado'?`<button class="btn small" onclick="cambiarEstadoMensajeIa(${m.id},'enviado')">Marcar enviado</button>`:''}
+      </td>
+    </tr>`).join('')}
+    </tbody></table>`}`;
+  } else if(state.subtabSiniestro==='admision'){
+    const hallazgos = await api('GET','/api/danos-evidencia?siniestro_id='+id);
+    const archivosDisp = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
+    const puedeAdmision = currentUser && ['atencion_cliente','vanessa','admin','jefe'].includes(currentUser.rol);
+    const puedeTecnica = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
+    const puedeCaptura = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
+    // Puntos 5-8 del documento PORTAL SC (Orlando, 8-sep-2026): flujo de Autosurtidos -- solo se consulta
+    // la tabla de piezas si el expediente en verdad es autosurtido, para no gastar una llamada de más en
+    // el resto de los expedientes.
+    const puedeDanielaAutosurtido = currentUser && ['operativo','admin','jefe'].includes(currentUser.rol);
+    const puedeAlejandraAutosurtido = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
+    let piezasAutosurtido = [];
+    let presupuestoArchivo = null;
+    if(s.tipo_reparacion === 'AUTO_SURTIDO'){
+      piezasAutosurtido = await api('GET','/api/autosurtido-piezas?siniestro_id='+id);
+      presupuestoArchivo = archivosDisp.find(a=>a.tipo==='presupuesto_autosurtido') || null;
+    }
+    const LABEL_ADM = { admitido:'Admitido', condicionado:'Condicionado', no_admitido:'No admitido' };
+    const BADGE_ADM = { admitido:'verde', condicionado:'ambar', no_admitido:'rojo' };
+    const LABEL_REV = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
+    const LABEL_EVID = { evidencia_completa:'Evidencia completa', desarme_parcial:'Desarme parcial', dano_oculto_detectado:'Daño oculto detectado' };
+    body = `
+    <h3>Recepción y admisión</h3>
+    <p class="subtle">Secciones 5.1/5.2 y regla de circulando vs. grúa del documento maestro.</p>
+    <table class="kv"><tbody>
+      <tr><td>Ingreso</td><td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo==='grua'?'ambar':s.ingreso_tipo==='permanece'?'ambar':'gris'}">${esc({ grua:'Grúa', circulando:'Circulando', permanece:'Se queda todo el proceso' }[s.ingreso_tipo]||s.ingreso_tipo)}</span>${s.ingreso_seguro===0?' <span class="badge rojo">No seguro</span>':''}`:'—'}</td></tr>
+      <tr><td>Cita</td><td>${esc(s.cita_fecha||'—')}</td></tr>
+      ${s.ingreso_tipo==='grua'?`<tr><td>Grúa</td><td>${esc(s.grua_operador||'—')} ${s.grua_hora?('· '+esc(s.grua_hora)):''}</td></tr>`:''}
+      <tr><td>Fecha de admisión</td><td>${esc(s.fecha_admision||'—')}</td></tr>
+      <tr><td>Kilometraje / combustible</td><td>${esc(s.kilometraje||'—')} ${s.combustible_nivel?('· '+esc(s.combustible_nivel)):''}</td></tr>
+      ${s.requiere_dado_seguridad?`<tr><td>Dado de seguridad</td><td>${s.dado_seguridad_colocado?'<span class="badge verde">Colocado</span>':'<span class="badge rojo">Falta colocar</span>'}</td></tr>`:''}
+      <tr><td>¿Aplica deducible?</td><td>${s.deducible_aplica==null?'<span class="badge gris">Sin definir</span>':(s.deducible_aplica?'<span class="badge ambar">Sí aplica</span>':'<span class="badge gris">No aplica</span>')}</td></tr>
+      <tr><td>Pertenencias</td><td>${esc(s.pertenencias||'—')}</td></tr>
+      <tr><td>Estado de admisión</td><td><span class="badge ${BADGE_ADM[s.estado_admision]||'gris'}">${LABEL_ADM[s.estado_admision]||'Pendiente'}</span>${s.motivo_admision?` — ${esc(s.motivo_admision)}`:''}</td></tr>
+      <tr><td>Disponible para revisión</td><td>${s.fecha_hora_disponible_revision?`<span class="badge verde">Sí</span> · ${esc(s.fecha_hora_disponible_revision)}`:`<span class="badge ambar">Aún no</span>${(s.admision_faltantes&&s.admision_faltantes.length)?` — falta: ${s.admision_faltantes.map(esc).join(', ')}`:''}`}</td></tr>
+      <tr><td>Grupo de WhatsApp</td><td>${s.grupo_whatsapp_creado?'<span class="badge verde">Creado</span>':'<span class="badge gris">Sin crear</span>'}</td></tr>
+    </tbody></table>
+    ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button> <button class="btn small secondary" onclick="abrirMensajeBienvenida(${id})">Mensaje de bienvenida (WhatsApp)</button> <button class="btn small secondary" onclick="imprimirInventarioFisico(${id})">Imprimir inventario para el cliente</button></div>`:''}
+
+    <h4 style="margin-top:14px;">Inventario y orden de admisión cargados</h4>
+    ${(()=>{ const docsAdmision = archivosDisp.filter(a=>['inventario_fisico','orden_admision'].includes(a.tipo)); return docsAdmision.length===0 ? '<div class="empty">Sin inventario ni orden de admisión cargados todavía.</div>' :
+      `<table><thead><tr><th>Documento</th><th>Archivo</th><th>Subido</th></tr></thead><tbody>
+      ${docsAdmision.map(a=>`<tr><td>${esc({inventario_fisico:'Inventario físico/fotográfico',orden_admision:'Orden de admisión'}[a.tipo]||a.tipo)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">${esc(a.nombre_original)}</a></td><td class="subtle">${esc(a.creado_en||'—')}</td></tr>`).join('')}
+      </tbody></table>`; })()}
+
+    <h3 style="margin-top:20px;">Revisión técnica (Orlando)</h3>
+    <p class="subtle">Secciones 5.3/5.4 del documento maestro: daño relacionado/no relacionado, visible/oculto, y si requiere desarme.</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado de revisión</td><td><span class="badge ${s.estado_revision_tecnica==='revision_terminada'?'verde':s.estado_revision_tecnica==='requiere_desarme'?'ambar':'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span>${s.estado_revision_tecnica==='revision_terminada'&&s.revision_tecnica_terminada_en?` <span class="subtle">— terminada el ${fmtFechaHora(s.revision_tecnica_terminada_en)}</span>`:''}</td></tr>
+      <tr><td>Riesgo de seguridad</td><td>${s.riesgo_seguridad?`<span class="badge rojo">No seguro</span> — ${esc(s.riesgo_seguridad_motivo||'')}`:'No'}</td></tr>
+      <tr><td>Estado de evidencia</td><td>${s.estado_evidencia?esc(LABEL_EVID[s.estado_evidencia]||s.estado_evidencia):'—'}</td></tr>
+    </tbody></table>
+    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormRevisionTecnica(${id})">Actualizar revisión técnica</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Daños y hallazgos</h4>
+    ${hallazgos.length===0?'<div class="empty">Sin hallazgos registrados todavía.</div>':`
+    <table><thead><tr><th>Zona/pieza</th><th>Tipo de daño</th><th>Visibilidad</th><th>Relacionado</th><th>Severidad</th><th>Foto</th><th>Autor</th><th></th></tr></thead><tbody>
+    ${hallazgos.map(h=>`<tr>
+      <td>${esc(h.zona_pieza)}${h.observaciones?`<div class="subtle">${esc(h.observaciones)}</div>`:''}</td>
+      <td>${esc(h.tipo_dano||'—')}</td>
+      <td><span class="badge ${h.visibilidad==='oculto'?'rojo':'gris'}">${h.visibilidad==='oculto'?'Oculto':'Visible'}</span></td>
+      <td>${h.relacionado?'Sí':'No'}</td>
+      <td>${esc(h.severidad||'—')}</td>
+      <td>${h.archivo_id?`<a class="link" href="/api/archivos/${h.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
+      <td class="subtle">${esc(h.autor_nombre||'—')}</td>
+      <td>${puedeTecnica?`<button class="btn small secondary" onclick="abrirFormEditarHallazgo(${h.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Captura y envío (Orlando + Vanessa)</h3>
+    <p class="subtle">Continuación del flujo de Vanessa: Excel capturado, fotos/carpeta completas y envío al propietario. Cualquiera de los dos puede capturarlo — el sistema no distingue quién lo hizo.</p>
+    <table class="kv"><tbody>
+      <tr><td>Fecha de entrega del borrador a captura</td><td>${fmtFecha(s.fecha_borrador_captura)||'—'}</td></tr>
+      <tr><td>Excel capturado</td><td>${s.excel_capturado?`<span class="badge verde">Sí</span> · ${fmtFecha(s.excel_capturado_fecha)}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Fotos/carpeta completas</td><td>${s.fotos_completas?`<span class="badge verde">Sí</span> · ${fmtFecha(s.fotos_completas_fecha)}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>${s.tipo_reparacion==='AUTO_SURTIDO'?'Enviado a Daniela':'Enviado al propietario'}</td><td>${s.enviado_propietario?`<span class="badge verde">Sí</span> · ${fmtFecha(s.enviado_propietario_fecha)}`:'<span class="badge gris">No</span>'}</td></tr>
+    </tbody></table>
+    ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormCapturaEnvio(${id})">Actualizar captura / envío</button></div>`:''}
+
+    ${s.tipo_reparacion !== 'AUTO_SURTIDO' ? '' : `
+    <h3 style="margin-top:20px;">Autosurtido -- piezas, cotización y reingreso</h3>
+    <p class="subtle">Puntos 5-8 del documento PORTAL SC (Orlando, 8-sep-2026). El expediente aparece en "Autosurtidos" (tablero de Daniela) cuando esté enviado y TODAS las piezas de esta tabla tengan pieza, costo, tiempo de entrega y proveedor completos.</p>
+    <table><thead><tr><th>Pieza</th><th>Costo</th><th>Tiempo de entrega</th><th>Proveedor</th><th></th><th></th></tr></thead><tbody>
+    ${piezasAutosurtido.length===0?'<tr><td colspan="6" class="empty">Sin piezas capturadas todavía.</td></tr>':piezasAutosurtido.map(p=>`
+      <tr>
+        <td>${esc(p.pieza||'—')}</td>
+        <td>${p.costo!=null?fmtMoney(p.costo):'—'}</td>
+        <td>${esc(p.tiempo_entrega||'—')}</td>
+        <td>${esc(p.proveedor_nombre||'—')}${p.proveedor_origen?` (${esc(p.proveedor_origen)})`:''}${p.proveedor_link?` · <a class="link" href="${esc(p.proveedor_link)}" target="_blank">link</a>`:''}</td>
+        <td>${!p.requisitada?'<span class="badge ambar">Falta completar</span>':'<span class="badge verde">Completa</span>'}</td>
+        <td>${puedeCaptura?`<button class="btn small secondary" onclick="abrirFormEditarPiezaAutosurtido(${p.id},${id})">Editar</button> <button class="btn small ghost" onclick="eliminarPiezaAutosurtido(${p.id},${id})">Eliminar</button>`:''}</td>
+      </tr>`).join('')}
+    </tbody></table>
+    ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaPiezaAutosurtido(${id})">+ Agregar pieza</button></div>`:''}
+    <table class="kv" style="margin-top:12px;"><tbody>
+      <tr><td>Presupuesto (Excel)</td><td>${presupuestoArchivo?`<a class="link" href="/api/archivos/${presupuestoArchivo.id}/descargar" target="_blank">${esc(presupuestoArchivo.nombre_original)}</a>`:'<span class="badge gris">Sin subir -- ver pestaña Archivos</span>'}</td></tr>
+      <tr><td>Cotización de Daniela</td><td>${s.autosurtido_cotizado_en?`<span class="badge verde">Terminada · ${fmtFecha(s.autosurtido_cotizado_en)}</span>`:'<span class="badge ambar">Pendiente</span>'}</td></tr>
+      <tr><td>Reingreso físico</td><td>${s.autosurtido_reingreso_en?`<span class="badge verde">Registrado · ${fmtFecha(s.autosurtido_reingreso_en)}</span>`:'<span class="badge gris">Sin registrar</span>'}</td></tr>
+      <tr><td>Carga de inventario condicional</td><td>${s.autosurtido_inventario_cargado?`<span class="badge verde">Cargado · ${fmtFecha(s.autosurtido_inventario_cargado_en)}</span>`:'<span class="badge ambar">Pendiente</span>'}</td></tr>
+    </tbody></table>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      ${puedeDanielaAutosurtido && !s.autosurtido_cotizado_en ? `<button class="btn small secondary" onclick="marcarAutosurtidoCotizado(${id})">Marcar cotización terminada (Daniela)</button>` : ''}
+      ${puedeAlejandraAutosurtido && s.autosurtido_cotizado_en && !s.autosurtido_reingreso_en ? `<button class="btn small secondary" onclick="marcarAutosurtidoReingreso(${id})">Marcar reingreso físico (Alejandra)</button>` : ''}
+      ${puedeAlejandraAutosurtido && s.autosurtido_reingreso_en && !s.autosurtido_inventario_cargado ? `<button class="btn small secondary" onclick="marcarAutosurtidoInventario(${id})">Marcar carga de inventario (Alejandra)</button>` : ''}
+    </div>`}`;
+  } else if(state.subtabSiniestro==='expediente'){
+    const documentos = await api('GET','/api/documentos-expediente?siniestro_id='+id);
+    const puedeExpediente = currentUser && ['vanessa','orlando','admin','jefe'].includes(currentUser.rol);
+    const LABEL_EXP = { en_captura:'En captura', incompleto:'Incompleto', listo_para_valuacion:'Listo para valuación' };
+    const LABEL_DOC = { faltante:'Faltante', recibido:'Recibido', no_legible:'No legible', no_aplica:'No aplica' };
+    const BADGE_DOC = { faltante:'rojo', recibido:'verde', no_legible:'ambar', no_aplica:'gris' };
+    const LABEL_REV_RESUMEN = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
+    body = `
+    <h3>Expediente digital</h3>
+    <p class="subtle">Sección 5.5 del documento maestro: checklist documental, versiones, legibilidad y sistema de valuación (módulo de Vanessa).</p>
+    <h4>Proceso de revisión y captura</h4>
+    <table class="kv"><tbody>
+      <tr><td>Revisión técnica</td><td><span class="badge ${s.estado_revision_tecnica==='revision_terminada'?'verde':s.estado_revision_tecnica==='requiere_desarme'?'ambar':'gris'}">${LABEL_REV_RESUMEN[s.estado_revision_tecnica]||'Sin iniciar'}</span></td></tr>
+      <tr><td>Fotos de revisión entregadas</td><td>${s.fotos_completas?'<span class="badge verde">Sí</span>':'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Envío del expediente al propietario</td><td>${s.enviado_propietario?'<span class="badge verde">Sí</span>':'<span class="badge gris">No</span>'}</td></tr>
+    </tbody></table>
+    <h4 style="margin-top:14px;">Expediente digital</h4>
+    <table class="kv"><tbody>
+      <tr><td>Estado del expediente</td><td><span class="badge ${s.estado_expediente==='listo_para_valuacion'?'verde':s.estado_expediente==='incompleto'?'rojo':'ambar'}">${LABEL_EXP[s.estado_expediente]||'Sin iniciar'}</span></td></tr>
+      <tr><td>Sistema de valuación</td><td>${esc(s.sistema_valuacion||'—')}</td></tr>
+      <tr><td>Folio de expediente</td><td>${esc(s.expediente_folio||'—')}</td></tr>
+    </tbody></table>
+    ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormExpedienteDigital(${id})">Actualizar expediente</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Checklist documental</h4>
+    ${documentos.length===0?'<div class="empty">Sin documentos registrados todavía.</div>':`
+    <table><thead><tr><th>Documento</th><th>Versión</th><th>Estado</th><th>Folio</th><th>Archivo</th><th>Autor</th><th></th></tr></thead><tbody>
+    ${documentos.map(d=>`<tr>
+      <td>${esc(d.tipo_documento)}${d.notas?`<div class="subtle">${esc(d.notas)}</div>`:''}</td>
+      <td>${d.version}</td>
+      <td><span class="badge ${BADGE_DOC[d.estado]||'gris'}">${LABEL_DOC[d.estado]||d.estado}</span></td>
+      <td>${esc(d.folio||'—')}</td>
+      <td>${d.archivo_id?`<a class="link" href="/api/archivos/${d.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
+      <td class="subtle">${esc(d.autor_nombre||'—')}</td>
+      <td>${puedeExpediente?`<button class="btn small secondary" onclick="abrirFormEditarDocumento(${d.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoDocumento(${id})">+ Agregar documento</button></div>`:''}`;
+  } else if(state.subtabSiniestro==='valuacion'){
+    const puedeValuacion = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
+    const puedeSolicitarReautorizacion = currentUser && ['admin','jefe'].includes(currentUser.rol);
+    const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
+    const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
+    const reautorizaciones = await api('GET','/api/complementos?siniestro_id='+id+'&tipo=no_autorizado_inicial');
+    body = `
+    <h3>Valuación</h3>
+    <p class="subtle">Sección 5.6 del documento maestro. Sistema de valuación tomado del expediente digital (${esc(s.sistema_valuacion||'sin definir')}).</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado de valuación</td><td>${esc(LABEL_VAL[s.estado_valuacion]||'Sin iniciar')}</td></tr>
+      <tr><td>Folio / versión</td><td>${esc(s.valuacion_folio||'—')} ${s.valuacion_version?('· v'+s.valuacion_version):''}</td></tr>
+      <tr><td>Importe</td><td>${s.valuacion_importe!=null?fmtMoney(s.valuacion_importe):'—'}</td></tr>
+      <tr><td>Fecha de envío</td><td>${esc(s.valuacion_fecha_envio||'—')}</td></tr>
+      <tr><td>Fecha de regreso (evaluación autorizada)</td><td>${esc(s.valuacion_fecha_respuesta||'—')}</td></tr>
+      <tr><td>Observaciones</td><td>${esc(s.valuacion_observaciones||'—')}</td></tr>
+    </tbody></table>
+    ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormValuacion(${id})">Actualizar valuación</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Autorización</h3>
+    <p class="subtle">Sección 5.7. Las piezas autorizadas a cambio alimentan la regla GNP 1-3 = autosurtido obligatorio.</p>
+    <table class="kv"><tbody>
+      <tr><td>Estado de autorización</td><td><span class="badge ${s.estado_autorizacion==='autorizada'?'verde':s.estado_autorizacion==='rechazada'?'rojo':'ambar'}">${esc(LABEL_AUT[s.estado_autorizacion]||'Sin iniciar')}</span></td></tr>
+      <tr><td>Piezas autorizadas a cambio</td><td>${s.piezas_autorizadas_cambio!=null?s.piezas_autorizadas_cambio:'—'}</td></tr>
+      <tr><td>Ruta de refacciones aplicada</td><td>${esc(s.aseguradora_ruta_refacciones||'—')}<div class="subtle">${esc(s.aseguradora_regla_aplicada||'')}</div></td></tr>
+      <tr><td>Autorizador</td><td>${esc(s.autorizador||'—')}</td></tr>
+      <tr><td>Fecha envío / respuesta</td><td>${esc(s.autorizacion_fecha_envio||'—')} / ${esc(s.autorizacion_fecha_respuesta||'—')}</td></tr>
+      <tr><td>Importe autorizado</td><td>${s.autorizacion_importe!=null?fmtMoney(s.autorizacion_importe):'—'}</td></tr>
+      <tr><td>Restricciones</td><td>${esc(s.autorizacion_restricciones||'—')}</td></tr>
+    </tbody></table>
+    ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAutorizacion(${id})">Actualizar autorización</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Piezas no autorizadas / reautorización</h3>
+    <p class="subtle">Sección 7 del proceso completo: cuando la evaluación regresa piezas no autorizadas, hay un plazo de 24h para mandar fotos editadas y pedirle al valuador que reconsidere, antes de soltar el expediente al equipo.</p>
+    ${reautorizaciones.length===0?'<div class="empty">Sin solicitudes de reautorización registradas.</div>':`
+    <table><thead><tr><th>Piezas no autorizadas</th><th>Plazo</th><th>Decisión</th><th></th></tr></thead><tbody>
+    ${reautorizaciones.map(rc=>`<tr>
+      <td>${esc(rc.pieza_operacion)}${rc.causa?`<div class="subtle">${esc(rc.causa)}</div>`:''}</td>
+      <td>${rc.decision==='pendiente'?(rc.vencido?`<span class="badge rojo">Vencido (${fmtFechaHora(rc.fecha_limite)})</span>`:`<span class="badge ambar">Antes de ${fmtFechaHora(rc.fecha_limite)}</span>`):'—'}</td>
+      <td><span class="badge ${rc.decision==='autorizado'?'verde':rc.decision==='rechazado'?'rojo':rc.decision==='parcial'?'ambar':'gris'}">${esc(rc.decision)}</span></td>
+      <td>${puedeValuacion?`<button class="btn small secondary" onclick="abrirFormEditarComplemento(${rc.id})">Actualizar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeSolicitarReautorizacion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaReautorizacion(${id})">+ Solicitar reautorización</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Avisos al equipo</h3>
+    <p class="subtle">Secciones 8-9 del proceso completo: reemplaza los correos que hoy manda Roberto para avisar del estado de los proveedores y para soltar el expediente ya completo.</p>
+    <table class="kv"><tbody>
+      <tr><td>Proveedores pendientes</td><td>${s.proveedores_aviso_pendiente_en?`<span class="badge verde">Avisado el ${esc(s.proveedores_aviso_pendiente_en.slice(0,16).replace('T',' '))}</span>`:(puedeSolicitarReautorizacion?`<button class="btn small secondary" onclick="avisarProveedoresPendientes(${id})">Avisar proveedores pendientes</button>`:'<span class="subtle">—</span>')}</td></tr>
+      <tr><td>Expediente completo</td><td>${s.expediente_completo_enviado_en?`<span class="badge verde">Enviado el ${esc(s.expediente_completo_enviado_en.slice(0,16).replace('T',' '))}</span>`:(puedeSolicitarReautorizacion?`<button class="btn small" onclick="enviarExpedienteCompleto(${id})">Enviar expediente completo al equipo</button>`:'<span class="subtle">—</span>')}</td></tr>
+    </tbody></table>`;
+  } else if(state.subtabSiniestro==='produccion'){
+    const puedeProduccion = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    // Pedido de Roberto (2-sep-2026): Alejandra también necesita poder subir la foto obligatoria de cada
+    // etapa (llega a recibir fotos de los técnicos, o está presente en el taller), sin darle el resto de
+    // permisos de producción (no debe poder cambiar estado/avance/técnico de la operación, eso lo dejamos
+    // igual de restringido para beto/orlando/admin/jefe).
+    const puedeFotosOperacion = puedeProduccion || (currentUser && currentUser.rol === 'atencion_cliente');
+    // Propuesta Orlando/Vanessa/Beto: Daniela/Alejandra adjuntan la OT (papel escaneado o digital) desde
+    // la pestaña Archivos con tipo "Orden de trabajo"; aqui se muestra de una vez para que Beto no tenga
+    // que ir a buscarla a otra pestaña.
+    const documentosOt = (await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id)).filter(a=>a.tipo==='Orden de trabajo');
+    const ots = await api('GET','/api/ordenes-trabajo?siniestro_id='+id);
+    let operaciones = [];
+    for(const ot of ots){ const ops = await api('GET','/api/ot-operaciones?ot_id='+ot.id); ops.forEach(op=>operaciones.push({op,ot})); }
+    const complementosLista = await api('GET','/api/complementos?siniestro_id='+id);
+    const retrabajosLista = await api('GET','/api/retrabajos?siniestro_id='+id);
+    const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
+    const LABEL_OT = { borrador:'Borrador', emitida:'Emitida', actualizada:'Actualizada', suspendida:'Suspendida', terminada:'Terminada' };
+    const LABEL_OP = { programado:'Programado', en_proceso:'En proceso', detenido:'Detenido', terminado:'Terminado' };
+    const LABEL_DECISION = { pendiente:'Pendiente', autorizado:'Autorizado', rechazado:'Rechazado', parcial:'Parcial' };
+    const LABEL_RETRABAJO = { abierto:'Abierto', en_correccion:'En corrección', reinspeccion:'Reinspección', cerrado:'Cerrado' };
+    body = `
+    <h3>Producción</h3>
+    <h4>Documentos de OT adjuntos</h4>
+    ${documentosOt.length===0?'<div class="empty">Sin documentos de OT adjuntos. Daniela o Alejandra pueden subir la foto o el PDF desde la pestaña "Archivos" con tipo "Orden de trabajo".</div>':`
+    <table><thead><tr><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
+    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Ver / descargar</a></td></tr>`).join('')}
+    </tbody></table>`}
+    <table class="kv" style="margin-top:12px;"><tbody>
+      <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
+      <tr><td>Fecha de entrega prevista</td><td>${esc(s.fecha_entrega_prevista||'—')} ${s.entrega_compromiso_gnp?'<span class="badge rojo">Compromiso obligatorio GNP</span>':''}</td></tr>
+    </tbody></table>
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEtapaProduccion(${id})">Actualizar etapa</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Órdenes de trabajo</h4>
+    ${ots.length===0?'<div class="empty">Sin OT registradas.</div>':`
+    <table><thead><tr><th>Número</th><th>Versión</th><th>Estado</th><th>Alcance</th><th></th></tr></thead><tbody>
+    ${ots.map(ot=>`<tr>
+      <td>${esc(ot.numero)}</td><td>${ot.version}</td>
+      <td><span class="badge ${ot.estado==='terminada'?'verde':ot.estado==='suspendida'?'rojo':'ambar'}">${LABEL_OT[ot.estado]||ot.estado}</span></td>
+      <td>${esc(ot.alcance||'—')}</td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarOt(${ot.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaOt(${id})">+ Nueva OT</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Operaciones</h4>
+    ${operaciones.length===0?'<div class="empty">Sin operaciones registradas.</div>':`
+    <table><thead><tr><th>OT</th><th>Operación</th><th>Área</th><th>Técnico</th><th>Estado</th><th>Avance</th><th>Bloqueo</th><th></th></tr></thead><tbody>
+    ${operaciones.map(o=>`<tr>
+      <td>${esc(o.ot.numero)}</td>
+      <td>${esc(o.op.descripcion)}${o.op.pieza?`<div class="subtle">${esc(o.op.pieza)}</div>`:''}</td>
+      <td>${esc(o.op.area||'—')}</td>
+      <td>${esc(o.op.tecnico||'—')}</td>
+      <td><span class="badge ${o.op.estado==='terminado'?'verde':o.op.estado==='detenido'?'rojo':'ambar'}">${LABEL_OP[o.op.estado]||o.op.estado}</span></td>
+      <td>${o.op.avance}%</td>
+      <td>${esc(o.op.causa_bloqueo||'—')}</td>
+      <td>
+        ${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarOperacion(${o.op.id})">Editar</button>`:''}
+        ${puedeFotosOperacion?`<button class="btn small secondary" onclick="abrirFotosOperacion(${o.op.id})">Fotos</button>`:''}
+      </td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion && ots.length>0?`<div style="margin-top:8px;"><select id="opOtSel">${ots.map(ot=>`<option value="${ot.id}">OT ${esc(ot.numero)} v${ot.version}</option>`).join('')}</select> <button class="btn small" onclick="abrirFormNuevaOperacion()">+ Agregar operación</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Complementos por daño oculto</h4>
+    ${complementosLista.length===0?'<div class="empty">Sin complementos registrados.</div>':`
+    <table><thead><tr><th>Causa</th><th>Fecha</th><th>Decisión</th><th>Estado</th><th>Importe</th><th></th></tr></thead><tbody>
+    ${complementosLista.map(c=>`<tr>
+      <td>${esc(c.causa)}${c.pieza_operacion?`<div class="subtle">${esc(c.pieza_operacion)}</div>`:''}</td>
+      <td>${esc(c.fecha||'—')}</td>
+      <td><span class="badge ${c.decision==='autorizado'?'verde':c.decision==='rechazado'?'rojo':'ambar'}">${LABEL_DECISION[c.decision]||c.decision}</span></td>
+      <td>${esc(c.estado)}</td>
+      <td>${c.importe!=null?fmtMoney(c.importe):'—'}</td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarComplemento(${c.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoComplemento(${id})">+ Agregar complemento</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Retrabajos</h4>
+    ${retrabajosLista.length===0?'<div class="empty">Sin retrabajos registrados.</div>':`
+    <table><thead><tr><th>Origen</th><th>Severidad</th><th>Responsable</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${retrabajosLista.map(r=>`<tr>
+      <td>${esc(r.origen)}${r.correccion?`<div class="subtle">Corrección: ${esc(r.correccion)}</div>`:''}</td>
+      <td><span class="badge ${r.severidad==='critica'?'rojo':r.severidad==='media'?'ambar':'gris'}">${esc(r.severidad)}</span></td>
+      <td>${esc(r.responsable||'—')}</td>
+      <td><span class="badge ${r.estado==='cerrado'?'verde':'ambar'}">${LABEL_RETRABAJO[r.estado]||r.estado}</span></td>
+      <td>${puedeProduccion?`<button class="btn small secondary" onclick="abrirFormEditarRetrabajo(${r.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeProduccion?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoRetrabajo(${id})">+ Agregar retrabajo</button></div>`:''}`;
+  } else if(state.subtabSiniestro==='calidad'){
+    const puedeCalidad = currentUser && ['beto','orlando','admin','jefe'].includes(currentUser.rol);
+    // Flujo de reparación (31-ago-2026), punto 5 autorizado por Roberto: "el checklist lo puede hacer
+    // cualquiera de oficina" -- Beto sigue siendo el responsable principal, pero ya no es el único que
+    // puede capturar los 7 rubros (a diferencia de "Actualizar estado de calidad", que sigue restringido).
+    const puedeChecklist = currentUser && ['beto','orlando','atencion_cliente','operativo','vanessa','admin','jefe'].includes(currentUser.rol);
+    const puedeEntregaDetalle = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
+    const puedeFiniquito = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
+    const checklist = await api('GET','/api/checklist-calidad?siniestro_id='+id);
+    const valesLista = await api('GET','/api/vales-pendientes?siniestro_id='+id+'&estado=todos').catch(()=>[]);
+    const LABEL_CAL = { en_inspeccion:'En inspección', rechazado_a_retrabajo:'Rechazado a retrabajo', reinspeccion:'Reinspección', liberado:'Liberado' };
+    const LABEL_RES = { pendiente:'Pendiente', aprobado:'Aprobado', rechazado:'Rechazado' };
+    const LABEL_ENTREGA = { listo:'Listo', cita_confirmada:'Cita confirmada', entregado_con_observacion:'Entregado con observación', entregado:'Entregado' };
+    const LABEL_FINIQUITO = { pendiente:'Pendiente', firmado:'Firmado', inconformidad_abierta:'Inconformidad abierta' };
+    const LABEL_ENCUESTA = { pendiente:'Pendiente', enviada:'Enviada', respondida:'Respondida' };
+    body = `
+    <h3>Control de calidad</h3>
+    <table class="kv"><tbody>
+      <tr><td>Estado de calidad</td><td><span class="badge ${s.estado_calidad==='liberado'?'verde':'ambar'}">${esc(LABEL_CAL[s.estado_calidad]||'Sin iniciar')}</span></td></tr>
+    </tbody></table>
+    ${puedeCalidad?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEstadoCalidad(${id})">Actualizar estado de calidad</button></div>`:''}
+
+    <h4 style="margin-top:16px;">Checklist (7 dimensiones)</h4>
+    ${checklist.length===0?'<div class="empty">Sin rubros capturados todavía.</div>':`
+    <table><thead><tr><th>Dimensión</th><th>Resultado</th><th>Hallazgo</th><th>Inspector</th><th></th></tr></thead><tbody>
+    ${checklist.map(c=>`<tr>
+      <td>${esc(c.dimension)}</td>
+      <td><span class="badge ${c.resultado==='aprobado'?'verde':c.resultado==='rechazado'?'rojo':'gris'}">${LABEL_RES[c.resultado]||c.resultado}</span></td>
+      <td>${esc(c.hallazgo||'—')}</td>
+      <td class="subtle">${esc(c.inspector_nombre||'—')}</td>
+      <td>${puedeChecklist?`<button class="btn small secondary" onclick="abrirFormEditarChecklistCalidad(${c.id})">Editar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeChecklist?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoChecklistCalidad(${id})">+ Agregar rubro</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Entrega</h3>
+    <table class="kv"><tbody>
+      <tr><td>Fecha de entrega</td><td>${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</td></tr>
+      <tr><td>Estado de entrega</td><td>${esc(LABEL_ENTREGA[s.estado_entrega]||'—')}</td></tr>
+      <tr><td>Receptor</td><td>${esc(s.entrega_receptor||'—')} ${s.entrega_identificacion?('· '+esc(s.entrega_identificacion)):''}</td></tr>
+      <tr><td>Kilometraje / combustible</td><td>${esc(s.entrega_kilometraje||'—')} ${s.entrega_combustible?('· '+esc(s.entrega_combustible)):''}</td></tr>
+      <tr><td>Llaves entregadas</td><td>${s.entrega_llaves_entregadas?'Sí':'No'}</td></tr>
+      <tr><td>Deducible informado (monto)</td><td>${s.deducible!=null?fmtMoney(s.deducible):'—'}</td></tr>
+      <tr><td>¿Cubre deducible? (validado y en firme)</td><td>${s.cubre_deducible==null?'<span class="badge ambar">Sin validar con la aseguradora</span>':(s.cubre_deducible?'<span class="badge verde">Sí, en firme</span>':'<span class="badge gris">No</span>')}</td></tr>
+      <tr><td>Deducible pagado y confirmado</td><td>${s.deducible_pagado_confirmado_en?`<span class="badge verde">Sí</span> · ${esc(s.deducible_pagado_confirmado_en)}`:'<span class="badge ambar">Aún no</span>'}</td></tr>
+      ${s.aseguradora==='GNP'?`<tr><td>Encuesta GNP solicitada en el momento</td><td>${s.entrega_encuesta_gnp_solicitada?'<span class="badge verde">Sí</span>':'<span class="badge ambar">No</span>'}</td></tr>`:''}
+      <tr><td>Observación</td><td>${esc(s.entrega_observacion||'—')}</td></tr>
+    </tbody></table>
+    <p class="subtle" style="margin-top:6px;">La fecha de entrega se registra con el botón "Registrar entrega" del encabezado. Aquí se captura el detalle (tabla 18 del documento maestro).</p>
+    ${s.aseguradora==='GNP'?'<p class="subtle">Modificación 4 (GNP): el deducible debe quedar pagado y confirmado, idealmente un día antes de la entrega; además, pídele al cliente que revise su correo y conteste ahí mismo la encuesta de satisfacción — quien la contesta después, a solas, tiende a calificar peor.</p>':''}
+    ${puedeEntregaDetalle?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormDetalleEntrega(${id})">Capturar detalle de entrega</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Finiquito y encuesta</h3>
+    <table class="kv"><tbody>
+      <tr><td>Finiquito</td><td><span class="badge ${s.finiquito_estado==='firmado'?'verde':s.finiquito_estado==='inconformidad_abierta'?'rojo':'ambar'}">${esc(LABEL_FINIQUITO[s.finiquito_estado]||'Pendiente')}</span> ${s.finiquito_fecha?('· '+esc(s.finiquito_fecha)):''}</td></tr>
+      <tr><td>Observación de finiquito</td><td>${esc(s.finiquito_observacion||'—')}</td></tr>
+      <tr><td>Encuesta</td><td>${esc(LABEL_ENCUESTA[s.encuesta_estado]||'Pendiente')} ${s.encuesta_calificacion!=null?('· calificación '+s.encuesta_calificacion):''}</td></tr>
+      <tr><td>Comentarios de encuesta</td><td>${esc(s.encuesta_comentarios||'—')}</td></tr>
+    </tbody></table>
+    ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormFiniquito(${id})">Actualizar finiquito / encuesta</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Seguimiento posventa</h3>
+    <p class="subtle">Modificación 4: llamada de seguimiento 2-3 días después de la entrega (importa especialmente con MAPFRE, GNP y AFIRME, que envían encuesta de satisfacción al cliente).</p>
+    <table class="kv"><tbody>
+      <tr><td>Programado para</td><td>${esc(s.postventa_programada||'—')}</td></tr>
+      <tr><td>Resultado del contacto</td><td>${s.postventa_resultado==='contactado'?'<span class="badge verde">Contactado</span>':s.postventa_resultado==='no_contesta'?'<span class="badge rojo">No contesta</span>':'<span class="badge ambar">Pendiente</span>'}${s.postventa_completada?' · '+esc(s.postventa_completada):''}</td></tr>
+    </tbody></table>
+    ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="registrarPostventa(${id},'contactado')">Marcar contactado</button> <button class="btn small secondary" onclick="registrarPostventa(${id},'no_contesta')">Marcar no contesta</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Vales pendientes</h3>
+    <p class="subtle">Modificación 3: piezas que quedaron pendientes al momento de la entrega (ej. un emblema), con seguimiento periódico para que no se pierdan de vista.</p>
+    ${valesLista.length===0?'<div class="empty">Sin vales pendientes registrados.</div>':`
+    <table><thead><tr><th>Pieza pendiente</th><th>F. entrega vehículo</th><th>F. estimada llegada</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${valesLista.map(v=>`<tr>
+      <td>${esc(v.pieza_pendiente)}${v.notas?`<div class="subtle">${esc(v.notas)}</div>`:''}</td>
+      <td>${esc(v.fecha_entrega_vehiculo||'—')}</td>
+      <td>${esc(v.fecha_estimada_llegada||'—')}</td>
+      <td><span class="badge ${v.estado==='surtido'?'verde':v.estado==='cancelado'?'gris':'ambar'}">${esc(v.estado)}</span></td>
+      <td>${v.estado==='pendiente'?`<button class="btn small secondary" onclick="abrirFormEditarVale(${v.id})">Actualizar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoVale(${id})">+ Registrar vale pendiente</button></div>`;
+  } else if(state.subtabSiniestro==='pedidos'){
+    body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th></th></tr></thead><tbody>
+    ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}<div class="subtle" style="font-size:11px;">${p.estatus_inpart_actualizado_en?'Actualizado: '+fmtFechaHora(p.estatus_inpart_actualizado_en):'Sin fecha de última actualización de Inpart'}</div></td><td>
+      <select onchange="cambiarEstatusOperativo(${p.id}, this.value, '${esc(p.estatus_operativo)}', this)">${ESTATUS_OPERATIVO.map(e=>`<option ${e===p.estatus_operativo?'selected':''}>${e}</option>`).join('')}</select>
+    </td>
+    <td><button class="btn small" onclick="abrirGenerador(${p.id})">Generar correo</button></td></tr>`).join('')}
+    </tbody></table>
+    ${peds.length===0?'<div class="empty">Este siniestro todavía no tiene pedidos.</div>':''}`;
+  } else if(state.subtabSiniestro==='piezas'){
+    let allz = [];
+    for(const p of peds){ const zs = await api('GET','/api/piezas?pedido_id='+p.id); zs.forEach(z=>allz.push({z,p})); }
+    const proveedoresNombre = {};
+    (await api('GET','/api/proveedores')).forEach(pv=>{ proveedoresNombre[pv.id] = pv.razon_social; });
+    const discrepancias = await api('GET','/api/discrepancias-proveedor?siniestro_id='+id);
+    body = `<table><thead><tr><th>Pedido</th><th>Pieza</th><th>Proveedor</th><th>F. prometida</th><th>Estatus</th><th>Recepción</th><th></th></tr></thead><tbody>
+    ${allz.map(o=>`<tr>
+      <td>${esc(o.p.numero)}</td><td>${esc(o.z.descripcion)}${o.z.observaciones?`<div class="subtle">${esc(o.z.observaciones)}</div>`:''}</td>
+      <td>${o.z.proveedor_id?esc(proveedoresNombre[o.z.proveedor_id]||('#'+o.z.proveedor_id)):'<span class="badge ambar">Por asignar</span>'}</td>
+      <td>${esc(o.z.fecha_prometida||'')}</td>
+      <td>${esc(etiquetaEstatusPieza(o.z.estatus))}</td>
+      <td>${o.z.fecha_recepcion?fmtFechaHora(o.z.fecha_recepcion):'—'}</td>
+      <td>
+        ${!['Recibida físicamente','Cancelada'].includes(o.z.estatus)?`<button class="btn small secondary" onclick="marcarRecibida(${o.z.id})">Marcar recibida</button>`:''}
+        <button class="btn small secondary" onclick="abrirFormIncidencia(${o.z.id})">Incidencia</button>
+        <button class="btn small secondary" onclick="abrirFormEditarPieza(${o.z.id})">Editar</button>
+      </td>
+    </tr>`).join('')}
+    </tbody></table>
+    ${peds.length>0?`<div style="margin-top:10px"><select id="piezaPedidoSel">${peds.map(p=>`<option value="${p.id}">Pedido ${esc(p.numero)}</option>`).join('')}</select> <button class="btn small" onclick="abrirFormNuevaPieza()">+ Agregar pieza</button></div>`:'<div class="empty">Da de alta un pedido primero para poder agregar piezas.</div>'}
+    <h4 style="margin-top:20px;">Discrepancias con proveedor</h4>
+    <p class="subtle">Cuando un proveedor marca una pieza "entregada" en Impart sin haberla enviado (Modificación 2, 28-ago-2026): queda el respaldo de la fecha que marcó el sistema vs. la fecha real de llegada, para responder a la aseguradora.</p>
+    ${discrepancias.length===0?'<div class="empty">Sin discrepancias registradas.</div>':`
+    <table><thead><tr><th>Descripción</th><th>F. marcado entregado</th><th>F. real / no llegó</th><th>Correo avisado</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${discrepancias.map(d=>`<tr>
+      <td>${esc(d.descripcion)}${d.proveedor_nombre?`<div class="subtle">${esc(d.proveedor_nombre)}</div>`:''}</td>
+      <td>${esc(d.fecha_marcado_entregado||'—')}</td>
+      <td>${d.no_llego?'<span class="badge rojo">No llegó</span>':esc(d.fecha_real_llegada||'—')}</td>
+      <td>${esc(d.correo_enviado_en||'—')}</td>
+      <td><span class="badge ${d.estado==='resuelta'?'verde':'ambar'}">${esc(d.estado)}</span></td>
+      <td>${d.estado==='abierta'?`<button class="btn small secondary" onclick="abrirFormEditarDiscrepancia(${d.id})">Actualizar</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaDiscrepancia(${id})">+ Registrar discrepancia</button></div>`;
+  } else if(state.subtabSiniestro==='incidencias'){
+    let todas = [];
+    for(const p of peds){ const zs = await api('GET','/api/piezas?pedido_id='+p.id); for(const z of zs){ const incs = await api('GET','/api/incidencias?pieza_id='+z.id); incs.forEach(i=>todas.push({i,z,p})); } }
+    body = todas.length===0?'<div class="empty">Sin incidencias registradas para este siniestro.</div>':`
+    <table><thead><tr><th>Pieza</th><th>Tipo</th><th>Acción</th><th>Fecha compromiso</th><th>Estado</th><th>Resolución</th><th></th></tr></thead><tbody>
+    ${todas.map(o=>`<tr>
+      <td>${esc(o.z.descripcion)}</td><td>${esc(o.i.tipo)}</td><td>${esc(o.i.accion_solicitada||'—')}</td><td>${esc(o.i.fecha_compromiso||'—')}</td>
+      <td><span class="badge ${o.i.estado==='abierta'?'rojo':o.i.estado==='resuelta'?'verde':'ambar'}">${esc(o.i.estado)}</span></td>
+      <td>${esc(o.i.resolucion||'—')}</td>
+      <td>${o.i.estado==='abierta'||o.i.estado==='en_proceso'?`<button class="btn small secondary" onclick="abrirFormResolverIncidencia(${o.i.id})">Resolver</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+  } else if(state.subtabSiniestro==='comunicaciones'){
+    let todas = [];
+    for(const p of peds){ const cs = await api('GET','/api/comunicaciones?pedido_id='+p.id); cs.forEach(c=>todas.push(c)); }
+    body = `<table><thead><tr><th>Fecha</th><th>Asunto</th><th>Destinatario</th><th>Respuesta</th><th></th></tr></thead><tbody>
+    ${todas.length===0?'<tr><td colspan="5" class="empty">Sin comunicaciones registradas.</td></tr>':todas.map(c=>`<tr>
+      <td>${fmtFechaHora(c.fecha_envio)}</td><td>${esc(c.asunto)}</td><td>${esc(c.destinatarios)}</td>
+      <td>${c.respuesta_texto?esc(c.respuesta_texto):'<span class="badge ambar">Pendiente</span>'}</td>
+      <td>${!c.respuesta_texto?`<button class="btn small secondary" onclick="abrirFormRespuesta(${c.id})">Registrar respuesta</button>`:''}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+  } else if(state.subtabSiniestro==='archivos'){
+    const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
+    const papelera = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id+'&incluir_eliminados=1');
+    const enPapelera = papelera.filter(a=>a.eliminado);
+    body = `<table><thead><tr><th>Tipo</th><th>Nombre</th><th>Versión</th><th>Fecha</th><th></th></tr></thead><tbody>
+    ${archivos.length===0?'<tr><td colspan="5" class="empty">Sin archivos.</td></tr>':archivos.map(a=>`<tr><td>${esc(a.tipo)}</td><td>${esc(a.nombre_original)}</td><td>v${a.version}</td><td>${fmtFechaHora(a.creado_en)}</td><td>
+      <a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Descargar</a>
+      <button class="btn small secondary" onclick="abrirFormSustituirArchivo(${a.id})">Sustituir</button>
+      <button class="btn small danger" onclick="eliminarArchivo(${a.id})">Eliminar</button>
+    </td></tr>`).join('')}
+    </tbody></table>
+    <form id="formArchivo" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;" onsubmit="return subirArchivo(event, ${id})">
+      <input type="file" id="archivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.xlsx,.xls,.csv" required>
+      <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option><option value="orden_admision">Orden de admisión</option><option value="inventario_fisico">Inventario físico/fotográfico</option><option value="presupuesto_autosurtido">Presupuesto autosurtido (Excel)</option></select>
+      <button class="btn small" type="submit">Subir archivo real</button>
+    </form>
+    ${enPapelera.length>0?`<h4 style="margin-top:16px;">Papelera (${enPapelera.length})</h4>
+    <table><thead><tr><th>Nombre</th><th>Eliminado</th><th></th></tr></thead><tbody>
+    ${enPapelera.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.eliminado_en)}</td><td><button class="btn small secondary" onclick="restaurarArchivo(${a.id})">Restaurar</button></td></tr>`).join('')}
+    </tbody></table>`:''}`;
+  } else if(state.subtabSiniestro==='timeline'){
+    const eventos = await api('GET','/api/auditoria?entidad_tipo=siniestro&entidad_id='+id);
+    let pedEventos = [];
+    for(const p of peds){ const e = await api('GET','/api/auditoria?entidad_tipo=pedido&entidad_id='+p.id); pedEventos.push(...e); }
+    const todos = [...eventos, ...pedEventos].sort((a,b)=> b.id - a.id);
+    body = todos.length===0?'<div class="empty">Sin eventos.</div>':`<ul class="timeline">${todos.map(e=>`<li><b>${fmtFechaHora(e.fecha)}</b> — ${esc(LABEL_ACCION[e.accion]||e.accion)}${e.campo?` (${esc(LABEL_CAMPO[e.campo]||e.campo)}: ${esc(e.valor_anterior)} → ${esc(e.valor_nuevo)})`:e.valor_nuevo?': '+esc(e.valor_nuevo):''} <span class="subtle">(${esc(e.usuario_nombre)})</span></li>`).join('')}</ul>`;
+  }
+
+  const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
+  const puedeEntregar = currentUser && ['operativo','atencion_cliente','admin'].includes(currentUser.rol);
+  return `
+  <button class="btn ghost small no-print" onclick="goTo(state.origenSiniestro||'inicio')">← Volver</button>
+  <div class="section" style="margin-top:10px;">
+    ${s.completo===0?`<div class="banner ambar">Este siniestro está <b>Pendiente de completar</b> (faltan vehículo o placas). <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Completar datos</button></div>`:''}
+    ${s.estatus_general==='Cerrado'?`<div class="banner verde">Siniestro cerrado.</div>`:''}
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div>
+        <h2 style="margin-bottom:2px;">Siniestro ${esc(s.numero)} <span class="badge azul">${esc(s.aseguradora)}</span> <span class="badge ${s.estatus_general==='Cerrado'?'verde':'gris'}">${esc(s.estatus_general)}</span></h2>
+        <p class="subtle">${esc(s.vehiculo||'')} ${esc(s.anio_modelo||'')} · Placas ${esc(s.placas||'')} · Ingreso: ${esc(s.fecha_ingreso||'')} · Responsable: ${esc(s.responsable||'')}</p>
+        ${s.cliente_nombre?`<p class="subtle">Cliente: ${esc(s.cliente_nombre)}${s.cliente_telefono?' · '+esc(s.cliente_telefono):''}${s.etapa_actual?' · Etapa: '+esc(s.etapa_actual):''}</p>`:''}
+        <p class="subtle">Entrega de unidad: ${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</p>
+        <p class="subtle" style="margin-top:4px;">${renderSemaforo(s.semaforo)}</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+        ${puedeEntregar && s.estatus_general!=='Cerrado'?`<button class="btn small secondary" onclick="abrirFormEntrega(${s.id})">${s.fecha_entrega_real?'Editar entrega':'Registrar entrega'}</button>`:''}
+        ${puedeCerrar && s.estatus_general!=='Cerrado'?`<button class="btn small" onclick="intentarCerrarSiniestro(${s.id})">Cerrar siniestro</button>`:''}
+        <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Editar</button>
+      </div>
+    </div>
+  </div>
+  <div class="tabs-sub no-print">${subtabs.map(t=>`<button class="${state.subtabSiniestro===t[0]?'active':''}" onclick="setSubtabSiniestro('${t[0]}')">${t[1]}</button>`).join('')}</div>
+  <div class="section">${body}</div>`;
+}
+function abrirFormEntrega(siniestroId){
+  showModal(`
+    <h3>Registrar entrega de la unidad</h3>
+    <div class="field"><label>Fecha de entrega</label><input id="fent_fecha" type="date" value="${todayISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEntrega(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarEntrega(siniestroId){
+  const fecha = document.getElementById('fent_fecha').value;
+  if(!fecha){ toast('Indica la fecha de entrega.', 'error'); return; }
+  try{
+    await api('PATCH', `/api/siniestros/${siniestroId}/entrega`, { fecha_entrega_real: fecha });
+    toast('Entrega registrada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+// Proceso_Completo_Servicio_Cristian.docx (sección 2): "Alejandra elabora un inventario manual del
+// vehículo y se lo entrega al cliente" -- se genera ya llenado con lo capturado en admisión (kilometraje,
+// combustible, llaves, pertenencias) en una ventana limpia para imprimir/firmar, en vez de escribirlo a
+// mano aparte. Esto es evidencia adicional; el requisito de subir el inventario ya existía (tipo
+// 'inventario_fisico' en Archivos) y sigue igual.
+async function imprimirInventarioFisico(siniestroId){
+  const s = await api('GET','/api/siniestros/'+siniestroId);
+  const hoy = new Date().toLocaleString('es-MX');
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Inventario físico — ${esc(s.numero)}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;padding:24px;color:#111;}
+      h1{font-size:18px;margin-bottom:4px;} h2{font-size:14px;color:#444;margin-top:0;}
+      table{width:100%;border-collapse:collapse;margin-top:16px;}
+      td,th{border:1px solid #ccc;padding:8px;text-align:left;font-size:13px;}
+      th{background:#f2f2f2;width:35%;}
+      .firma{margin-top:60px;display:flex;justify-content:space-between;}
+      .firma div{width:45%;border-top:1px solid #333;text-align:center;padding-top:6px;font-size:12px;}
+    </style></head><body>
+    <h1>Servicio Cristian — Inventario físico de recepción</h1>
+    <h2>Generado ${esc(hoy)}</h2>
+    <table>
+      <tr><th>Siniestro</th><td>${esc(s.numero)} · ${esc(s.aseguradora)}</td></tr>
+      <tr><th>Vehículo</th><td>${esc(s.vehiculo||'—')} ${s.anio_modelo?('· '+esc(s.anio_modelo)):''}</td></tr>
+      <tr><th>Placas / VIN</th><td>${esc(s.placas||'—')} ${s.vin?('· VIN '+esc(s.vin)):''}</td></tr>
+      <tr><th>Tipo de ingreso</th><td>${s.ingreso_tipo==='grua'?'Grúa (no circula)':s.ingreso_tipo==='circulando'?'Circulando':s.ingreso_tipo==='permanece'?'Se queda todo el proceso':'Sin definir'}</td></tr>
+      <tr><th>Fecha de admisión</th><td>${esc(s.fecha_admision||'—')}</td></tr>
+      <tr><th>Kilometraje</th><td>${esc(s.kilometraje||'—')}</td></tr>
+      <tr><th>Nivel de combustible</th><td>${esc(s.combustible_nivel||'—')}</td></tr>
+      <tr><th>Llaves entregadas</th><td>${s.llaves_entregadas?'Sí':'No'}</td></tr>
+      ${s.requiere_dado_seguridad?`<tr><th>Dado de seguridad</th><td>${s.dado_seguridad_colocado?'Colocado':'Pendiente de colocar'}</td></tr>`:''}
+      <tr><th>Pertenencias dentro del vehículo</th><td>${esc(s.pertenencias||'Sin pertenencias registradas')}</td></tr>
+    </table>
+    <div class="firma">
+      <div>Firma del cliente</div>
+      <div>Firma de Servicio Cristian</div>
+    </div>
+    </body></html>`;
+  const ventana = window.open('', '_blank', 'width=800,height=900');
+  if(!ventana){ toast('El navegador bloqueó la ventana de impresión; permite pop-ups para este sitio.', 'warn'); return; }
+  ventana.document.write(html);
+  ventana.document.close();
+  ventana.focus();
+  setTimeout(()=>ventana.print(), 300);
+}
+// Documento de Alejandra (2-sep-2026): "Operador de grúa"/"Hora de grúa" solo se piden si la unidad
+// llega en horario hábil (L-V 9:00-18:00, sábado 9:00-14:00, domingo cerrado).
+function dentroHorarioHabilGrua(){
+  const d = new Date();
+  const dia = d.getDay(); // 0=domingo ... 6=sábado
+  const hora = d.getHours() + d.getMinutes()/60;
+  if(dia === 0) return false;
+  if(dia === 6) return hora >= 9 && hora < 14;
+  return dia >= 1 && dia <= 5 && hora >= 9 && hora < 18;
+}
+function abrirFormAdmision(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    const dadoValor = !s.requiere_dado_seguridad ? 'no_lleva' : (s.dado_seguridad_colocado ? 'si' : 'no');
+    const mostrarGrua = s.ingreso_tipo === 'grua' && dentroHorarioHabilGrua();
+    showModal(`
+      <h3>Recepción y admisión</h3>
+      <div class="row-flex">
+        <div class="field"><label>Ingreso</label><select id="fad_ingreso_tipo">
+          <option value="" ${!s.ingreso_tipo?'selected':''}>Sin definir</option>
+          <option value="circulando" ${s.ingreso_tipo==='circulando'?'selected':''}>Circulando</option>
+          <option value="grua" ${s.ingreso_tipo==='grua'?'selected':''}>Grúa</option>
+          <option value="permanece" ${s.ingreso_tipo==='permanece'?'selected':''}>Se queda todo el proceso</option>
+        </select></div>
+        <div class="field"><label>¿Es seguro que circule?</label><select id="fad_ingreso_seguro">
+          <option value="" ${s.ingreso_seguro===null||s.ingreso_seguro===undefined?'selected':''}>Sin definir</option>
+          <option value="1" ${s.ingreso_seguro===1?'selected':''}>Sí</option>
+          <option value="0" ${s.ingreso_seguro===0?'selected':''}>No</option>
+        </select></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Cita</label><input id="fad_cita_fecha" type="date" value="${esc(s.cita_fecha||'')}"></div>
+        <div class="field"><label>Fecha de admisión</label>${s.fecha_admision
+          ? `<div>${esc(s.fecha_admision)} <span class="subtle">(ya registrada)</span></div>`
+          : `<button type="button" class="btn small secondary" onclick="marcarFechaAdmisionHoy(${siniestroId})">Marcar como recibido hoy</button>`}</div>
+      </div>
+      <div class="row-flex" id="fad_grua_wrap" style="display:${mostrarGrua?'flex':'none'}">
+        <div class="field"><label>Operador de grúa</label><input id="fad_grua_operador" value="${esc(s.grua_operador||'')}"></div>
+        <div class="field"><label>Hora de grúa</label><input id="fad_grua_hora" type="time" value="${esc(s.grua_hora||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Kilometraje</label><input id="fad_kilometraje" value="${esc(s.kilometraje||'')}"></div>
+        <div class="field"><label>Nivel de combustible</label><input id="fad_combustible" value="${esc(s.combustible_nivel||'')}" placeholder="Ej. 1/2"></div>
+      </div>
+      <div class="field"><label>Dado de seguridad</label><select id="fad_dado_seguridad">
+        <option value="no_lleva" ${dadoValor==='no_lleva'?'selected':''}>No lleva</option>
+        <option value="si" ${dadoValor==='si'?'selected':''}>Sí (colocado)</option>
+        <option value="no" ${dadoValor==='no'?'selected':''}>No (falta colocar)</option>
+      </select></div>
+      <div class="field"><label>Pertenencias del vehículo</label><textarea id="fad_pertenencias">${esc(s.pertenencias||'')}</textarea></div>
+      <div class="field"><label>Estado de admisión</label><select id="fad_estado_admision" onchange="document.getElementById('fad_motivo_wrap').style.display=(this.value==='condicionado'||this.value==='no_admitido')?'block':'none'">
+        <option value="" ${!s.estado_admision?'selected':''}>Pendiente</option>
+        <option value="admitido" ${s.estado_admision==='admitido'?'selected':''}>Admitido</option>
+        <option value="condicionado" ${s.estado_admision==='condicionado'?'selected':''}>Condicionado por faltante</option>
+        <option value="no_admitido" ${s.estado_admision==='no_admitido'?'selected':''}>No admitido</option>
+      </select></div>
+      <div id="fad_motivo_wrap" class="field" style="display:${['condicionado','no_admitido'].includes(s.estado_admision)?'block':'none'}"><label>Motivo</label><textarea id="fad_motivo_admision">${esc(s.motivo_admision||'')}</textarea></div>
+      <div class="field"><label><input id="fad_whatsapp" type="checkbox" ${s.grupo_whatsapp_creado?'checked':''}> Grupo de WhatsApp ya creado</label></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarAdmision(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function marcarFechaAdmisionHoy(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { fecha_admision: new Date().toISOString().slice(0,10) });
+    toast('Fecha de admisión registrada.', 'success');
+    abrirFormAdmision(siniestroId);
+  }catch(e){}
+}
+async function guardarAdmision(siniestroId){
+  const dadoSeguridad = document.getElementById('fad_dado_seguridad').value;
+  const payload = {
+    ingreso_tipo: document.getElementById('fad_ingreso_tipo').value,
+    ingreso_seguro: document.getElementById('fad_ingreso_seguro').value === '' ? null : Number(document.getElementById('fad_ingreso_seguro').value),
+    cita_fecha: document.getElementById('fad_cita_fecha').value,
+    grua_operador: document.getElementById('fad_grua_operador') ? document.getElementById('fad_grua_operador').value : '',
+    grua_hora: document.getElementById('fad_grua_hora') ? document.getElementById('fad_grua_hora').value : '',
+    kilometraje: document.getElementById('fad_kilometraje').value,
+    combustible_nivel: document.getElementById('fad_combustible').value,
+    // Dado de seguridad (documento de Alejandra, 2-sep-2026): 1 campo de 3 opciones en la pantalla, que
+    // aquí se traduce a las 2 columnas reales que ya existían (requiere_dado_seguridad + dado_seguridad_colocado).
+    requiere_dado_seguridad: dadoSeguridad === 'no_lleva' ? 0 : 1,
+    dado_seguridad_colocado: dadoSeguridad === 'si' ? 1 : 0,
+    pertenencias: document.getElementById('fad_pertenencias').value,
+    estado_admision: document.getElementById('fad_estado_admision').value,
+    motivo_admision: document.getElementById('fad_motivo_admision').value,
+    grupo_whatsapp_creado: document.getElementById('fad_whatsapp').checked ? 1 : 0
+  };
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, payload);
+    toast('Admisión actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormRevisionTecnica(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Revisión técnica</h3>
+      <div class="field"><label>Estado de revisión</label><select id="frt_estado">
+        <option value="" ${!s.estado_revision_tecnica?'selected':''}>Sin iniciar</option>
+        <option value="en_revision" ${s.estado_revision_tecnica==='en_revision'?'selected':''}>En revisión</option>
+        <option value="requiere_desarme" ${s.estado_revision_tecnica==='requiere_desarme'?'selected':''}>Requiere desarme</option>
+        <option value="revision_terminada" ${s.estado_revision_tecnica==='revision_terminada'?'selected':''}>Revisión terminada</option>
+      </select></div>
+      <div class="field"><label>Estado de evidencia</label><select id="frt_evidencia">
+        <option value="" ${!s.estado_evidencia?'selected':''}>Sin definir</option>
+        <option value="evidencia_completa" ${s.estado_evidencia==='evidencia_completa'?'selected':''}>Evidencia completa</option>
+        <option value="desarme_parcial" ${s.estado_evidencia==='desarme_parcial'?'selected':''}>Desarme parcial</option>
+        ${s.estado_evidencia==='dano_oculto_detectado'?`<option value="dano_oculto_detectado" selected>Daño oculto detectado (valor anterior -- ya no se puede volver a elegir aquí)</option>`:''}
+      </select></div>
+      <!-- Corrección de Orlando (documento PORTAL SC, 8-sep-2026): "la opción de daño oculto en este panel,
+           cómo aplicaría? se supone que un daño oculto es durante la reparación que requiera mandar
+           evidencia autorizable a la aseguradora -- favor de eliminar de este listado, y colocarla en el
+           lugar correcto: durante el proceso de producción." Esa opción correcta ya existe -- el botón
+           "+ Agregar complemento" (daño oculto) de la sección de Producción, visible solo para quien
+           puede capturar producción, que registra causa/fecha/pieza/importe/impacto y sigue el flujo real
+           de complementos hacia la aseguradora. Aquí, en Revisión técnica (captura inicial de Orlando),
+           ya no se puede ELEGIR "Daño oculto detectado" -- si un expediente antiguo ya lo tenía guardado,
+           se sigue mostrando (no se pierde el dato), pero no puede volver a seleccionarse.
+      <div class="field"><label>¿Riesgo de seguridad (vehículo no seguro)?</label><select id="frt_riesgo" onchange="document.getElementById('frt_riesgo_motivo_wrap').style.display=this.value==='1'?'block':'none'">
+        <option value="0" ${!s.riesgo_seguridad?'selected':''}>No</option>
+        <option value="1" ${s.riesgo_seguridad?'selected':''}>Sí</option>
+      </select></div>
+      <div id="frt_riesgo_motivo_wrap" class="field" style="display:${s.riesgo_seguridad?'block':'none'}"><label>Motivo técnico del riesgo</label><textarea id="frt_riesgo_motivo">${esc(s.riesgo_seguridad_motivo||'')}</textarea></div>
+      <div class="field"><label>Tipo reparación</label><select id="frt_tipo_reparacion">
+        <option value="" ${!s.tipo_reparacion?'selected':''}>Sin definir</option>
+        <option value="TRADICIONAL" ${s.tipo_reparacion==='TRADICIONAL'?'selected':''}>Tradicional</option>
+        <option value="EXPRES" ${s.tipo_reparacion==='EXPRES'?'selected':''}>Exprés</option>
+        <option value="AUTO_SURTIDO" ${s.tipo_reparacion==='AUTO_SURTIDO'?'selected':''}>Auto surtido</option>
+        <option value="BDEO" ${s.tipo_reparacion==='BDEO'?'selected':''}>BDEO</option>
+        <option value="PDD" ${s.tipo_reparacion==='PDD'?'selected':''}>PDD</option>
+        <option value="CE" ${s.tipo_reparacion==='CE'?'selected':''}>CE</option>
+      </select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarRevisionTecnica(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarRevisionTecnica(siniestroId){
+  const payload = {
+    estado_revision_tecnica: document.getElementById('frt_estado').value,
+    estado_evidencia: document.getElementById('frt_evidencia').value,
+    riesgo_seguridad: Number(document.getElementById('frt_riesgo').value),
+    riesgo_seguridad_motivo: document.getElementById('frt_riesgo_motivo').value,
+    tipo_reparacion: document.getElementById('frt_tipo_reparacion').value
+  };
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, payload);
+    toast('Revisión técnica actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+async function abrirFormNuevoHallazgo(siniestroId){
+  const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+siniestroId);
+  showModal(`
+    <h3>Agregar hallazgo</h3>
+    <div class="row-flex">
+      <div class="field"><label>Zona / pieza</label><input id="fh_zona" placeholder="Ej. puerta delantera derecha"></div>
+      <div class="field"><label>Tipo de daño</label><input id="fh_tipo"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Visibilidad</label><select id="fh_visibilidad"><option value="visible">Visible</option><option value="oculto">Oculto</option></select></div>
+      <div class="field"><label>¿Relacionado con el siniestro?</label><select id="fh_relacionado"><option value="1">Sí</option><option value="0">No</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Severidad</label><input id="fh_severidad" placeholder="Leve / media / severa"></div>
+      <div class="field"><label>Operación preliminar</label><input id="fh_operacion"></div>
+    </div>
+    <div class="field"><label>Foto asociada (opcional, ya subida en Archivos)</label><select id="fh_archivo">
+      <option value="">Sin foto</option>
+      ${archivos.map(a=>`<option value="${a.id}">${esc(a.nombre_original)}</option>`).join('')}
+    </select></div>
+    <div class="field"><label>Observaciones</label><textarea id="fh_observaciones"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoHallazgo(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoHallazgo(siniestroId){
+  const zona = document.getElementById('fh_zona').value.trim();
+  if(!zona){ toast('Indica la zona o pieza afectada.', 'error'); return; }
+  try{
+    await api('POST','/api/danos-evidencia', {
+      siniestro_id: siniestroId, zona_pieza: zona, tipo_dano: document.getElementById('fh_tipo').value,
+      visibilidad: document.getElementById('fh_visibilidad').value, relacionado: Number(document.getElementById('fh_relacionado').value),
+      severidad: document.getElementById('fh_severidad').value, operacion_preliminar: document.getElementById('fh_operacion').value,
+      archivo_id: document.getElementById('fh_archivo').value || null, observaciones: document.getElementById('fh_observaciones').value
+    });
+    toast('Hallazgo agregado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarHallazgo(hallazgoId){
+  const todos = await api('GET','/api/danos-evidencia');
+  const h = todos.find(x=>x.id===hallazgoId);
+  if(!h){ toast('Hallazgo no encontrado.', 'error'); return; }
+  const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+h.siniestro_id);
+  showModal(`
+    <h3>Editar hallazgo</h3>
+    <div class="row-flex">
+      <div class="field"><label>Zona / pieza</label><input id="fhe_zona" value="${esc(h.zona_pieza)}"></div>
+      <div class="field"><label>Tipo de daño</label><input id="fhe_tipo" value="${esc(h.tipo_dano||'')}"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Visibilidad</label><select id="fhe_visibilidad">
+        <option value="visible" ${h.visibilidad==='visible'?'selected':''}>Visible</option>
+        <option value="oculto" ${h.visibilidad==='oculto'?'selected':''}>Oculto</option>
+      </select></div>
+      <div class="field"><label>¿Relacionado?</label><select id="fhe_relacionado">
+        <option value="1" ${h.relacionado?'selected':''}>Sí</option>
+        <option value="0" ${!h.relacionado?'selected':''}>No</option>
+      </select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Severidad</label><input id="fhe_severidad" value="${esc(h.severidad||'')}"></div>
+      <div class="field"><label>Operación preliminar</label><input id="fhe_operacion" value="${esc(h.operacion_preliminar||'')}"></div>
+    </div>
+    <div class="field"><label>Foto asociada</label><select id="fhe_archivo">
+      <option value="">Sin foto</option>
+      ${archivos.map(a=>`<option value="${a.id}" ${h.archivo_id===a.id?'selected':''}>${esc(a.nombre_original)}</option>`).join('')}
+    </select></div>
+    <div class="field"><label>Observaciones</label><textarea id="fhe_observaciones">${esc(h.observaciones||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionHallazgo(${hallazgoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionHallazgo(hallazgoId){
+  const zona = document.getElementById('fhe_zona').value.trim();
+  if(!zona){ toast('Indica la zona o pieza afectada.', 'error'); return; }
+  try{
+    await api('PATCH','/api/danos-evidencia/'+hallazgoId, {
+      zona_pieza: zona, tipo_dano: document.getElementById('fhe_tipo').value,
+      visibilidad: document.getElementById('fhe_visibilidad').value, relacionado: Number(document.getElementById('fhe_relacionado').value),
+      severidad: document.getElementById('fhe_severidad').value, operacion_preliminar: document.getElementById('fhe_operacion').value,
+      archivo_id: document.getElementById('fhe_archivo').value || null, observaciones: document.getElementById('fhe_observaciones').value
+    });
+    toast('Hallazgo actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormExpedienteDigital(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar expediente digital</h3>
+      <div class="field"><label>Estado del expediente</label><select id="fex_estado">
+        <option value="" ${!s.estado_expediente?'selected':''}>Sin iniciar</option>
+        <option value="en_captura" ${s.estado_expediente==='en_captura'?'selected':''}>En captura</option>
+        <option value="incompleto" ${s.estado_expediente==='incompleto'?'selected':''}>Incompleto</option>
+        <option value="listo_para_valuacion" ${s.estado_expediente==='listo_para_valuacion'?'selected':''}>Listo para valuación</option>
+      </select></div>
+      <div class="field"><label>Sistema de valuación</label><select id="fex_sistema">
+        <option value="" ${!s.sistema_valuacion?'selected':''}>Sin definir</option>
+        <option value="ACG" ${s.sistema_valuacion==='ACG'?'selected':''}>ACG</option>
+        <option value="BDEO" ${s.sistema_valuacion==='BDEO'?'selected':''}>BDEO</option>
+        <option value="Sistema propio (Zurich)" ${s.sistema_valuacion==='Sistema propio (Zurich)'?'selected':''}>Sistema propio (Zurich)</option>
+      </select><p class="subtle" style="margin:4px 0 0;">Sugerido según aseguradora; confírmalo o corrígelo si el caso lo requiere.</p></div>
+      <div class="field"><label>Folio de expediente</label><input id="fex_folio" value="${esc(s.expediente_folio||'')}"></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarExpedienteDigital(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarExpedienteDigital(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      estado_expediente: document.getElementById('fex_estado').value,
+      sistema_valuacion: document.getElementById('fex_sistema').value,
+      expediente_folio: document.getElementById('fex_folio').value
+    });
+    toast('Expediente actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede marcar como listo</h3><p class="subtle">Faltan o no son legibles estos documentos:</p><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
+
+async function abrirFormNuevoDocumento(siniestroId){
+  showModal(`
+    <h3>Agregar documento</h3>
+    <div class="row-flex">
+      <div class="field"><label>Tipo de documento</label><input id="fdoc_tipo" placeholder="Ej. tarjeta de circulación, identificación, póliza"></div>
+      <div class="field"><label>Versión</label><input id="fdoc_version" type="number" value="1" min="1"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Estado</label><select id="fdoc_estado">
+        <option value="faltante">Faltante</option><option value="recibido">Recibido</option><option value="no_legible">No legible</option><option value="no_aplica">No aplica</option>
+      </select></div>
+      <div class="field"><label>Folio</label><input id="fdoc_folio"></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="fdoc_notas"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoDocumento(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoDocumento(siniestroId){
+  const tipo = document.getElementById('fdoc_tipo').value.trim();
+  if(!tipo){ toast('Indica el tipo de documento.', 'error'); return; }
+  try{
+    await api('POST','/api/documentos-expediente', {
+      siniestro_id: siniestroId, tipo_documento: tipo, version: Number(document.getElementById('fdoc_version').value)||1,
+      estado: document.getElementById('fdoc_estado').value, folio: document.getElementById('fdoc_folio').value,
+      notas: document.getElementById('fdoc_notas').value
+    });
+    toast('Documento agregado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarDocumento(documentoId){
+  const todos = await api('GET','/api/documentos-expediente');
+  const d = todos.find(x=>x.id===documentoId);
+  if(!d){ toast('Documento no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar documento</h3>
+    <div class="row-flex">
+      <div class="field"><label>Tipo de documento</label><input id="fdoce_tipo" value="${esc(d.tipo_documento)}"></div>
+      <div class="field"><label>Versión</label><input id="fdoce_version" type="number" min="1" value="${d.version}"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Estado</label><select id="fdoce_estado">
+        <option value="faltante" ${d.estado==='faltante'?'selected':''}>Faltante</option>
+        <option value="recibido" ${d.estado==='recibido'?'selected':''}>Recibido</option>
+        <option value="no_legible" ${d.estado==='no_legible'?'selected':''}>No legible</option>
+        <option value="no_aplica" ${d.estado==='no_aplica'?'selected':''}>No aplica</option>
+      </select></div>
+      <div class="field"><label>Folio</label><input id="fdoce_folio" value="${esc(d.folio||'')}"></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="fdoce_notas">${esc(d.notas||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionDocumento(${documentoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionDocumento(documentoId){
+  const tipo = document.getElementById('fdoce_tipo').value.trim();
+  if(!tipo){ toast('Indica el tipo de documento.', 'error'); return; }
+  try{
+    await api('PATCH','/api/documentos-expediente/'+documentoId, {
+      tipo_documento: tipo, version: Number(document.getElementById('fdoce_version').value)||1,
+      estado: document.getElementById('fdoce_estado').value, folio: document.getElementById('fdoce_folio').value,
+      notas: document.getElementById('fdoce_notas').value
+    });
+    toast('Documento actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormValuacion(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar valuación</h3>
+      <p class="subtle">Sistema: ${esc(s.sistema_valuacion||'sin definir en el expediente digital')}</p>
+      <div class="field"><label>Estado de valuación</label><select id="fval_estado">
+        <option value="" ${!s.estado_valuacion?'selected':''}>Sin iniciar</option>
+        <option value="borrador" ${s.estado_valuacion==='borrador'?'selected':''}>Borrador</option>
+        <option value="enviada" ${s.estado_valuacion==='enviada'?'selected':''}>Enviada</option>
+        <option value="observada" ${s.estado_valuacion==='observada'?'selected':''}>Observada</option>
+        <option value="ajustada" ${s.estado_valuacion==='ajustada'?'selected':''}>Ajustada</option>
+        <option value="autorizada_parcial" ${s.estado_valuacion==='autorizada_parcial'?'selected':''}>Autorizada parcial</option>
+        <option value="autorizada_total" ${s.estado_valuacion==='autorizada_total'?'selected':''}>Autorizada total</option>
+        <option value="rechazada" ${s.estado_valuacion==='rechazada'?'selected':''}>Rechazada</option>
+      </select></div>
+      <div class="row-flex">
+        <div class="field"><label>Folio</label><input id="fval_folio" value="${esc(s.valuacion_folio||'')}"></div>
+        <div class="field"><label>Versión</label><input id="fval_version" type="number" min="1" value="${s.valuacion_version||1}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Importe</label><input id="fval_importe" type="number" step="0.01" value="${s.valuacion_importe!=null?s.valuacion_importe:''}"></div>
+        <div class="field"><label>Fecha de envío</label><input id="fval_fecha" type="date" value="${esc(s.valuacion_fecha_envio||'')}"></div>
+      </div>
+      <div class="field"><label>Fecha de regreso (evaluación autorizada)</label><input id="fval_fecha_respuesta" type="date" value="${esc(s.valuacion_fecha_respuesta||'')}"></div>
+      <div class="field"><label>Observaciones</label><textarea id="fval_observaciones">${esc(s.valuacion_observaciones||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarValuacion(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarValuacion(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      estado_valuacion: document.getElementById('fval_estado').value,
+      valuacion_folio: document.getElementById('fval_folio').value,
+      valuacion_version: Number(document.getElementById('fval_version').value)||1,
+      valuacion_importe: document.getElementById('fval_importe').value===''?null:Number(document.getElementById('fval_importe').value),
+      valuacion_fecha_envio: document.getElementById('fval_fecha').value,
+      valuacion_fecha_respuesta: document.getElementById('fval_fecha_respuesta').value,
+      valuacion_observaciones: document.getElementById('fval_observaciones').value
+    });
+    toast('Valuación actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormAutorizacion(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar autorización</h3>
+      <div class="field"><label>Estado de autorización</label><select id="faut_estado">
+        <option value="" ${!s.estado_autorizacion?'selected':''}>Sin iniciar</option>
+        <option value="en_autorizacion" ${s.estado_autorizacion==='en_autorizacion'?'selected':''}>En autorización</option>
+        <option value="autorizada" ${s.estado_autorizacion==='autorizada'?'selected':''}>Autorizada</option>
+        <option value="parcial" ${s.estado_autorizacion==='parcial'?'selected':''}>Parcial</option>
+        <option value="rechazada" ${s.estado_autorizacion==='rechazada'?'selected':''}>Rechazada</option>
+        <option value="por_aclarar" ${s.estado_autorizacion==='por_aclarar'?'selected':''}>Por aclarar</option>
+      </select></div>
+      <div class="field"><label>Piezas autorizadas a cambio</label><input id="faut_piezas" type="number" min="0" value="${s.piezas_autorizadas_cambio!=null?s.piezas_autorizadas_cambio:''}">
+        <p class="subtle" style="margin:4px 0 0;">Con GNP: 1 a 3 piezas activa autosurtido obligatorio; más de 3, Inpart. Se recalcula al guardar.</p></div>
+      <div class="row-flex">
+        <div class="field"><label>Fecha de envío</label><input id="faut_fecha_envio" type="date" value="${esc(s.autorizacion_fecha_envio||'')}"></div>
+        <div class="field"><label>Fecha de respuesta</label><input id="faut_fecha_respuesta" type="date" value="${esc(s.autorizacion_fecha_respuesta||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Autorizador</label><input id="faut_autorizador" value="${esc(s.autorizador||'')}" placeholder="Ajustador / plataforma / propietario"></div>
+        <div class="field"><label>Importe autorizado</label><input id="faut_importe" type="number" step="0.01" value="${s.autorizacion_importe!=null?s.autorizacion_importe:''}"></div>
+      </div>
+      <div class="field"><label>Restricciones</label><textarea id="faut_restricciones">${esc(s.autorizacion_restricciones||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarAutorizacion(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarAutorizacion(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      estado_autorizacion: document.getElementById('faut_estado').value,
+      piezas_autorizadas_cambio: document.getElementById('faut_piezas').value===''?null:Number(document.getElementById('faut_piezas').value),
+      autorizacion_fecha_envio: document.getElementById('faut_fecha_envio').value,
+      autorizacion_fecha_respuesta: document.getElementById('faut_fecha_respuesta').value,
+      autorizador: document.getElementById('faut_autorizador').value,
+      autorizacion_importe: document.getElementById('faut_importe').value===''?null:Number(document.getElementById('faut_importe').value),
+      autorizacion_restricciones: document.getElementById('faut_restricciones').value
+    });
+    toast('Autorización actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormEtapaProduccion(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    // Flujo de reparación (31-ago-2026), punto 6 autorizado por Roberto: en GNP + unidad en piso, la
+    // fecha de entrega la fija el supervisor de la aseguradora y "se debe cumplir sí o sí". Se sugiere
+    // marcado por default en ese caso (editable), pero una vez guardado el candado lo aplica el backend.
+    const yaComprometida = s.entrega_compromiso_gnp === 1;
+    const sugerirGnpPiso = s.aseguradora === 'GNP' && !!s.fecha_admision;
+    const esRoberto = currentUser && ['admin','jefe'].includes(currentUser.rol);
+    const fechaBloqueada = yaComprometida && !esRoberto;
+    showModal(`
+      <h3>Actualizar etapa de producción</h3>
+      <div class="field"><label>Etapa</label><select id="fprod_estado">
+        <option value="" ${!s.estado_produccion?'selected':''}>Sin iniciar</option>
+        <option value="programado" ${s.estado_produccion==='programado'?'selected':''}>Programado</option>
+        <option value="mecanica" ${s.estado_produccion==='mecanica'?'selected':''}>Mecánica</option>
+        <option value="en_laminado" ${s.estado_produccion==='en_laminado'?'selected':''}>Hojalatería</option>
+        <option value="preparacion" ${s.estado_produccion==='preparacion'?'selected':''}>Preparación</option>
+        <option value="pintura" ${s.estado_produccion==='pintura'?'selected':''}>Pintura</option>
+        <option value="armado" ${s.estado_produccion==='armado'?'selected':''}>Armado</option>
+        <option value="pulido" ${s.estado_produccion==='pulido'?'selected':''}>Pulido</option>
+        <option value="lavado" ${s.estado_produccion==='lavado'?'selected':''}>Lavado</option>
+        <option value="detenido" ${s.estado_produccion==='detenido'?'selected':''}>Detenido</option>
+        <option value="terminado" ${s.estado_produccion==='terminado'?'selected':''}>Terminado</option>
+      </select></div>
+      <p class="subtle" style="margin-top:4px;">Orden confirmado por Roberto: mecánica → hojalatería → pintura → armado → pulido → lavado → entrega.</p>
+      <div class="field" style="margin-top:12px;"><label>Fecha de entrega prevista</label><input id="fprod_fecha_entrega" type="date" value="${esc(s.fecha_entrega_prevista||'')}" ${fechaBloqueada?'disabled':''}></div>
+      ${fechaBloqueada?`<p class="subtle" style="color:#b91c1c;">Compromiso obligatorio de GNP establecido el ${esc((s.entrega_compromiso_establecido_en||'').slice(0,10))}. Solo Roberto puede moverla.</p>`:`
+      <label style="display:flex;align-items:center;gap:6px;margin-top:6px;"><input type="checkbox" id="fprod_compromiso_gnp" ${(yaComprometida||sugerirGnpPiso)?'checked':''}> Compromiso obligatorio de GNP (fecha fijada por el supervisor, no se debe mover)</label>`}
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEtapaProduccion(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEtapaProduccion(siniestroId){
+  try{
+    const body = { estado_produccion: document.getElementById('fprod_estado').value };
+    const fechaInput = document.getElementById('fprod_fecha_entrega');
+    if(fechaInput && !fechaInput.disabled) body.fecha_entrega_prevista = fechaInput.value;
+    const compromisoInput = document.getElementById('fprod_compromiso_gnp');
+    if(compromisoInput) body.entrega_compromiso_gnp = compromisoInput.checked ? 1 : 0;
+    await api('PATCH','/api/siniestros/'+siniestroId, body);
+    toast('Etapa de producción actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormNuevaOt(siniestroId){
+  showModal(`
+    <h3>Nueva orden de trabajo</h3>
+    <div class="row-flex">
+      <div class="field"><label>Número de OT</label><input id="fot_numero"></div>
+      <div class="field"><label>Versión</label><input id="fot_version" type="number" min="1" value="1"></div>
+    </div>
+    <div class="field"><label>Alcance autorizado</label><textarea id="fot_alcance"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaOt(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaOt(siniestroId){
+  const numero = document.getElementById('fot_numero').value.trim();
+  if(!numero){ toast('Indica el número de OT.', 'error'); return; }
+  try{
+    await api('POST','/api/ordenes-trabajo', { siniestro_id: siniestroId, numero, version: Number(document.getElementById('fot_version').value)||1, alcance: document.getElementById('fot_alcance').value });
+    toast('OT creada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarOt(otId){
+  const todas = await api('GET','/api/ordenes-trabajo');
+  const ot = todas.find(x=>x.id===otId);
+  if(!ot){ toast('OT no encontrada.', 'error'); return; }
+  showModal(`
+    <h3>Editar OT ${esc(ot.numero)}</h3>
+    <div class="field"><label>Estado</label><select id="fote_estado">
+      <option value="borrador" ${ot.estado==='borrador'?'selected':''}>Borrador</option>
+      <option value="emitida" ${ot.estado==='emitida'?'selected':''}>Emitida</option>
+      <option value="actualizada" ${ot.estado==='actualizada'?'selected':''}>Actualizada</option>
+      <option value="suspendida" ${ot.estado==='suspendida'?'selected':''}>Suspendida</option>
+      <option value="terminada" ${ot.estado==='terminada'?'selected':''}>Terminada</option>
+    </select></div>
+    <div class="field"><label>Alcance autorizado</label><textarea id="fote_alcance">${esc(ot.alcance||'')}</textarea></div>
+    <div class="field"><label>Notas</label><textarea id="fote_notas">${esc(ot.notas||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionOt(${otId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionOt(otId){
+  try{
+    await api('PATCH','/api/ordenes-trabajo/'+otId, { estado: document.getElementById('fote_estado').value, alcance: document.getElementById('fote_alcance').value, notas: document.getElementById('fote_notas').value });
+    toast('OT actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+// Flujo de reparación (31-ago-2026), punto 7 autorizado por Roberto: catálogo fijo de técnicos por área
+// (en vez de texto libre), y el mismo hojalatero pasa a armado / el mismo pintor pasa a pulido de forma
+// automática (sugerida, siempre editable por si de verdad lo hizo alguien más).
+const TECNICOS_POR_AREA = {
+  'Mecánica': ['Jesús Palomares','Proveedor externo'],
+  'Hojalatería': ['Marcelo','José','Vicente','Fernando','Fidel','Jaime'],
+  'Armado': ['Marcelo','José','Vicente','Fernando','Fidel','Jaime'],
+  'Pintura': ['Adrián','Gerardo','Antonio','Ángel','Marco','Ramiro'],
+  'Pulido': ['Adrián','Gerardo','Antonio','Ángel','Marco','Ramiro'],
+  'Lavado': []
+};
+const AREA_HEREDA_TECNICO_DE = { 'Armado':'Hojalatería', 'Pulido':'Pintura' };
+function opcionesTecnicoHtml(area, seleccionado){
+  const lista = TECNICOS_POR_AREA[area] || [];
+  if(!area) return '<option value="">Elige primero el área</option>';
+  if(lista.length===0) return '<option value="">No aplica</option>';
+  const extra = (seleccionado && !lista.includes(seleccionado)) ? `<option value="${esc(seleccionado)}" selected>${esc(seleccionado)} (capturado antes)</option>` : '';
+  return '<option value="">Selecciona…</option>' + extra + lista.map(t=>`<option value="${esc(t)}" ${seleccionado===t?'selected':''}>${esc(t)}</option>`).join('');
+}
+async function actualizarTecnicoPorArea(otId){
+  const area = document.getElementById('fop_area').value;
+  let heredado = '';
+  const areaOrigen = AREA_HEREDA_TECNICO_DE[area];
+  if(areaOrigen && otId){
+    const ops = await api('GET','/api/ot-operaciones?ot_id='+otId);
+    const previa = [...ops].reverse().find(o=>o.area===areaOrigen && o.tecnico);
+    if(previa) heredado = previa.tecnico;
+  }
+  document.getElementById('fop_tecnico').innerHTML = opcionesTecnicoHtml(area, heredado);
+  const aviso = document.getElementById('fop_tecnico_aviso');
+  if(aviso) aviso.textContent = heredado ? `Sugerido: ${heredado} hizo ${areaOrigen.toLowerCase()} en esta misma OT.` : '';
+}
+function abrirFormNuevaOperacion(){
+  const otId = document.getElementById('opOtSel').value;
+  showModal(`
+    <h3>Agregar operación</h3>
+    <div class="field"><label>Descripción</label><input id="fop_desc" placeholder="Ej. cambio de puerta delantera"></div>
+    <div class="row-flex">
+      <div class="field"><label>Pieza</label><input id="fop_pieza"></div>
+      <div class="field"><label>Área</label><select id="fop_area" onchange="actualizarTecnicoPorArea(${otId})">
+        <option value="">Selecciona…</option>
+        ${Object.keys(TECNICOS_POR_AREA).map(a=>`<option value="${a}">${a}</option>`).join('')}
+      </select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Técnico</label><select id="fop_tecnico">${opcionesTecnicoHtml('', '')}</select>
+        <div id="fop_tecnico_aviso" class="subtle"></div>
+      </div>
+      <div class="field"><label>Secuencia</label><input id="fop_secuencia" type="number" min="1"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Horas estimadas</label><input id="fop_horas" type="number" step="0.5"></div>
+      <div class="field"><label>Fecha inicio</label><input id="fop_fecha_inicio" type="date"></div>
+      <div class="field"><label>Fecha fin prevista</label><input id="fop_fecha_fin" type="date"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaOperacion(${otId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaOperacion(otId){
+  const desc = document.getElementById('fop_desc').value.trim();
+  if(!desc){ toast('Describe la operación.', 'error'); return; }
+  try{
+    await api('POST','/api/ot-operaciones', {
+      ot_id: otId, descripcion: desc, pieza: document.getElementById('fop_pieza').value, area: document.getElementById('fop_area').value,
+      tecnico: document.getElementById('fop_tecnico').value, secuencia: document.getElementById('fop_secuencia').value||null,
+      horas_estimadas: document.getElementById('fop_horas').value||null, fecha_inicio: document.getElementById('fop_fecha_inicio').value,
+      fecha_fin_prevista: document.getElementById('fop_fecha_fin').value
+    });
+    toast('Operación agregada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarOperacion(operacionId){
+  const todas = await api('GET','/api/ot-operaciones');
+  const op = todas.find(x=>x.id===operacionId);
+  if(!op){ toast('Operación no encontrada.', 'error'); return; }
+  // Fotos obligatorias por etapa (2-sep-2026): se necesita el siniestro_id de la OT para poder subir
+  // la foto ligada tanto al siniestro (aparece en su galería general) como a esta operación concreta.
+  const ots = await api('GET','/api/ordenes-trabajo');
+  const ot = ots.find(o=>o.id===op.ot_id);
+  const fotos = await api('GET', '/api/archivos?ot_operacion_id=' + operacionId);
+  showModal(`
+    <h3>Editar operación</h3>
+    <div class="field"><label>Descripción</label><input id="fope_desc" value="${esc(op.descripcion)}"></div>
+    <div class="row-flex">
+      <div class="field"><label>Estado</label><select id="fope_estado" onchange="document.getElementById('fope_bloqueo_wrap').style.display=this.value==='detenido'?'block':'none'">
+        <option value="programado" ${op.estado==='programado'?'selected':''}>Programado</option>
+        <option value="en_proceso" ${op.estado==='en_proceso'?'selected':''}>En proceso</option>
+        <option value="detenido" ${op.estado==='detenido'?'selected':''}>Detenido</option>
+        <option value="terminado" ${op.estado==='terminado'?'selected':''}>Terminado</option>
+      </select></div>
+      <div class="field"><label>Avance (%)</label><input id="fope_avance" type="number" min="0" max="100" value="${op.avance}"></div>
+    </div>
+    <div id="fope_bloqueo_wrap" class="field" style="display:${op.estado==='detenido'?'block':'none'}"><label>Causa de bloqueo</label><select id="fope_causa">
+      <option value="">Sin definir</option>
+      <option value="pieza_faltante" ${op.causa_bloqueo==='pieza_faltante'?'selected':''}>Pieza faltante</option>
+      <option value="complemento_pendiente" ${op.causa_bloqueo==='complemento_pendiente'?'selected':''}>Complemento pendiente</option>
+      <option value="capacidad" ${op.causa_bloqueo==='capacidad'?'selected':''}>Capacidad</option>
+      <option value="falla_equipo" ${op.causa_bloqueo==='falla_equipo'?'selected':''}>Falla de equipo</option>
+      <option value="ausencia" ${op.causa_bloqueo==='ausencia'?'selected':''}>Ausencia</option>
+      <option value="retrabajo" ${op.causa_bloqueo==='retrabajo'?'selected':''}>Retrabajo</option>
+    </select></div>
+    <div class="field"><label>Siguiente acción</label><input id="fope_siguiente" value="${esc(op.siguiente_accion||'')}"></div>
+    <div class="field">
+      <label>Fotos de esta etapa ${fotos.length===0?'<span class="badge rojo">Sin fotos — no se podrá marcar Terminado</span>':`<span class="badge verde">${fotos.length}</span>`}</label>
+      <p class="subtle" style="margin:2px 0 6px;">Las aseguradoras las piden para pagar la factura. Súbelas aquí en el momento, no al final.</p>
+      ${fotos.length>0?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">${fotos.map(f=>`<a class="link" href="/api/archivos/${f.id}/descargar" target="_blank" style="font-size:12px;">${esc(f.nombre_original)}</a>`).join(' · ')}</div>`:''}
+      <input type="file" id="fope_foto" accept=".jpg,.jpeg,.png,.webp,.heic" capture="environment">
+      <button type="button" class="btn small secondary" onclick="subirFotoOperacion(${operacionId}, ${ot?ot.siniestro_id:'null'}, 'fope_foto', ()=>abrirFormEditarOperacion(${operacionId}))">Subir foto</button>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionOperacion(${operacionId})">Guardar</button></div>
+  `);
+}
+// Pedido de Roberto (2-sep-2026): modal ligero solo para subir/ver fotos de la etapa, sin exponer el
+// resto del formulario de edición de la operación (Alejandra no debe poder cambiar estado/avance/técnico).
+async function abrirFotosOperacion(operacionId){
+  const todas = await api('GET','/api/ot-operaciones');
+  const op = todas.find(x=>x.id===operacionId);
+  if(!op){ toast('Operación no encontrada.', 'error'); return; }
+  const ots = await api('GET','/api/ordenes-trabajo');
+  const ot = ots.find(o=>o.id===op.ot_id);
+  const fotos = await api('GET', '/api/archivos?ot_operacion_id=' + operacionId);
+  showModal(`
+    <h3>Fotos de la etapa: ${esc(op.descripcion)}</h3>
+    <p class="subtle">${fotos.length===0?'Sin fotos todavía. Las aseguradoras las piden para pagar la factura -- súbelas en el momento, no al final.':`${fotos.length} foto(s) subida(s).`}</p>
+    ${fotos.length>0?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${fotos.map(f=>`<a class="link" href="/api/archivos/${f.id}/descargar" target="_blank" style="font-size:12px;">${esc(f.nombre_original)}</a>`).join(' · ')}</div>`:''}
+    <div class="field">
+      <input type="file" id="fotop_foto" accept=".jpg,.jpeg,.png,.webp,.heic" capture="environment">
+      <button type="button" class="btn small" onclick="subirFotoOperacion(${operacionId}, ${ot?ot.siniestro_id:'null'}, 'fotop_foto', ()=>abrirFotosOperacion(${operacionId}))">Subir foto</button>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>
+  `);
+}
+async function subirFotoOperacion(operacionId, siniestroId, inputId, alTerminar){
+  const input = document.getElementById(inputId);
+  if(!input.files[0]){ toast('Selecciona o toma una foto primero.', 'error'); return; }
+  if(!siniestroId){ toast('No se encontró el expediente de esta operación.', 'error'); return; }
+  const fd = new FormData();
+  fd.append('archivo', input.files[0]);
+  fd.append('entidad_tipo', 'siniestro');
+  fd.append('entidad_id', siniestroId);
+  fd.append('tipo', 'Evidencia');
+  fd.append('ot_operacion_id', operacionId);
+  const res = await fetch('/api/archivos', { method:'POST', body: fd });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(data.error || 'No se pudo subir la foto.', 'error'); return; }
+  toast('Foto subida.', 'success');
+  if(alTerminar) alTerminar(); else render();
+}
+async function guardarEdicionOperacion(operacionId){
+  try{
+    await api('PATCH','/api/ot-operaciones/'+operacionId, {
+      descripcion: document.getElementById('fope_desc').value, estado: document.getElementById('fope_estado').value,
+      avance: Number(document.getElementById('fope_avance').value)||0, causa_bloqueo: document.getElementById('fope_causa') ? document.getElementById('fope_causa').value||null : null,
+      siguiente_accion: document.getElementById('fope_siguiente').value
+    });
+    toast('Operación actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+// Proceso_Completo_Servicio_Cristian.docx (sección 7): solicitud de reautorización por piezas no
+// autorizadas -- exclusiva de admin/jefe (Roberto), plazo de 24h calculado por el backend.
+async function abrirFormNuevaReautorizacion(siniestroId){
+  showModal(`
+    <h3>Solicitar reautorización</h3>
+    <p class="subtle">Piezas que la evaluación no autorizó. Se crea un aviso automático para Orlando con el plazo de 24h para mandar fotos editadas.</p>
+    <div class="field"><label>Piezas no autorizadas</label><textarea id="freaut_piezas" placeholder="Ej. defensa delantera, faro derecho"></textarea></div>
+    <div class="field"><label>Detalle / mano de obra requerida</label><textarea id="freaut_causa" placeholder="Qué se le pide al valuador que reconsidere"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaReautorizacion(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaReautorizacion(siniestroId){
+  const piezas = document.getElementById('freaut_piezas').value.trim();
+  if(!piezas){ toast('Indica qué piezas no fueron autorizadas.', 'error'); return; }
+  try{
+    await api('POST','/api/complementos', {
+      siniestro_id: siniestroId, tipo: 'no_autorizado_inicial', pieza_operacion: piezas,
+      causa: document.getElementById('freaut_causa').value.trim() || 'Piezas no autorizadas en la evaluación inicial.'
+    });
+    toast('Reautorización solicitada. Orlando tiene 24h para mandar fotos.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormNuevoComplemento(siniestroId){
+  const ots = await api('GET','/api/ordenes-trabajo?siniestro_id='+siniestroId);
+  showModal(`
+    <h3>Agregar complemento (daño oculto)</h3>
+    <div class="field"><label>Causa / hallazgo</label><textarea id="fcomp_causa" placeholder="Descripción del daño oculto detectado"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha</label><input id="fcomp_fecha" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Pieza / operación afectada</label><input id="fcomp_pieza"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Importe estimado</label><input id="fcomp_importe" type="number" step="0.01"></div>
+      <div class="field"><label>Impacto en días</label><input id="fcomp_impacto" type="number" min="0"></div>
+    </div>
+    <div class="field"><label>OT relacionada (opcional)</label><select id="fcomp_ot"><option value="">Sin ligar todavía</option>${ots.map(ot=>`<option value="${ot.id}">OT ${esc(ot.numero)} v${ot.version}</option>`).join('')}</select></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoComplemento(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoComplemento(siniestroId){
+  const causa = document.getElementById('fcomp_causa').value.trim();
+  if(!causa){ toast('Describe la causa del complemento.', 'error'); return; }
+  try{
+    await api('POST','/api/complementos', {
+      siniestro_id: siniestroId, causa, fecha: document.getElementById('fcomp_fecha').value, pieza_operacion: document.getElementById('fcomp_pieza').value,
+      importe: document.getElementById('fcomp_importe').value||null, impacto_dias: document.getElementById('fcomp_impacto').value||null,
+      ot_id: document.getElementById('fcomp_ot').value||null
+    });
+    toast('Complemento registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarComplemento(complementoId){
+  const todos = await api('GET','/api/complementos');
+  const c = todos.find(x=>x.id===complementoId);
+  if(!c){ toast('Complemento no encontrado.', 'error'); return; }
+  const esReautorizacion = c.tipo === 'no_autorizado_inicial';
+  showModal(`
+    <h3>${esReautorizacion?'Actualizar reautorización':'Editar complemento'}</h3>
+    ${esReautorizacion?`<p class="subtle">Piezas: ${esc(c.pieza_operacion||'—')}. ${c.decision==='pendiente'?(c.vencido?`<span style="color:#b91c1c;">Plazo vencido (${fmtFechaHora(c.fecha_limite)}).</span>`:`Plazo hasta ${fmtFechaHora(c.fecha_limite)}.`):''}</p>`:''}
+    <div class="field"><label>Causa / hallazgo</label><textarea id="fcompe_causa">${esc(c.causa)}</textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Decisión</label><select id="fcompe_decision">
+        <option value="pendiente" ${c.decision==='pendiente'?'selected':''}>Pendiente</option>
+        <option value="autorizado" ${c.decision==='autorizado'?'selected':''}>Autorizado</option>
+        <option value="rechazado" ${c.decision==='rechazado'?'selected':''}>Rechazado</option>
+        <option value="parcial" ${c.decision==='parcial'?'selected':''}>Parcial</option>
+      </select></div>
+      <div class="field"><label>Estado</label><select id="fcompe_estado">
+        <option value="detectado" ${c.estado==='detectado'?'selected':''}>Detectado</option>
+        <option value="documentando" ${c.estado==='documentando'?'selected':''}>Documentando</option>
+        <option value="enviado" ${c.estado==='enviado'?'selected':''}>Enviado</option>
+        <option value="en_autorizacion" ${c.estado==='en_autorizacion'?'selected':''}>En autorización</option>
+        <option value="autorizado" ${c.estado==='autorizado'?'selected':''}>Autorizado</option>
+        <option value="rechazado" ${c.estado==='rechazado'?'selected':''}>Rechazado</option>
+        <option value="incorporado_a_ot" ${c.estado==='incorporado_a_ot'?'selected':''}>Incorporado a OT</option>
+      </select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Importe</label><input id="fcompe_importe" type="number" step="0.01" value="${c.importe!=null?c.importe:''}"></div>
+      <div class="field"><label>Folio</label><input id="fcompe_folio" value="${esc(c.folio||'')}"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionComplemento(${complementoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionComplemento(complementoId){
+  try{
+    await api('PATCH','/api/complementos/'+complementoId, {
+      causa: document.getElementById('fcompe_causa').value, decision: document.getElementById('fcompe_decision').value, estado: document.getElementById('fcompe_estado').value,
+      importe: document.getElementById('fcompe_importe').value||null, folio: document.getElementById('fcompe_folio').value
+    });
+    toast('Complemento actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.message){ /* el toast del error ya se mostró */ }
+  }
+}
+
+function abrirFormNuevoRetrabajo(siniestroId){
+  showModal(`
+    <h3>Agregar retrabajo</h3>
+    <div class="field"><label>Origen (no conformidad)</label><textarea id="fret_origen" placeholder="Qué falló y dónde se detectó"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Categoría</label><input id="fret_categoria" placeholder="Pintura / ajuste / lámina..."></div>
+      <div class="field"><label>Severidad</label><select id="fret_severidad"><option value="leve">Leve</option><option value="media" selected>Media</option><option value="critica">Crítica</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Responsable</label><input id="fret_responsable"></div>
+      <div class="field"><label>Horas</label><input id="fret_horas" type="number" step="0.5"></div>
+      <div class="field"><label>Costo</label><input id="fret_costo" type="number" step="0.01"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoRetrabajo(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoRetrabajo(siniestroId){
+  const origen = document.getElementById('fret_origen').value.trim();
+  if(!origen){ toast('Describe el origen del retrabajo.', 'error'); return; }
+  try{
+    await api('POST','/api/retrabajos', {
+      siniestro_id: siniestroId, origen, categoria: document.getElementById('fret_categoria').value, severidad: document.getElementById('fret_severidad').value,
+      responsable: document.getElementById('fret_responsable').value, horas: document.getElementById('fret_horas').value||null, costo: document.getElementById('fret_costo').value||null
+    });
+    toast('Retrabajo registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarRetrabajo(retrabajoId){
+  const todos = await api('GET','/api/retrabajos');
+  const r = todos.find(x=>x.id===retrabajoId);
+  if(!r){ toast('Retrabajo no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar retrabajo</h3>
+    <div class="field"><label>Estado</label><select id="frete_estado">
+      <option value="abierto" ${r.estado==='abierto'?'selected':''}>Abierto</option>
+      <option value="en_correccion" ${r.estado==='en_correccion'?'selected':''}>En corrección</option>
+      <option value="reinspeccion" ${r.estado==='reinspeccion'?'selected':''}>Reinspección</option>
+      <option value="cerrado" ${r.estado==='cerrado'?'selected':''}>Cerrado</option>
+    </select></div>
+    <div class="field"><label>Corrección aplicada</label><textarea id="frete_correccion">${esc(r.correccion||'')}</textarea></div>
+    <div class="field"><label>Fecha de reinspección</label><input id="frete_fecha" type="date" value="${esc(r.fecha_reinspeccion||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionRetrabajo(${retrabajoId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionRetrabajo(retrabajoId){
+  try{
+    await api('PATCH','/api/retrabajos/'+retrabajoId, {
+      estado: document.getElementById('frete_estado').value, correccion: document.getElementById('frete_correccion').value, fecha_reinspeccion: document.getElementById('frete_fecha').value
+    });
+    toast('Retrabajo actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormEstadoCalidad(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Actualizar estado de calidad</h3>
+      <div class="field"><label>Estado</label><select id="fcal_estado">
+        <option value="" ${!s.estado_calidad?'selected':''}>Sin iniciar</option>
+        <option value="en_inspeccion" ${s.estado_calidad==='en_inspeccion'?'selected':''}>En inspección</option>
+        <option value="rechazado_a_retrabajo" ${s.estado_calidad==='rechazado_a_retrabajo'?'selected':''}>Rechazado a retrabajo</option>
+        <option value="reinspeccion" ${s.estado_calidad==='reinspeccion'?'selected':''}>Reinspección</option>
+        <option value="liberado" ${s.estado_calidad==='liberado'?'selected':''}>Liberado</option>
+      </select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEstadoCalidad(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEstadoCalidad(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_calidad: document.getElementById('fcal_estado').value });
+    toast('Estado de calidad actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede liberar todavía</h3><p class="subtle">Rubros rechazados sin corregir:</p><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
+
+function abrirFormNuevoChecklistCalidad(siniestroId){
+  const DIMENSIONES = ['Alcance','Seguridad y función','Lámina/ajuste','Pintura/acabado','Armado','Presentación','Documentación'];
+  showModal(`
+    <h3>Agregar rubro de calidad</h3>
+    <div class="field"><label>Dimensión</label><select id="fchk_dimension">${DIMENSIONES.map(d=>`<option>${d}</option>`).join('')}</select></div>
+    <div class="field"><label>Resultado</label><select id="fchk_resultado"><option value="pendiente">Pendiente</option><option value="aprobado">Aprobado</option><option value="rechazado">Rechazado</option></select></div>
+    <div class="field"><label>Hallazgo</label><textarea id="fchk_hallazgo"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoChecklistCalidad(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoChecklistCalidad(siniestroId){
+  try{
+    await api('POST','/api/checklist-calidad', {
+      siniestro_id: siniestroId, dimension: document.getElementById('fchk_dimension').value,
+      resultado: document.getElementById('fchk_resultado').value, hallazgo: document.getElementById('fchk_hallazgo').value
+    });
+    toast('Rubro agregado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarChecklistCalidad(checklistId){
+  const todos = await api('GET','/api/checklist-calidad');
+  const c = todos.find(x=>x.id===checklistId);
+  if(!c){ toast('Rubro no encontrado.', 'error'); return; }
+  showModal(`
+    <h3>Editar rubro: ${esc(c.dimension)}</h3>
+    <div class="field"><label>Resultado</label><select id="fchke_resultado">
+      <option value="pendiente" ${c.resultado==='pendiente'?'selected':''}>Pendiente</option>
+      <option value="aprobado" ${c.resultado==='aprobado'?'selected':''}>Aprobado</option>
+      <option value="rechazado" ${c.resultado==='rechazado'?'selected':''}>Rechazado</option>
+    </select></div>
+    <div class="field"><label>Hallazgo</label><textarea id="fchke_hallazgo">${esc(c.hallazgo||'')}</textarea></div>
+    <div class="field"><label>Corrección aplicada</label><textarea id="fchke_correccion">${esc(c.correccion||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionChecklistCalidad(${checklistId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionChecklistCalidad(checklistId){
+  try{
+    await api('PATCH','/api/checklist-calidad/'+checklistId, {
+      resultado: document.getElementById('fchke_resultado').value, hallazgo: document.getElementById('fchke_hallazgo').value, correccion: document.getElementById('fchke_correccion').value
+    });
+    toast('Rubro actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormDetalleEntrega(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Detalle de entrega</h3>
+      <div class="row-flex">
+        <div class="field"><label>Receptor</label><input id="fent2_receptor" value="${esc(s.entrega_receptor||'')}"></div>
+        <div class="field"><label>Identificación</label><input id="fent2_identificacion" value="${esc(s.entrega_identificacion||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Kilometraje</label><input id="fent2_km" value="${esc(s.entrega_kilometraje||'')}"></div>
+        <div class="field"><label>Combustible</label><input id="fent2_combustible" value="${esc(s.entrega_combustible||'')}"></div>
+      </div>
+      <div class="field"><label>¿Llaves entregadas?</label><select id="fent2_llaves">
+        <option value="1" ${s.entrega_llaves_entregadas?'selected':''}>Sí</option>
+        <option value="0" ${!s.entrega_llaves_entregadas?'selected':''}>No</option>
+      </select></div>
+      <div class="field"><label>Deducible pagado y confirmado (fecha)</label><input id="fent2_deducible_confirmado" type="date" value="${esc(s.deducible_pagado_confirmado_en||'')}">
+        <p class="subtle" style="margin:2px 0 0;">Distinto de solo haberlo informado (monto ya capturado en Valuación/autorización). Idealmente un día antes de la entrega.</p></div>
+      ${s.aseguradora==='GNP'?`<div class="field"><label>¿Se le pidió al cliente contestar la encuesta ahí mismo?</label><select id="fent2_encuesta_gnp">
+        <option value="0" ${!s.entrega_encuesta_gnp_solicitada?'selected':''}>No</option>
+        <option value="1" ${s.entrega_encuesta_gnp_solicitada?'selected':''}>Sí</option>
+      </select></div>`:''}
+      <div class="field"><label>Estado de entrega</label><select id="fent2_estado">
+        <option value="" ${!s.estado_entrega?'selected':''}>Sin definir</option>
+        <option value="listo" ${s.estado_entrega==='listo'?'selected':''}>Listo</option>
+        <option value="cita_confirmada" ${s.estado_entrega==='cita_confirmada'?'selected':''}>Cita confirmada</option>
+        <option value="entregado_con_observacion" ${s.estado_entrega==='entregado_con_observacion'?'selected':''}>Entregado con observación</option>
+        <option value="entregado" ${s.estado_entrega==='entregado'?'selected':''}>Entregado</option>
+      </select></div>
+      <div class="field"><label>Observación</label><textarea id="fent2_observacion">${esc(s.entrega_observacion||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarDetalleEntrega(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarDetalleEntrega(siniestroId){
+  try{
+    const encuestaEl = document.getElementById('fent2_encuesta_gnp');
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      entrega_receptor: document.getElementById('fent2_receptor').value, entrega_identificacion: document.getElementById('fent2_identificacion').value,
+      entrega_kilometraje: document.getElementById('fent2_km').value, entrega_combustible: document.getElementById('fent2_combustible').value,
+      entrega_llaves_entregadas: Number(document.getElementById('fent2_llaves').value), estado_entrega: document.getElementById('fent2_estado').value,
+      entrega_observacion: document.getElementById('fent2_observacion').value,
+      deducible_pagado_confirmado_en: document.getElementById('fent2_deducible_confirmado').value,
+      ...(encuestaEl ? { entrega_encuesta_gnp_solicitada: Number(encuestaEl.value) } : {})
+    });
+    toast('Detalle de entrega actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormFiniquito(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    showModal(`
+      <h3>Finiquito y encuesta</h3>
+      <div class="row-flex">
+        <div class="field"><label>Estado de finiquito</label><select id="ffin_estado">
+          <option value="" ${!s.finiquito_estado?'selected':''}>Pendiente</option>
+          <option value="firmado" ${s.finiquito_estado==='firmado'?'selected':''}>Firmado</option>
+          <option value="inconformidad_abierta" ${s.finiquito_estado==='inconformidad_abierta'?'selected':''}>Inconformidad abierta</option>
+        </select></div>
+        <div class="field"><label>Fecha</label><input id="ffin_fecha" type="date" value="${esc(s.finiquito_fecha||'')}"></div>
+      </div>
+      <div class="field"><label>Observación</label><textarea id="ffin_observacion">${esc(s.finiquito_observacion||'')}</textarea></div>
+      <div class="row-flex">
+        <div class="field"><label>Estado de encuesta</label><select id="ffin_encuesta">
+          <option value="" ${!s.encuesta_estado?'selected':''}>Pendiente</option>
+          <option value="enviada" ${s.encuesta_estado==='enviada'?'selected':''}>Enviada</option>
+          <option value="respondida" ${s.encuesta_estado==='respondida'?'selected':''}>Respondida</option>
+        </select></div>
+        <div class="field"><label>Calificación (1-5)</label><input id="ffin_calificacion" type="number" min="1" max="5" value="${s.encuesta_calificacion!=null?s.encuesta_calificacion:''}"></div>
+      </div>
+      <div class="field"><label>Comentarios de encuesta</label><textarea id="ffin_comentarios">${esc(s.encuesta_comentarios||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarFiniquito(${siniestroId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarFiniquito(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, {
+      finiquito_estado: document.getElementById('ffin_estado').value, finiquito_fecha: document.getElementById('ffin_fecha').value,
+      finiquito_observacion: document.getElementById('ffin_observacion').value, encuesta_estado: document.getElementById('ffin_encuesta').value,
+      encuesta_calificacion: document.getElementById('ffin_calificacion').value||null, encuesta_comentarios: document.getElementById('ffin_comentarios').value
+    });
+    toast('Finiquito/encuesta actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.message){ /* el toast del error ya se mostró */ }
+  }
+}
+
+/* ===================== Modificaciones_Tablero_SC_Control.docx (28-ago-2026) ===================== */
+
+// Modificación 4: resultado del seguimiento posventa (2-3 días después de la entrega).
+async function registrarPostventa(siniestroId, resultado){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { postventa_resultado: resultado, postventa_completada: todayISO() });
+    toast('Seguimiento posventa registrado.', 'success');
+    render();
+  }catch(e){}
+}
+
+// Modificación 3: vale pendiente por pieza que quedó fuera al momento de la entrega.
+function abrirFormNuevoVale(siniestroId){
+  showModal(`
+    <h3>Registrar vale pendiente</h3>
+    <div class="field"><label>Pieza pendiente</label><input id="fvale_pieza" placeholder="Ej. emblema trasero"></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha de entrega del vehículo</label><input id="fvale_fentrega" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Fecha estimada de llegada</label><input id="fvale_fllegada" type="date"></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="fvale_notas"></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarVale(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarVale(siniestroId){
+  const pieza = document.getElementById('fvale_pieza').value.trim();
+  if(!pieza){ toast('Indica qué pieza quedó pendiente.', 'error'); return; }
+  try{
+    await api('POST','/api/vales-pendientes', {
+      siniestro_id: siniestroId, pieza_pendiente: pieza,
+      fecha_entrega_vehiculo: document.getElementById('fvale_fentrega').value,
+      fecha_estimada_llegada: document.getElementById('fvale_fllegada').value,
+      notas: document.getElementById('fvale_notas').value
+    });
+    toast('Vale pendiente registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function abrirFormEditarVale(valeId){
+  api('GET','/api/vales-pendientes?estado=todos').then(lista=>{
+    const v = lista.find(x=>x.id===valeId);
+    if(!v){ toast('Vale no encontrado.', 'error'); return; }
+    showModal(`
+      <h3>Actualizar vale pendiente</h3>
+      <div class="field"><label>Pieza pendiente</label><input id="fvale2_pieza" value="${esc(v.pieza_pendiente)}"></div>
+      <div class="field"><label>Fecha estimada de llegada</label><input id="fvale2_fllegada" type="date" value="${esc(v.fecha_estimada_llegada||'')}"></div>
+      <div class="field"><label>Estado</label><select id="fvale2_estado">
+        <option value="pendiente" ${v.estado==='pendiente'?'selected':''}>Pendiente</option>
+        <option value="surtido" ${v.estado==='surtido'?'selected':''}>Surtido</option>
+        <option value="cancelado" ${v.estado==='cancelado'?'selected':''}>Cancelado</option>
+      </select></div>
+      <div class="field"><label>Notas</label><textarea id="fvale2_notas">${esc(v.notas||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionVale(${valeId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEdicionVale(valeId){
+  try{
+    await api('PATCH','/api/vales-pendientes/'+valeId, {
+      pieza_pendiente: document.getElementById('fvale2_pieza').value,
+      fecha_estimada_llegada: document.getElementById('fvale2_fllegada').value,
+      estado: document.getElementById('fvale2_estado').value,
+      notas: document.getElementById('fvale2_notas').value
+    });
+    toast('Vale actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+// Modificación 2: discrepancia con proveedor (marcó entregado sin haber enviado).
+function abrirFormNuevaDiscrepancia(siniestroId){
+  showModal(`
+    <h3>Registrar discrepancia con proveedor</h3>
+    <div class="field"><label>Descripción</label><textarea id="fdisc_descripcion" placeholder="Qué pieza, qué marcó el sistema"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha en que el sistema marcó "entregado"</label><input id="fdisc_fmarcado" type="date"></div>
+      <div class="field"><label>Fecha real de llegada</label><input id="fdisc_freal" type="date"></div>
+    </div>
+    <div class="field"><label><input id="fdisc_nollego" type="checkbox"> No llegó (todavía)</label></div>
+    <div class="field"><label>Fecha de correo avisando la discrepancia</label><input id="fdisc_fcorreo" type="date"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarDiscrepancia(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarDiscrepancia(siniestroId){
+  const descripcion = document.getElementById('fdisc_descripcion').value.trim();
+  if(!descripcion){ toast('Describe la discrepancia.', 'error'); return; }
+  try{
+    await api('POST','/api/discrepancias-proveedor', {
+      siniestro_id: siniestroId, descripcion,
+      fecha_marcado_entregado: document.getElementById('fdisc_fmarcado').value,
+      fecha_real_llegada: document.getElementById('fdisc_freal').value,
+      no_llego: document.getElementById('fdisc_nollego').checked ? 1 : 0,
+      correo_enviado_en: document.getElementById('fdisc_fcorreo').value
+    });
+    toast('Discrepancia registrada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function abrirFormEditarDiscrepancia(discrepanciaId){
+  api('GET','/api/discrepancias-proveedor').then(lista=>{
+    const d = lista.find(x=>x.id===discrepanciaId);
+    if(!d){ toast('Discrepancia no encontrada.', 'error'); return; }
+    showModal(`
+      <h3>Actualizar discrepancia</h3>
+      <div class="field"><label>Descripción</label><textarea id="fdisc2_descripcion">${esc(d.descripcion)}</textarea></div>
+      <div class="field"><label>Fecha real de llegada</label><input id="fdisc2_freal" type="date" value="${esc(d.fecha_real_llegada||'')}"></div>
+      <div class="field"><label><input id="fdisc2_nollego" type="checkbox" ${d.no_llego?'checked':''}> No llegó</label></div>
+      <div class="field"><label>Fecha de correo avisando</label><input id="fdisc2_fcorreo" type="date" value="${esc(d.correo_enviado_en||'')}"></div>
+      <div class="field"><label>Estado</label><select id="fdisc2_estado">
+        <option value="abierta" ${d.estado==='abierta'?'selected':''}>Abierta</option>
+        <option value="resuelta" ${d.estado==='resuelta'?'selected':''}>Resuelta</option>
+      </select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionDiscrepancia(${discrepanciaId})">Guardar</button></div>
+    `);
+  });
+}
+async function guardarEdicionDiscrepancia(discrepanciaId){
+  try{
+    await api('PATCH','/api/discrepancias-proveedor/'+discrepanciaId, {
+      descripcion: document.getElementById('fdisc2_descripcion').value,
+      fecha_real_llegada: document.getElementById('fdisc2_freal').value,
+      no_llego: document.getElementById('fdisc2_nollego').checked ? 1 : 0,
+      correo_enviado_en: document.getElementById('fdisc2_fcorreo').value,
+      estado: document.getElementById('fdisc2_estado').value
+    });
+    toast('Discrepancia actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+async function abrirFormCapturaEnvio(siniestroId){
+  const s = await api('GET','/api/siniestros/'+siniestroId);
+  showModal(`
+    <h3>Captura y envío (Orlando + Vanessa)</h3>
+    <div class="field"><label>Fecha de borrador de captura</label><input id="fcap_borrador" type="date" value="${s.fecha_borrador_captura||''}" ${s.fecha_borrador_captura?'disabled':''}></div>
+    ${s.fecha_borrador_captura?'<div class="subtle">Ya quedó registrada (gana el primer registro); no se puede cambiar.</div>':''}
+    <div class="row-flex">
+      <div class="field"><label><input id="fcap_excel" type="checkbox" ${s.excel_capturado?'checked':''}> Excel capturado</label>${s.excel_capturado_fecha?`<div class="subtle">Desde: ${s.excel_capturado_fecha}</div>`:''}</div>
+      <div class="field"><label><input id="fcap_fotos" type="checkbox" ${s.fotos_completas?'checked':''}> Fotos completas</label>${s.fotos_completas_fecha?`<div class="subtle">Desde: ${s.fotos_completas_fecha}</div>`:''}</div>
+      <div class="field"><label><input id="fcap_enviado" type="checkbox" ${s.enviado_propietario?'checked':''}> ${s.tipo_reparacion==='AUTO_SURTIDO'?'Enviado a Daniela':'Enviado al propietario'}</label>${s.enviado_propietario_fecha?`<div class="subtle">Desde: ${fmtFecha(s.enviado_propietario_fecha)}</div>`:''}</div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarCapturaEnvio(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarCapturaEnvio(siniestroId){
+  try{
+    const payload = {
+      excel_capturado: document.getElementById('fcap_excel').checked ? 1 : 0,
+      fotos_completas: document.getElementById('fcap_fotos').checked ? 1 : 0,
+      enviado_propietario: document.getElementById('fcap_enviado').checked ? 1 : 0
+    };
+    const borradorEl = document.getElementById('fcap_borrador');
+    if(borradorEl && !borradorEl.disabled && borradorEl.value){ payload.fecha_borrador_captura = borradorEl.value; }
+    await api('PATCH','/api/siniestros/'+siniestroId, payload);
+    toast('Captura y envío actualizados.', 'success');
+    closeModal(); render();
+  }catch(e){
+    if(e.message){ /* el toast del error ya se mostró */ }
+  }
+}
+
+/* ===================== Puntos 5-8 PORTAL SC (Orlando, 8-sep-2026): Autosurtidos ===================== */
+function abrirFormNuevaPiezaAutosurtido(siniestroId){
+  showModal(`
+    <h3>Agregar pieza de autosurtido</h3>
+    <div class="field"><label>Pieza</label><input id="fap_pieza" placeholder="Descripción de la pieza"></div>
+    <div class="row-flex">
+      <div class="field"><label>Costo</label><input id="fap_costo" type="number" step="0.01" placeholder="0.00"></div>
+      <div class="field"><label>Tiempo de entrega</label><input id="fap_tiempo" placeholder="Ej. 3 días"></div>
+    </div>
+    <div class="field"><label>Origen del proveedor</label>
+      <select id="fap_origen" onchange="document.getElementById('fap_link_wrap').style.display=this.value==='Mercado Libre'?'block':'none'">
+        <option value="">-- Selecciona --</option>
+        <option>Radec</option><option>Grimex</option><option>Agencia</option><option>Mercado Libre</option><option>Otro</option>
+      </select>
+    </div>
+    <div class="field"><label>Nombre del proveedor</label><input id="fap_nombre" placeholder="Ej. Radec sucursal Toluca"></div>
+    <div class="field" id="fap_link_wrap" style="display:none;"><label>Link del producto (Mercado Libre)</label><input id="fap_link" placeholder="https://..."><div class="subtle">El link se manda al equipo por WhatsApp de forma manual -- este sistema no lo envía solo.</div></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaPiezaAutosurtido(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaPiezaAutosurtido(siniestroId){
+  try{
+    await api('POST','/api/autosurtido-piezas', {
+      siniestro_id: siniestroId,
+      pieza: document.getElementById('fap_pieza').value,
+      costo: document.getElementById('fap_costo').value,
+      tiempo_entrega: document.getElementById('fap_tiempo').value,
+      proveedor_origen: document.getElementById('fap_origen').value || null,
+      proveedor_nombre: document.getElementById('fap_nombre').value,
+      proveedor_link: document.getElementById('fap_link') ? document.getElementById('fap_link').value : ''
+    });
+    toast('Pieza agregada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarPiezaAutosurtido(piezaId, siniestroId){
+  const filas = await api('GET','/api/autosurtido-piezas?siniestro_id='+siniestroId);
+  const p = filas.find(x=>String(x.id)===String(piezaId));
+  if(!p){ toast('Pieza no encontrada.', 'error'); return; }
+  showModal(`
+    <h3>Editar pieza de autosurtido</h3>
+    <div class="field"><label>Pieza</label><input id="fap_pieza" value="${esc(p.pieza||'')}"></div>
+    <div class="row-flex">
+      <div class="field"><label>Costo</label><input id="fap_costo" type="number" step="0.01" value="${p.costo!=null?p.costo:''}"></div>
+      <div class="field"><label>Tiempo de entrega</label><input id="fap_tiempo" value="${esc(p.tiempo_entrega||'')}"></div>
+    </div>
+    <div class="field"><label>Origen del proveedor</label>
+      <select id="fap_origen" onchange="document.getElementById('fap_link_wrap').style.display=this.value==='Mercado Libre'?'block':'none'">
+        <option value="">-- Selecciona --</option>
+        ${['Radec','Grimex','Agencia','Mercado Libre','Otro'].map(o=>`<option ${p.proveedor_origen===o?'selected':''}>${o}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label>Nombre del proveedor</label><input id="fap_nombre" value="${esc(p.proveedor_nombre||'')}"></div>
+    <div class="field" id="fap_link_wrap" style="${p.proveedor_origen==='Mercado Libre'?'':'display:none;'}"><label>Link del producto (Mercado Libre)</label><input id="fap_link" value="${esc(p.proveedor_link||'')}"><div class="subtle">El link se manda al equipo por WhatsApp de forma manual -- este sistema no lo envía solo.</div></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionPiezaAutosurtido(${piezaId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionPiezaAutosurtido(piezaId){
+  try{
+    await api('PATCH','/api/autosurtido-piezas/'+piezaId, {
+      pieza: document.getElementById('fap_pieza').value,
+      costo: document.getElementById('fap_costo').value,
+      tiempo_entrega: document.getElementById('fap_tiempo').value,
+      proveedor_origen: document.getElementById('fap_origen').value || null,
+      proveedor_nombre: document.getElementById('fap_nombre').value,
+      proveedor_link: document.getElementById('fap_link') ? document.getElementById('fap_link').value : ''
+    });
+    toast('Pieza actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function eliminarPiezaAutosurtido(piezaId, siniestroId){
+  const ok = await confirmDialog('¿Eliminar esta pieza de autosurtido?', { textoOk:'Sí, eliminar' });
+  if(!ok) return;
+  try{
+    await api('DELETE','/api/autosurtido-piezas/'+piezaId);
+    toast('Pieza eliminada.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarAutosurtidoCotizado(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { autosurtido_cotizado_en: todayISO() });
+    toast('Cotización marcada como terminada.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarAutosurtidoReingreso(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { autosurtido_reingreso_en: todayISO() });
+    toast('Reingreso físico registrado.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarAutosurtidoInventario(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { autosurtido_inventario_cargado: 1 });
+    toast('Carga de inventario condicional registrada.', 'success');
+    render();
+  }catch(e){}
+}
+
+async function intentarCerrarSiniestro(siniestroId){
+  const ok = await confirmDialog('¿Cerrar este siniestro? Solo se puede si todos sus pedidos están recibidos/cancelados y ya se registró la entrega.', { textoOk:'Sí, cerrar' });
+  if(!ok) return;
+  try{
+    await api('PATCH', `/api/siniestros/${siniestroId}/cerrar`, {});
+    toast('Siniestro cerrado.', 'success');
+    render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede cerrar todavía</h3><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
+
+// Hallazgo A-07 (Informe Daniela): cambiar el estatus de un pedido ya no es un efecto secundario de tocar
+// el <select> por accidente -- ahora es una acción explícita con confirmación y motivo, para dejar rastro
+// de por qué cambió (visible después en la línea de tiempo/auditoría del expediente).
+async function cambiarEstatusOperativo(pedidoId, val, estatusActual, selEl){
+  if(val === estatusActual) return;
+  if(val === 'Cancelado'){
+    showModal(`
+      <h3>Cancelar pedido</h3>
+      <p class="subtle">Requerimiento de Daniela: todo pedido cancelado debe conservar su motivo.</p>
+      <div class="field"><label>Motivo</label>
+        <select id="fcanc_motivo_sel" onchange="document.getElementById('fcanc_motivo_otro').style.display=this.value==='Otro'?'block':'none'">
+          <option>Reasignación de proveedor</option><option>Pérdida total</option><option>Unidad que no repara</option><option>Otro</option>
+        </select>
+        <textarea id="fcanc_motivo_otro" style="display:none;margin-top:6px;" placeholder="Describe el motivo"></textarea>
+      </div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal();render()">Cancelar</button><button class="btn" onclick="guardarCancelacionPedido(${pedidoId})">Guardar</button></div>
+    `);
+    return;
+  }
+  showModal(`
+    <h3>Cambiar estatus</h3>
+    <p class="subtle">De <b>${esc(estatusActual)}</b> a <b>${esc(val)}</b>. Confirma para aplicar el cambio.</p>
+    <div class="field"><label>Motivo (opcional, queda registrado en la línea de tiempo)</label>
+      <textarea id="fce_motivo" placeholder="Ej. proveedor confirmó factura, cliente autorizó, etc."></textarea>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal();render()">Cancelar</button><button class="btn" onclick="confirmarCambioEstatusPedido(${pedidoId}, '${esc(val).replace(/'/g,"\\'")}')">Confirmar cambio</button></div>
+  `);
+}
+async function confirmarCambioEstatusPedido(pedidoId, val){
+  const motivo = document.getElementById('fce_motivo').value.trim();
+  await api('PATCH','/api/pedidos/'+pedidoId, { estatus_operativo: val, motivo_estatus: motivo });
+  toast('Estatus actualizado.', 'success');
+  closeModal(); render();
+}
+async function guardarCancelacionPedido(pedidoId){
+  const sel = document.getElementById('fcanc_motivo_sel').value;
+  const motivo = sel === 'Otro' ? document.getElementById('fcanc_motivo_otro').value.trim() : sel;
+  if(!motivo){ toast('Describe el motivo de cancelación.', 'error'); return; }
+  try{
+    await api('PATCH','/api/pedidos/'+pedidoId, { estatus_operativo:'Cancelado', motivo_cancelacion: motivo });
+    toast('Pedido cancelado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+async function marcarRecibida(piezaId){
+  const ok = await confirmDialog('¿Confirmas que esta pieza llegó correctamente y la recibiste tú, '+ (currentUser?currentUser.nombre:'') +'? Quedará registrada con tu usuario y la hora actual.', { textoOk:'Sí, marcar recibida' });
+  if(!ok) return;
+  try{
+    await api('POST', `/api/piezas/${piezaId}/recibir`);
+    toast('Pieza marcada como recibida.', 'success');
+    render();
+  }catch(e){ /* el mensaje de bloqueo por incidencia ya se mostró en el toast */ }
+}
+
+/* ===================== FORMULARIOS: PIEZAS / INCIDENCIAS / RESPUESTAS / ARCHIVOS ===================== */
+// Solicitud de Daniela (7-sep-2026): 'Sin proveedor' ya no se ofrece como opción nueva al editar una
+// pieza (deja de ser una categoría del tablero). OJO: el formulario de edición SIEMPRE envía el valor
+// seleccionado del <select> al guardar (ver guardarEdicionPieza) -- si simplemente se quitara esta opción
+// de la lista, editar una pieza que YA está en 'Sin proveedor' habría cambiado su estatus sin que nadie
+// lo pidiera, la primera vez que alguien abriera y guardara ese formulario (ej. solo para corregir la
+// descripción). abrirFormEditarPieza() agrega el valor actual de vuelta si no está en esta lista, para
+// que el dato existente nunca se toque por accidente.
+const ESTATUS_PIEZA_OPCIONES = ['Asignada','Confirmada','Facturada','En tránsito','Entregada por proveedor','Recibida físicamente','Devuelta','Incorrecta/dañada','Cancelada'];
+async function abrirFormNuevaPieza(){
+  const pedidoId = document.getElementById('piezaPedidoSel').value;
+  const proveedores = await api('GET','/api/proveedores');
+  showModal(`
+    <h3>Agregar pieza</h3>
+    <div class="field"><label>Descripción</label><input id="fz_desc" placeholder="Espejo lateral derecho"></div>
+    <div class="row-flex">
+      <div class="field"><label>Número de parte</label><input id="fz_parte"></div>
+      <div class="field"><label>Tipo</label><select id="fz_tipo"><option>Original</option><option>Genérica</option><option>Usada</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Proveedor</label><select id="fz_prov"><option value="">Selecciona proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}">${esc(pv.razon_social)}</option>`).join('')}</select></div>
+      <div class="field"><label>Cantidad</label><input id="fz_cant" type="number" value="1" min="1"></div>
+    </div>
+    <div class="field"><label>Fecha prometida</label><input id="fz_fecha" type="date" value="${todayISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaPieza(${pedidoId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaPieza(pedidoId){
+  const descripcion = document.getElementById('fz_desc').value.trim();
+  if(!descripcion){ toast('La descripción es obligatoria.', 'error'); return; }
+  try{
+    await api('POST','/api/piezas', {
+      pedido_id: pedidoId, descripcion, numero_parte: document.getElementById('fz_parte').value,
+      tipo: document.getElementById('fz_tipo').value, proveedor_id: document.getElementById('fz_prov').value || null,
+      cantidad: +document.getElementById('fz_cant').value,
+      fecha_prometida: document.getElementById('fz_fecha').value
+    });
+    toast('Pieza agregada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarPieza(id){
+  const z = await api('GET','/api/piezas/'+id);
+  const proveedores = await api('GET','/api/proveedores');
+  showModal(`
+    <h3>Editar pieza</h3>
+    <div class="field"><label>Descripción</label><input id="fez_desc" value="${esc(z.descripcion)}"></div>
+    <div class="row-flex">
+      <div class="field"><label>Número de parte</label><input id="fez_parte" value="${esc(z.numero_parte||'')}"></div>
+      <div class="field"><label>Tipo</label><select id="fez_tipo">${['Original','Genérica','Usada'].map(t=>`<option ${z.tipo===t?'selected':''}>${t}</option>`).join('')}</select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Proveedor</label><select id="fez_prov"><option value="">Selecciona proveedor</option>${proveedores.map(pv=>`<option value="${pv.id}" ${z.proveedor_id===pv.id?'selected':''}>${esc(pv.razon_social)}</option>`).join('')}</select></div>
+      <div class="field"><label>Estatus</label><select id="fez_estatus">${(ESTATUS_PIEZA_OPCIONES.includes(z.estatus)?ESTATUS_PIEZA_OPCIONES:[z.estatus,...ESTATUS_PIEZA_OPCIONES]).map(o=>`<option value="${esc(o)}" ${z.estatus===o?'selected':''}>${esc(etiquetaEstatusPieza(o))}</option>`).join('')}</select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Cantidad</label><input id="fez_cant" type="number" min="1" value="${z.cantidad}"></div>
+      <div class="field"><label>Fecha prometida</label><input id="fez_fecha" type="date" value="${esc(z.fecha_prometida||'')}"></div>
+    </div>
+    <div class="field"><label>Observaciones</label><textarea id="fez_obs">${esc(z.observaciones||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionPieza(${id})">Guardar cambios</button></div>
+  `);
+}
+async function guardarEdicionPieza(id){
+  try{
+    await api('PATCH','/api/piezas/'+id, {
+      descripcion: document.getElementById('fez_desc').value, numero_parte: document.getElementById('fez_parte').value,
+      tipo: document.getElementById('fez_tipo').value, proveedor_id: document.getElementById('fez_prov').value || null,
+      estatus: document.getElementById('fez_estatus').value,
+      cantidad: +document.getElementById('fez_cant').value,
+      fecha_prometida: document.getElementById('fez_fecha').value,
+      observaciones: document.getElementById('fez_obs').value
+    });
+    toast('Pieza actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+function abrirFormIncidencia(piezaId){
+  showModal(`
+    <h3>Registrar incidencia</h3>
+    <div class="field"><label>Tipo</label><select id="fi_tipo">
+      <option value="incorrecta">Pieza incorrecta</option>
+      <option value="danada">Pieza dañada</option>
+      <option value="incompleta">Envío incompleto</option>
+      <option value="devolucion">Devolución</option>
+      <option value="cancelacion">Cancelación</option>
+      <option value="fecha_incumplida">Fecha incumplida</option>
+    </select></div>
+    <div class="field"><label>Descripción</label><textarea id="fi_desc" placeholder="Ej. el espejo entregado no corresponde al modelo del vehículo."></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Acción solicitada</label><select id="fi_accion">
+        <option value="cambio">Cambio</option><option value="recoleccion">Recolección</option>
+        <option value="garantia">Garantía</option><option value="reembolso">Reembolso</option>
+      </select></div>
+      <div class="field"><label>Fecha compromiso</label><input id="fi_fecha" type="date"></div>
+    </div>
+    <p class="subtle">Esta pieza NO se marcará como recibida. El pedido queda visible como "Con incidencia" en todas las vistas.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarIncidencia(${piezaId})">Registrar</button></div>
+  `);
+}
+async function guardarIncidencia(piezaId){
+  await api('POST','/api/incidencias', {
+    pieza_id: piezaId, tipo: document.getElementById('fi_tipo').value, descripcion: document.getElementById('fi_desc').value,
+    accion_solicitada: document.getElementById('fi_accion').value, fecha_compromiso: document.getElementById('fi_fecha').value
+  });
+  toast('Incidencia registrada. La pieza no se marcó como recibida.', 'success');
+  closeModal(); render();
+}
+function abrirFormResolverIncidencia(id){
+  showModal(`
+    <h3>Resolver incidencia</h3>
+    <div class="field"><label>Estado</label><select id="fr_estado"><option value="en_proceso">En proceso</option><option value="resuelta">Resuelta</option><option value="cancelada">Cancelada</option></select></div>
+    <div class="field"><label>Resolución (obligatoria para cerrar como "Resuelta")</label><textarea id="fr_resolucion" placeholder="Ej. el proveedor envió el espejo correcto, se confirmó físicamente el 20/08."></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarResolverIncidencia(${id})">Guardar</button></div>
+  `);
+}
+async function guardarResolverIncidencia(id){
+  try{
+    await api('PATCH','/api/incidencias/'+id, { estado: document.getElementById('fr_estado').value, resolucion: document.getElementById('fr_resolucion').value });
+    toast('Incidencia actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function abrirFormRespuesta(comId){
+  showModal(`
+    <h3>Registrar respuesta del proveedor</h3>
+    <div class="field"><label>¿Qué respondió?</label><textarea id="fresp_texto"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Fecha compromiso</label><input id="fresp_compromiso" type="date"></div>
+      <div class="field"><label>Siguiente seguimiento</label><input id="fresp_siguiente" type="date"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarRespuesta(${comId})">Guardar</button></div>
+  `);
+}
+async function guardarRespuesta(comId){
+  const texto = document.getElementById('fresp_texto').value.trim();
+  if(!texto){ toast('Describe la respuesta.', 'error'); return; }
+  await api('PATCH', `/api/comunicaciones/${comId}/respuesta`, {
+    respuesta_texto: texto, compromiso_fecha: document.getElementById('fresp_compromiso').value, siguiente_seguimiento: document.getElementById('fresp_siguiente').value
+  });
+  toast('Respuesta registrada.', 'success');
+  closeModal(); render();
+}
+async function subirArchivo(ev, siniestroId){
+  ev.preventDefault();
+  const input = document.getElementById('archivoInput');
+  if(!input.files[0]){ toast('Selecciona un archivo.', 'error'); return false; }
+  const fd = new FormData();
+  fd.append('archivo', input.files[0]);
+  fd.append('entidad_tipo','siniestro');
+  fd.append('entidad_id', siniestroId);
+  fd.append('tipo', document.getElementById('archivoTipo').value);
+  const res = await fetch('/api/archivos', { method:'POST', body: fd });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(data.error||'No se pudo subir el archivo.', 'error'); return false; }
+  toast('Archivo subido.', 'success');
+  render();
+  return false;
+}
+function abrirFormSustituirArchivo(archivoId){
+  showModal(`
+    <h3>Sustituir archivo</h3>
+    <p class="subtle">La versión anterior no se borra, queda disponible para el administrador.</p>
+    <div class="field"><input type="file" id="sustArchivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarSustitucionArchivo(${archivoId})">Guardar</button></div>
+  `);
+}
+async function guardarSustitucionArchivo(archivoId){
+  const input = document.getElementById('sustArchivoInput');
+  if(!input.files[0]){ toast('Selecciona un archivo.', 'error'); return; }
+  const fd = new FormData();
+  fd.append('archivo', input.files[0]);
+  const res = await fetch('/api/archivos/'+archivoId+'/sustituir', { method:'PATCH', body: fd });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(data.error||'No se pudo sustituir el archivo.', 'error'); return; }
+  toast('Archivo sustituido.', 'success');
+  closeModal(); render();
+}
+async function eliminarArchivo(archivoId){
+  const ok = await confirmDialog('¿Eliminar este archivo? Queda en la papelera, no se borra permanentemente.', { textoOk:'Sí, eliminar' });
+  if(!ok) return;
+  try{
+    await api('DELETE','/api/archivos/'+archivoId);
+    toast('Archivo movido a la papelera.', 'success');
+    render();
+  }catch(e){}
+}
+async function restaurarArchivo(archivoId){
+  try{
+    await api('POST','/api/archivos/'+archivoId+'/restaurar');
+    toast('Archivo restaurado.', 'success');
+    render();
+  }catch(e){}
+}
+
+/* ===================== GENERADOR DE CORREOS ===================== */
+async function abrirGenerador(pedidoId){
+  const r = await api('GET','/api/comunicaciones/generar-borrador/'+pedidoId);
+  if(!r.requiereCorreo){
+    showModal(`<h3>Generador de correo</h3><p><span class="badge verde">No requiere correo</span></p><p>${esc(r.mensaje)}</p><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
+    return;
+  }
+  const avisoSinProveedor = (r.piezasSinProveedor && r.piezasSinProveedor.length) ? `<div class="banner ambar">${r.piezasSinProveedor.length} pieza(s) pendientes de asignar proveedor no se incluyeron en ningún correo: ${esc(r.piezasSinProveedor.join(', '))}. Asígnales proveedor primero si también necesitan seguimiento.</div>` : '';
+  const content = r.borradores.map((d,idx)=>`
+    <div class="email-block" id="email-${idx}">
+      <div style="display:flex;justify-content:space-between;align-items:center;"><b>${esc(d.proveedor_nombre)}</b><span class="badge ${d.tipo_plantilla==='incidencia'?'morado':'azul'}">${esc(d.tipo_plantilla)}</span></div>
+      <div class="field"><label>Excluir de este envío (temporal, requiere motivo — regla R-07)</label>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:12.5px;">
+          <input type="checkbox" onchange="document.getElementById('email-${idx}').classList.toggle('excluded', this.checked)"> Excluir solo este seguimiento
+        </label>
+        <input type="text" placeholder="Motivo de exclusión" id="motivo-${idx}" style="margin-top:4px;">
+      </div>
+      <div class="field"><label>Destinatario</label><input type="text" id="dest-${idx}" value="${esc(d.destinatario)}"></div>
+      <div class="field"><label>Copia</label><input type="text" id="cc-${idx}" value="${esc(d.copia)}"></div>
+      <div class="field"><label>Asunto</label><input type="text" id="asunto-${idx}" value="${esc(d.asunto)}"></div>
+      <div class="field"><label>Cuerpo</label><textarea id="cuerpo-${idx}" style="min-height:160px;">${esc(d.cuerpo)}</textarea></div>
+      <button class="btn small" ${d.proveedor_id?'':'disabled'} onclick="aprobarCorreo(${pedidoId}, ${idx}, ${d.proveedor_id||'null'})">Aprobar y registrar (borrador/sandbox)</button>
+    </div>`).join('');
+  showModal(`<h3>Generador de correo de seguimiento</h3><p class="subtle">Piezas recibidas o canceladas nunca aparecen aquí (regla R-04). No se envían correos reales todavía.</p>${avisoSinProveedor}${content}<div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
+}
+async function aprobarCorreo(pedidoId, idx, proveedorId){
+  const bloque = document.getElementById('email-'+idx);
+  if(bloque.classList.contains('excluded')){
+    const motivo = document.getElementById('motivo-'+idx).value.trim();
+    if(!motivo){ toast('El motivo de exclusión es obligatorio (regla R-07).', 'error'); return; }
+    await api('POST','/api/comunicaciones/exclusiones', { pedido_id: pedidoId, proveedor_id: proveedorId, motivo });
+    toast('Proveedor excluido de este envío únicamente. Sigue disponible para pedidos futuros.', 'warn');
+    return;
+  }
+  const destinatarios = document.getElementById('dest-'+idx).value.trim();
+  if(!destinatarios){ toast('El destinatario es obligatorio.', 'error'); return; }
+  await api('POST','/api/comunicaciones', {
+    pedido_id: pedidoId, proveedor_id: proveedorId, destinatarios, copia: document.getElementById('cc-'+idx).value,
+    asunto: document.getElementById('asunto-'+idx).value, cuerpo: document.getElementById('cuerpo-'+idx).value
+  });
+  toast('Correo aprobado y registrado en el historial (no se envió automáticamente).', 'success');
+  closeModal(); render();
+}
+
+/* ===================== ALTA / EDICIÓN CON VALIDACIÓN DE DUPLICADOS ===================== */
+function openNuevoMenu(){
+  const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
+  // MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): a Alejandra (atencion_cliente, no admin) solo le
+  // corresponde dar de alta expedientes desde recepción -- Siniestro/Pedido/Proveedor son de otros roles.
+  const soloExpediente = currentUser && currentUser.rol==='atencion_cliente';
+  showModal(`
+    <h3>¿Qué deseas registrar?</h3>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      ${esAtencionCliente?`<button class="btn secondary" onclick="closeModal();formNuevoExpediente()">Expediente (recepción de cliente)</button>`:''}
+      ${soloExpediente?'':`
+      <button class="btn secondary" onclick="closeModal();formNuevoSiniestro()">Siniestro</button>
+      <button class="btn secondary" onclick="closeModal();formNuevoPedido()">Pedido (ligado a un siniestro)</button>
+      <button class="btn secondary" onclick="closeModal();formNuevoProveedor()">Proveedor</button>`}
+    </div>
+    <div class="modal-actions"><button class="btn ghost" onclick="closeModal()">Cancelar</button></div>
+  `);
+}
+
+/* ===================== MÓDULO ALEJANDRA: expediente desde recepción ===================== */
+/* MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): particular sin aseguradora, deducible/llaves/dado
+   de seguridad capturados desde el alta, orden de admisión e inventario como archivo (ya no texto), y
+   validación de los 4 requisitos de grúa antes de permitir guardar (mismos 4 que exige la revisión de Orlando). */
+function formNuevoExpediente(){
+  showModal(`
+    <h3>Nuevo expediente (recepción de cliente)</h3>
+    <div class="row-flex">
+      <div class="field"><label>Nombre del cliente *</label><input id="fx_cliente_nombre" placeholder="Nombre completo"></div>
+      <div class="field"><label>Teléfono / WhatsApp *</label><input id="fx_cliente_telefono" placeholder="55-0000-0000"></div>
+    </div>
+    <div class="field"><label>Correo *</label><input id="fx_cliente_correo" type="email"></div>
+    <div class="field"><label>Notas de contacto (opcional, libre)</label><textarea id="fx_cliente_notas"></textarea></div>
+    <div class="field"><label><input type="checkbox" id="fx_particular" onchange="toggleFxParticular()"> Cliente particular (sin aseguradora)</label></div>
+    <div class="row-flex">
+      <div class="field"><label>Número de siniestro</label><input id="fx_numero" placeholder="Si aún no lo tienes, usa un folio propio"></div>
+      <div class="field"><label>Aseguradora</label><select id="fx_aseguradora" onchange="actualizarHintMapfre('fx_aseguradora','fx_hint_mapfre')">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
+    </div>
+    <p class="subtle" id="fx_hint_mapfre" style="display:none;margin-top:-6px;">Para MAPFRE: captura el número tal como viene en la ODA, <b>sin agregar la terminación 1, 2 o 3</b>.</p>
+    <div class="row-flex">
+      <div class="field"><label>Tipo comunicación</label><select id="fx_canal"><option>WhatsApp</option><option>Teléfono</option></select></div>
+      <div class="field"><label>Ubicación</label><select id="fx_ubicacion"><option value="Piso">Piso</option><option value="Tránsito">Tránsito</option></select></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Vehículo</label><input id="fx_vehiculo" placeholder="Marca / modelo (si ya se sabe)"></div>
+      <div class="field"><label>Placas</label><input id="fx_placas"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Tipo de ingreso</label><select id="fx_ingreso_tipo" onchange="toggleFxGrua()">
+        <option value="">Sin definir</option>
+        <option value="circulando">Circulando</option>
+        <option value="grua">Grúa</option>
+        <option value="permanece">Se queda todo el proceso</option>
+      </select></div>
+      <div class="field">
+        <label>¿Aplica deducible?</label>
+        <select id="fx_deducible_aplica">
+          <option value="">Sin definir</option>
+          <option value="1">Sí aplica</option>
+          <option value="0">No aplica</option>
+        </select>
+        <p class="subtle" style="margin:4px 0 0;">Es solo para que el equipo lo sepa desde ahora; la confirmación de que ya quedó validado y en firme con la aseguradora se pregunta aparte, en la entrega.</p>
+      </div>
+      <div class="field" style="display:flex;flex-direction:column;gap:6px;justify-content:center;">
+        <label><input type="checkbox" id="fx_llaves"> Llaves entregadas</label>
+        <label><input type="checkbox" id="fx_dado"> Dado de seguridad colocado</label>
+      </div>
+    </div>
+    <div class="row-flex">
+      <div class="field" id="fx_orden_admision_wrap"><label>Orden de admisión (archivo)</label><input type="file" id="fx_orden_admision_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
+      <div class="field"><label>Inventario físico/fotográfico (archivo)</label><input type="file" id="fx_inventario_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
+    </div>
+    <p class="subtle" id="fx_grua_hint" style="display:none;">Para ingreso por grúa se requiere antes de guardar: llaves entregadas, inventario y, si no es particular, orden de admisión.</p>
+    <p class="subtle">* Campos obligatorios. El resto se puede completar después conforme avance el caso.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarExpediente()">Guardar</button></div>
+  `);
+}
+function toggleFxParticular(){
+  const p = document.getElementById('fx_particular').checked;
+  document.getElementById('fx_numero').disabled = p;
+  document.getElementById('fx_aseguradora').disabled = p;
+  document.getElementById('fx_orden_admision_file').disabled = p;
+}
+function toggleFxGrua(){
+  // "permanece" (documento de Alejandra, 2-sep-2026) se trata igual que grúa para requisitos de admisión.
+  const esGrua = ['grua','permanece'].includes(document.getElementById('fx_ingreso_tipo').value);
+  document.getElementById('fx_grua_hint').style.display = esGrua ? 'block' : 'none';
+}
+async function guardarExpediente(){
+  const cliente_nombre = document.getElementById('fx_cliente_nombre').value.trim();
+  const cliente_telefono = document.getElementById('fx_cliente_telefono').value.trim();
+  const cliente_correo = document.getElementById('fx_cliente_correo').value.trim();
+  if(!cliente_nombre || !cliente_telefono || !cliente_correo){
+    toast('Nombre, teléfono y correo del cliente son obligatorios.', 'error'); return;
+  }
+  const particular = document.getElementById('fx_particular').checked;
+  const ingresoTipo = document.getElementById('fx_ingreso_tipo').value;
+  const llaves = document.getElementById('fx_llaves').checked;
+  const ordenFile = document.getElementById('fx_orden_admision_file').files[0];
+  const inventarioFile = document.getElementById('fx_inventario_file').files[0];
+  if(ingresoTipo === 'grua' || ingresoTipo === 'permanece'){
+    const faltan = [];
+    if(!llaves) faltan.push('Llaves entregadas');
+    if(!inventarioFile) faltan.push('Inventario físico/fotográfico');
+    if(!particular && !ordenFile) faltan.push('Orden de admisión');
+    if(faltan.length){
+      toast('Para este tipo de ingreso falta: ' + faltan.join(', ') + '.', 'error');
+      return;
+    }
+  }
+  let numero = particular ? '' : document.getElementById('fx_numero').value.trim();
+  if(!numero) numero = 'EXP-' + Date.now().toString(36).toUpperCase();
+  let s;
+  try{
+    s = await api('POST','/api/siniestros', {
+      numero, cliente_nombre, cliente_telefono, cliente_correo,
+      cliente_notas: document.getElementById('fx_cliente_notas').value,
+      aseguradora: particular ? 'Particular' : document.getElementById('fx_aseguradora').value,
+      canal_origen: document.getElementById('fx_canal').value,
+      ubicacion: document.getElementById('fx_ubicacion').value,
+      vehiculo: document.getElementById('fx_vehiculo').value,
+      placas: document.getElementById('fx_placas').value,
+      ingreso_tipo: ingresoTipo,
+      deducible_aplica: document.getElementById('fx_deducible_aplica').value,
+      llaves_entregadas: llaves ? 1 : 0,
+      dado_seguridad_colocado: document.getElementById('fx_dado').checked ? 1 : 0,
+      es_particular: particular ? 1 : 0,
+      fecha_admision: new Date().toISOString().slice(0,10)
+    });
+  }catch(e){
+    if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.id); }
+    return;
+  }
+  if(ordenFile && !particular) await subirArchivoDirecto(ordenFile, s.id, 'orden_admision');
+  if(inventarioFile) await subirArchivoDirecto(inventarioFile, s.id, 'inventario_fisico');
+  toast('Expediente registrado.', 'success');
+  closeModal(); goSiniestro(s.id);
+}
+async function subirArchivoDirecto(file, siniestroId, tipo){
+  const fd = new FormData();
+  fd.append('archivo', file);
+  fd.append('entidad_tipo','siniestro');
+  fd.append('entidad_id', siniestroId);
+  fd.append('tipo', tipo);
+  const res = await fetch('/api/archivos', { method:'POST', body: fd });
+  if(!res.ok){
+    const data = await res.json().catch(()=>({}));
+    toast(data.error || 'El expediente se creó, pero un archivo no se pudo subir. Súbelo desde su ficha.', 'error');
+  }
+}
+/* MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): columnas renombradas (Nombre/Proceso/Tipo reparación),
+   filtros por columna, entregados ocultos por default (se pueden mostrar con la casilla), y la columna
+   de Tareas ahora es clickable (lleva a la ficha del expediente, igual que el resto del renglón). */
+const TIPO_REP_LABEL_CLIENTES = { TRADICIONAL:'Tradicional', EXPRES:'Exprés', AUTO_SURTIDO:'Auto surtido', BDEO:'BDEO', PDD:'PDD', CE:'CE' };
+const ENTREGADOS_ESTADOS = ['entregado','entregado_con_observacion'];
+let _clientesCache = [];
+function clientesFiltrados(){
+  const texto = (document.getElementById('cf_texto')?.value || '').trim().toLowerCase();
+  const aseguradora = document.getElementById('cf_aseguradora')?.value || '';
+  const tipoRep = document.getElementById('cf_tipo_reparacion')?.value || '';
+  const mostrarEntregados = document.getElementById('cf_mostrar_entregados')?.checked || false;
+  return _clientesCache.filter(s=>{
+    if(!mostrarEntregados && ENTREGADOS_ESTADOS.includes(s.estado_entrega)) return false;
+    if(aseguradora && s.aseguradora !== aseguradora) return false;
+    if(tipoRep && s.tipo_reparacion !== tipoRep) return false;
+    if(texto && !((s.numero||'')+' '+(s.cliente_nombre||'')).toLowerCase().includes(texto)) return false;
+    return true;
+  });
+}
+function filaClienteHtml(s){
+  return `<tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.cliente_nombre||'—')}</td>
+      <td>${esc(s.cliente_telefono||'—')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.etapa_actual||'—')}</td>
+      <td>${s.tipo_reparacion?`<span class="badge azul">${TIPO_REP_LABEL_CLIENTES[s.tipo_reparacion]||esc(s.tipo_reparacion)}</span>`:'<span class="badge gris">Sin definir</span>'}</td>
+      <td>${s.dias_sin_actualizacion!=null ? `<span class="badge ${s.dias_sin_actualizacion>=2?'rojo':'gris'}">${s.dias_sin_actualizacion} día(s)</span>` : '—'}</td>
+      <td>${s.tareas_pendientes>0 ? `<span class="badge link ${s.tareas_vencidas>0?'rojo':'azul'}" onclick="goSiniestro(${s.id})" style="cursor:pointer;">${s.tareas_pendientes} pend.${s.tareas_vencidas>0?` (${s.tareas_vencidas} vencida${s.tareas_vencidas>1?'s':''})`:''}</span>` : '—'}</td>
+    </tr>`;
+}
+function renderTablaClientes(){
+  const filtrados = clientesFiltrados();
+  const tbody = document.getElementById('clientesTbody');
+  if(tbody) tbody.innerHTML = filtrados.length===0?'<tr><td colspan="8" class="empty">Sin expedientes que coincidan.</td></tr>':filtrados.map(filaClienteHtml).join('');
+  const resumen = document.getElementById('clientesResumen');
+  if(resumen) resumen.textContent = filtrados.length + ' expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.';
+}
+async function viewClientes(){
+  _clientesCache = await api('GET','/api/reportes/bandeja-clientes');
+  const filtrados = _clientesCache.filter(s=>!ENTREGADOS_ESTADOS.includes(s.estado_entrega));
+  return `
+  <h2>Clientes — expedientes</h2>
+  <p class="subtle">Todos los expedientes desde recepción. Da clic en un renglón para abrir su ficha completa.</p>
+  <div class="row-flex" style="flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+    <input id="cf_texto" placeholder="Buscar nombre o siniestro..." oninput="renderTablaClientes()" style="min-width:200px;">
+    <select id="cf_aseguradora" onchange="renderTablaClientes()"><option value="">Todas las aseguradoras</option>${ASEGURADORAS.concat(['Particular']).map(a=>`<option>${esc(a)}</option>`).join('')}</select>
+    <select id="cf_tipo_reparacion" onchange="renderTablaClientes()">
+      <option value="">Todo tipo reparación</option>
+      <option value="TRADICIONAL">Tradicional</option>
+      <option value="EXPRES">Exprés</option>
+      <option value="AUTO_SURTIDO">Auto surtido</option>
+      <option value="BDEO">BDEO</option>
+      <option value="PDD">PDD</option>
+      <option value="CE">CE</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="cf_mostrar_entregados" onchange="renderTablaClientes()"> Mostrar entregados</label>
+  </div>
+  <table><thead><tr><th>Siniestro</th><th>Nombre</th><th>Teléfono</th><th>Aseguradora</th><th>Proceso</th><th>Tipo reparación</th><th>Sin actualizar</th><th>Tareas</th></tr></thead>
+  <tbody id="clientesTbody">${filtrados.length===0?'<tr><td colspan="8" class="empty">Sin expedientes registrados todavía.</td></tr>':filtrados.map(filaClienteHtml).join('')}</tbody></table>
+  <p class="subtle" style="margin-top:8px;" id="clientesResumen">${filtrados.length} expediente(s). Se marca en rojo "Sin actualizar" a partir de 2 días sin comunicación registrada con el cliente.</p>`;
+}
+/* ===================== VISTA: PENDIENTES DE HOY (propuesta de Alejandra, 27-ago-2026) ===================== */
+async function viewPendientesHoy(){
+  const p = await api('GET','/api/reportes/pendientes-hoy');
+  const fila = (numero, vehiculo, placas, extra) => `
+    <div class="ph-item"><span class="link" onclick="goSiniestro(FILA_ID)">${esc(numero)}</span> · ${esc(vehiculo||'')} ${esc(placas||'')}${extra?` · ${extra}`:''}</div>`;
+  const seccionRojo = `
+    <h4>Complementos pendientes (${p.rojo.complementosPendientes.length})</h4>
+    ${p.rojo.complementosPendientes.length===0?'<div class="empty">Ninguno.</div>':p.rojo.complementosPendientes.map(c=>fila(c.siniestro_numero, c.vehiculo, c.placas, esc(c.causa)).replace('FILA_ID', c.siniestro_id)).join('')}
+    <h4>Autorizaciones pendientes de enviar (${p.rojo.autorizacionesPendientes.length})</h4>
+    ${p.rojo.autorizacionesPendientes.length===0?'<div class="empty">Ninguna.</div>':p.rojo.autorizacionesPendientes.map(s=>fila(s.numero, s.vehiculo, s.placas, esc(s.aseguradora)).replace('FILA_ID', s.id)).join('')}
+    <h4>Refacciones recibidas, avisar al cliente (${p.rojo.refaccionesRecibidas.length})</h4>
+    ${p.rojo.refaccionesRecibidas.length===0?'<div class="empty">Ninguna.</div>':p.rojo.refaccionesRecibidas.map(t=>fila(t.siniestro_numero, t.vehiculo, t.placas).replace('FILA_ID', t.siniestro_id)).join('')}
+    <h4>Clientes que necesitan aviso (${p.rojo.clientesQueNecesitanAviso.length})</h4>
+    ${p.rojo.clientesQueNecesitanAviso.length===0?'<div class="empty">Ninguno.</div>':p.rojo.clientesQueNecesitanAviso.map(h=>fila(h.siniestro_numero, h.vehiculo, h.placas, esc(h.hito_titulo)).replace('FILA_ID', h.siniestro_id)).join('')}
+    <h4>Citas que requieren confirmación (${p.rojo.citasQueRequierenConfirmacion.length})</h4>
+    ${p.rojo.citasQueRequierenConfirmacion.length===0?'<div class="empty">Ninguna.</div>':p.rojo.citasQueRequierenConfirmacion.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}`;
+  const seccionAmarillo = `
+    <h4>Esperando aseguradora (${p.amarillo.esperandoAseguradora.length})</h4>
+    ${p.amarillo.esperandoAseguradora.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoAseguradora.map(s=>fila(s.numero, s.vehiculo, s.placas, esc(s.aseguradora)).replace('FILA_ID', s.id)).join('')}
+    <h4>Esperando refacciones (${p.amarillo.esperandoRefacciones.length})</h4>
+    ${p.amarillo.esperandoRefacciones.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoRefacciones.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>Esperando autorización de complemento (${p.amarillo.esperandoAutorizacionComplemento.length})</h4>
+    ${p.amarillo.esperandoAutorizacionComplemento.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoAutorizacionComplemento.map(c=>fila(c.siniestro_numero, c.vehiculo, c.placas, esc(c.causa)).replace('FILA_ID', c.siniestro_id)).join('')}
+    <h4>Esperando respuesta del cliente (${p.amarillo.esperandoRespuestaCliente.length})</h4>
+    ${p.amarillo.esperandoRespuestaCliente.length===0?'<div class="empty">Ninguno.</div>':p.amarillo.esperandoRespuestaCliente.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}`;
+  const seccionVerde = `
+    <h4>En hojalatería (${p.verde.enHojalateria.length})</h4>
+    ${p.verde.enHojalateria.length===0?'<div class="empty">Ninguno.</div>':p.verde.enHojalateria.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>En pintura (${p.verde.enPintura.length})</h4>
+    ${p.verde.enPintura.length===0?'<div class="empty">Ninguno.</div>':p.verde.enPintura.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>En armado (${p.verde.enArmado.length})</h4>
+    ${p.verde.enArmado.length===0?'<div class="empty">Ninguno.</div>':p.verde.enArmado.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}
+    <h4>Listo para entrega (${p.verde.listoParaEntrega.length})</h4>
+    ${p.verde.listoParaEntrega.length===0?'<div class="empty">Ninguno.</div>':p.verde.listoParaEntrega.map(s=>fila(s.numero, s.vehiculo, s.placas).replace('FILA_ID', s.id)).join('')}`;
+  return `
+  <h2>Pendientes de hoy</h2>
+  <p class="subtle">Panorama diario para no tener que revisar siniestro por siniestro. Rojo = necesita una acción hoy. Ámbar = en espera de un tercero. Verde = avanzando en producción.</p>
+  <div class="ph-grid">
+    <div class="ph-col ph-rojo"><h3>Requieren atención (${p.rojo.total})</h3>${seccionRojo}</div>
+    <div class="ph-col ph-ambar"><h3>En espera (${p.amarillo.total})</h3>${seccionAmarillo}</div>
+    <div class="ph-col ph-verde"><h3>Avanzando (${p.verde.total})</h3>${seccionVerde}</div>
+  </div>`;
+}
+/* ===================== VISTA: CALIDAD / ENTREGA ===================== */
+async function viewCalidad(){
+  const expedientes = await api('GET','/api/reportes/bandeja-calidad');
+  const LABEL_CAL = { en_inspeccion:'En inspección', rechazado_a_retrabajo:'Rechazado a retrabajo', reinspeccion:'Reinspección', liberado:'Liberado' };
+  return `
+  <h2>Calidad / entrega</h2>
+  <p class="subtle">Expedientes con producción terminada, pendientes de liberar calidad o de entregar (secciones 5.12-5.15 del documento maestro).</p>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Calidad</th><th>Rechazos abiertos</th><th>Retrabajos críticos</th><th>Entrega</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de calidad/entrega.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.aseguradora)}</td>
+      <td><span class="badge ${s.estado_calidad==='liberado'?'verde':'ambar'}">${esc(LABEL_CAL[s.estado_calidad]||'Sin iniciar')}</span></td>
+      <td>${s.checklist_rechazados>0?`<span class="badge rojo">${s.checklist_rechazados}</span>`:'—'}</td>
+      <td>${s.retrabajos_criticos>0?`<span class="badge rojo">${s.retrabajos_criticos}</span>`:'—'}</td>
+      <td>${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Pendiente</span>'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s). Entra a la ficha del expediente, pestaña "Calidad / entrega".</p>`;
+}
+
+/* ===================== VISTA: PRODUCCIÓN (Beto) ===================== */
+async function viewProduccion(){
+  const expedientes = await api('GET','/api/reportes/bandeja-produccion');
+  const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
+  return `
+  <h2>Producción</h2>
+  <p class="subtle">Expedientes autorizados en proceso de reparación (módulo de Beto). Sección 5.10 y 9 del documento maestro: prioridades, bloqueos y retrabajos.</p>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Etapa de producción</th><th>Operaciones bloqueadas</th><th>Retrabajos abiertos</th><th>Complementos pendientes</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes en producción pendientes.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</td>
+      <td>${s.operaciones_bloqueadas>0?`<span class="badge rojo">${s.operaciones_bloqueadas}</span>`:'—'}</td>
+      <td>${s.retrabajos_abiertos>0?`<span class="badge ambar">${s.retrabajos_abiertos}</span>`:'—'}</td>
+      <td>${s.complementos_pendientes>0?`<span class="badge ambar">${s.complementos_pendientes}</span>`:'—'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) en producción. Entra a la ficha del expediente, pestaña "Producción", para la OT, operaciones, complementos y retrabajos.</p>`;
+}
+
+/* ===================== VISTA: VALUACIÓN / AUTORIZACIÓN ===================== */
+async function viewValuacion(){
+  const expedientes = await api('GET','/api/reportes/bandeja-valuacion');
+  const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
+  const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
+  const BADGE_AUT = { autorizada:'verde', parcial:'ambar', rechazada:'rojo', por_aclarar:'ambar', en_autorizacion:'gris' };
+  return `
+  <h2>Valuación y autorización</h2>
+  <p class="subtle">Expedientes con checklist documental listo, pendientes de resolver su valuación y autorización. La ruta de refacciones (Inpart/autosurtido/pago de daños) se recalcula sola según la aseguradora y las piezas autorizadas.</p>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Sistema</th><th>Valuación</th><th>Autorización</th><th>Ruta refacciones</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de valuación/autorización.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.sistema_valuacion||'—')}</td>
+      <td>${esc(LABEL_VAL[s.estado_valuacion]||'Sin iniciar')}</td>
+      <td><span class="badge ${BADGE_AUT[s.estado_autorizacion]||'gris'}">${LABEL_AUT[s.estado_autorizacion]||'Sin iniciar'}</span> ${s.autorizacion_vencida?'<span class="badge rojo">Sin respuesta (3+ días hábiles)</span>':''}</td>
+      <td>${esc(s.aseguradora_ruta_refacciones||'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Valuación / autorización".</p>`;
+}
+
+/* ===================== VISTA: ARMADO DE EXPEDIENTE (Vanessa) ===================== */
+async function viewExpediente(){
+  const expedientes = await api('GET','/api/reportes/bandeja-expediente');
+  const LABEL_EXP = { en_captura:'En captura', incompleto:'Incompleto', listo_para_valuacion:'Listo para valuación' };
+  const BADGE_EXP = { en_captura:'ambar', incompleto:'rojo', listo_para_valuacion:'verde' };
+  return `
+  <h2>Armado de expediente</h2>
+  <p class="subtle">Expedientes admitidos pendientes de digitalizar y validar documentalmente antes de enviarlos a valuación (módulo de Vanessa).</p>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Sistema valuación</th><th>Estado expediente</th><th>Documentos</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de armar.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.sistema_valuacion||'—')}</td>
+      <td><span class="badge ${BADGE_EXP[s.estado_expediente]||'gris'}">${LABEL_EXP[s.estado_expediente]||'Sin iniciar'}</span></td>
+      <td>${s.documentos_total>0?`${s.documentos_total} total${s.documentos_faltantes>0?` <span class="badge rojo">${s.documentos_faltantes} faltante${s.documentos_faltantes>1?'s':''}</span>`:''}`:'—'}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Expediente digital", para el checklist documental.</p>`;
+}
+
+/* ===================== VISTA: REVISIÓN TÉCNICA (Orlando) ===================== */
+async function viewTecnica(){
+  const expedientes = await api('GET','/api/reportes/bandeja-tecnica');
+  const LABEL_REV = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
+  const BADGE_REV = { en_revision:'ambar', requiere_desarme:'rojo', revision_terminada:'verde' };
+  return `
+  <h2>Revisión técnica</h2>
+  <p class="subtle">Vehículos ya disponibles para revisión (admisión completa) pendientes de daños, desarme y evidencia (módulo de Orlando).</p>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Aseguradora</th><th>Ingreso</th><th>Admisión</th><th>Revisión</th><th>Hallazgos</th><th>Riesgo</th><th>Tiempo</th></tr></thead><tbody>
+  ${expedientes.length===0?'<tr><td colspan="9" class="empty">Sin expedientes disponibles para revisión técnica.</td></tr>':expedientes.map(s=>`
+    <tr>
+      <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+      <td>${esc(s.vehiculo||'—')} ${esc(s.placas?('· '+s.placas):'')}</td>
+      <td>${esc(s.aseguradora)}</td>
+      <td>${s.ingreso_tipo?`<span class="badge ${s.ingreso_tipo!=='circulando'?'ambar':'gris'}">${s.ingreso_tipo==='grua'?'Grúa':s.ingreso_tipo==='permanece'?'Permanece':'Circulando'}</span>`:'—'}</td>
+      <td>${esc(s.estado_admision||'Pendiente')}</td>
+      <td><span class="badge ${BADGE_REV[s.estado_revision_tecnica]||'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span></td>
+      <td>${s.hallazgos>0?`${s.hallazgos}${s.hallazgos_ocultos>0?` (${s.hallazgos_ocultos} oculto${s.hallazgos_ocultos>1?'s':''})`:''}`:'—'}</td>
+      <td>${s.riesgo_seguridad?'<span class="badge rojo">No seguro</span>':'—'}</td>
+      <td>${s.ingreso_tipo==='grua'?`<span class="badge ${s.revision_vencida?'rojo':'ambar'}">${s.revision_vencida?'Vencido (72h)':'Límite '+esc(s.limite_revision_grua||'—')}</span>`:(s.dias_disponible_revision!=null?`${s.dias_disponible_revision} día(s)`:'—')}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) disponibles para revisión. Entra a la ficha del expediente, pestaña "Admisión / técnica", para capturar la admisión y los hallazgos. Las grúas tienen un plazo de 72 horas hábiles desde que quedan disponibles.</p>`;
+}
+
+function abrirFormNuevoEvento(siniestroId){
+  showModal(`
+    <h3>Registrar comunicación con el cliente</h3>
+    <div class="field"><label>Dirección</label><select id="fev_direccion"><option value="saliente">Taller → cliente</option><option value="entrante">Cliente → taller</option></select></div>
+    <div class="row-flex">
+      <div class="field"><label>Canal</label><select id="fev_canal"><option>WhatsApp</option><option>Teléfono</option><option>Correo</option><option>Presencial</option></select></div>
+      <div class="field"><label>Tipo</label><input id="fev_tipo" placeholder="Ej. mensaje, llamada, consulta"></div>
+    </div>
+    <div class="field"><label>Mensaje / resumen</label><textarea id="fev_mensaje" placeholder="Qué se dijo o qué preguntó el cliente"></textarea></div>
+    <div class="row-flex">
+      <div class="field"><label>Compromiso asumido</label><input id="fev_compromiso" placeholder="Ej. avisar mañana cuando lleguen las refacciones"></div>
+      <div class="field"><label>Próxima acción</label><input id="fev_proxima"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevoEvento(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevoEvento(siniestroId){
+  const mensaje = document.getElementById('fev_mensaje').value.trim();
+  if(!mensaje){ toast('Describe el mensaje o resultado del contacto.', 'error'); return; }
+  await api('POST','/api/eventos-cliente', {
+    siniestro_id: siniestroId, direccion: document.getElementById('fev_direccion').value, canal: document.getElementById('fev_canal').value,
+    tipo_evento: document.getElementById('fev_tipo').value, mensaje, compromiso: document.getElementById('fev_compromiso').value,
+    proxima_accion: document.getElementById('fev_proxima').value
+  });
+  toast('Comunicación registrada.', 'success');
+  closeModal(); render();
+}
+function abrirFormNuevaTarea(siniestroId){
+  showModal(`
+    <h3>Nueva tarea</h3>
+    <div class="field"><label>Descripción</label><textarea id="ft_desc" placeholder="Ej. llamar al cliente mañana a las 10am"></textarea></div>
+    <div class="field"><label>Fecha límite</label><input id="ft_fecha" type="date" value="${todayISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaTarea(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaTarea(siniestroId){
+  const descripcion = document.getElementById('ft_desc').value.trim();
+  if(!descripcion){ toast('Describe la tarea.', 'error'); return; }
+  await api('POST','/api/tareas', { siniestro_id: siniestroId, descripcion, fecha_limite: document.getElementById('ft_fecha').value });
+  toast('Tarea creada.', 'success');
+  closeModal(); render();
+}
+async function marcarTareaCompletada(id){
+  await api('PATCH','/api/tareas/'+id, { estado:'completada' });
+  toast('Tarea marcada como completada.', 'success');
+  render();
+}
+async function abrirFormHito(id){
+  const h = await api('GET','/api/hitos/'+id);
+  const s = h.clave==='entrega' ? await api('GET','/api/siniestros/'+h.siniestro_id) : null;
+  const CON_DETALLE = ['en_complemento','bloqueado'];
+  showModal(`
+    <h3>Actualizar hito: ${esc(h.titulo)}</h3>
+    <p class="subtle">${esc(h.hito_descripcion||'')}</p>
+    <div class="field"><label>Nuevo estado</label><select id="fh_estado" onchange="
+      document.getElementById('fh_motivo_wrap').style.display=this.value==='no_aplica'?'block':'none';
+      document.getElementById('fh_mensaje_wrap').style.display=this.value==='enviado'?'block':'none';
+      document.getElementById('fh_detalle_wrap').style.display=${JSON.stringify(CON_DETALLE)}.includes(this.value)?'block':'none';
+      document.getElementById('fh_detalle_label').textContent=this.value==='en_complemento'?'¿Qué documento o refacción falta?':'¿Cuál es el motivo específico del bloqueo?';
+    ">
+      <option value="pendiente" ${h.estado==='pendiente'?'selected':''}>Pendiente</option>
+      <option value="en_complemento" ${h.estado==='en_complemento'?'selected':''}>En complemento (falta documento/refacción)</option>
+      <option value="esperando_autorizacion" ${h.estado==='esperando_autorizacion'?'selected':''}>Esperando autorización</option>
+      <option value="en_proceso" ${h.estado==='en_proceso'?'selected':''}>En proceso</option>
+      <option value="generado" ${h.estado==='generado'?'selected':''}>Generado (borrador listo)</option>
+      <option value="revisado" ${h.estado==='revisado'?'selected':''}>Revisado</option>
+      <option value="autorizado" ${h.estado==='autorizado'?'selected':''}>Autorizado</option>
+      <option value="completado" ${h.estado==='completado'?'selected':''}>Completado</option>
+      <option value="enviado" ${h.estado==='enviado'?'selected':''}>Enviado al cliente</option>
+      <option value="bloqueado" ${h.estado==='bloqueado'?'selected':''}>Bloqueado</option>
+      ${h.condicional?`<option value="no_aplica" ${h.estado==='no_aplica'?'selected':''}>No aplica</option>`:''}
+    </select></div>
+    <div class="field" id="fh_motivo_wrap" style="display:${h.estado==='no_aplica'?'block':'none'}"><label>Motivo de "no aplica"</label><input id="fh_motivo" value="${esc(h.motivo_no_aplica||'')}"></div>
+    <div class="field" id="fh_detalle_wrap" style="display:${CON_DETALLE.includes(h.estado)?'block':'none'}"><label id="fh_detalle_label">${h.estado==='bloqueado'?'¿Cuál es el motivo específico del bloqueo?':'¿Qué documento o refacción falta?'}</label><input id="fh_detalle" value="${esc(h.detalle||'')}"></div>
+    <div class="field" id="fh_mensaje_wrap" style="display:none"><label>Mensaje enviado al cliente (queda registrado en la bitácora)</label><textarea id="fh_mensaje"></textarea></div>
+    ${h.clave==='entrega' && s && s.cubre_deducible==null ? `
+    <div class="field"><label>¿El siniestro cubre deducible?</label><select id="fh_deducible">
+      <option value="">Sin responder todavía</option>
+      <option value="1">Sí</option>
+      <option value="0">No</option>
+    </select></div>` : ''}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarHito(${id})">Guardar</button></div>
+  `);
+}
+async function guardarHito(id){
+  const estado = document.getElementById('fh_estado').value;
+  const fhDeducible = document.getElementById('fh_deducible');
+  const payload = {
+    estado, motivo_no_aplica: document.getElementById('fh_motivo').value,
+    detalle: document.getElementById('fh_detalle') ? document.getElementById('fh_detalle').value : '',
+    mensaje: document.getElementById('fh_mensaje') ? document.getElementById('fh_mensaje').value : ''
+  };
+  if(fhDeducible && fhDeducible.value !== '') payload.cubre_deducible = fhDeducible.value === '1';
+  try{
+    await api('PATCH','/api/hitos/'+id, payload);
+    toast('Hito actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+// Proceso_Completo_Servicio_Cristian.docx (sección 2): sin credenciales de WhatsApp Business API no se
+// puede crear el grupo ni mandar el mensaje solo -- se genera el texto de bienvenida listo para
+// copiar/pegar al grupo, igual que ya se hace con el contexto de IA.
+async function abrirMensajeBienvenida(siniestroId){
+  const s = await api('GET','/api/siniestros/'+siniestroId);
+  const texto = `Buen día, le damos la bienvenida a Servicio Cristian.\n\n` +
+    `Vehículo: ${s.vehiculo||'(pendiente)'} · Placas: ${s.placas||'(pendiente)'}\n` +
+    `Aseguradora: ${s.aseguradora}${s.numero?` · Siniestro: ${s.numero}`:''}\n\n` +
+    `Así sigue el proceso a partir de hoy:\n` +
+    `1. Revisamos la unidad y contamos con 72 horas para que la evaluación quede autorizada por la aseguradora.\n` +
+    `2. En cuanto se autoriza, se asignan los proveedores de las refacciones necesarias.\n` +
+    `3. En cuanto llegan las piezas, se repara la unidad.\n\n` +
+    `Le vamos a mantener informado en este grupo durante todo el proceso. Cualquier duda, quedamos atentos.`;
+  showModal(`
+    <h3>Mensaje de bienvenida (WhatsApp)</h3>
+    <p class="subtle">Crea el grupo de WhatsApp con el cliente (y el supervisor de siniestros si la aseguradora lo pide) y pega este mensaje ahí.</p>
+    <div class="field"><textarea id="fbien_texto" readonly style="min-height:220px;">${esc(texto)}</textarea></div>
+    <button class="btn small secondary" type="button" onclick="copiarMensajeBienvenida()">Copiar mensaje</button>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button><button class="btn" onclick="marcarGrupoWhatsappCreado(${siniestroId})">Marcar grupo creado</button></div>
+  `, true);
+}
+function copiarMensajeBienvenida(){
+  const el = document.getElementById('fbien_texto');
+  el.select();
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(el.value);
+    else document.execCommand('copy');
+    toast('Mensaje copiado.', 'success');
+  }catch(e){ toast('No se pudo copiar automáticamente; selecciona el texto manualmente.', 'warn'); }
+}
+async function marcarGrupoWhatsappCreado(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { grupo_whatsapp_creado: 1 });
+    toast('Grupo de WhatsApp marcado como creado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+// Proceso_Completo_Servicio_Cristian.docx (secciones 8-9): los dos avisos que Roberto hoy manda por
+// correo. Confirmación previa porque disparan tareas automáticas a Alejandra y Daniela.
+async function avisarProveedoresPendientes(siniestroId){
+  if(!confirm('¿Avisar que la valuación ya está autorizada pero seguimos esperando proveedor? Se les avisará a Alejandra y Daniela.')) return;
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId+'/avisar-proveedores-pendientes', {});
+    toast('Aviso enviado: proveedores pendientes.', 'success');
+    render();
+  }catch(e){}
+}
+async function enviarExpedienteCompleto(siniestroId){
+  if(!confirm('¿Enviar el expediente completo al equipo (evaluación autorizada, orden de trabajo y proveedores ya asignados)? Se les avisará a Alejandra y Daniela.')) return;
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId+'/enviar-expediente-completo', {});
+    toast('Expediente completo enviado al equipo.', 'success');
+    render();
+  }catch(e){}
+}
+/* ===================== MÓDULO ALEJANDRA: copiloto de IA (sin API conectada — copiar/pegar) ===================== */
+async function abrirFormIA(siniestroId, hitoId){
+  const r = await api('GET', `/api/mensajes-ia/contexto?siniestro_id=${siniestroId}${hitoId?`&hito_id=${hitoId}`:''}`);
+  showModal(`
+    <h3>Preparar mensaje con IA</h3>
+    <ol style="padding-left:18px;margin:0 0 10px;">
+      <li>Copia el contexto de abajo.</li>
+      <li>Pégalo en tu ChatGPT y pide que redacte el mensaje para el cliente.</li>
+      <li>Pega aquí la respuesta que te dio la IA y guarda el borrador.</li>
+    </ol>
+    <div class="field"><label>Contexto (solo lectura)</label><textarea id="fia_contexto" readonly style="min-height:180px;">${esc(r.texto)}</textarea></div>
+    <button class="btn small secondary" type="button" onclick="copiarContextoIA()">Copiar contexto</button>
+    <div class="field" style="margin-top:10px;"><label>Borrador de la IA (pégalo aquí)</label><textarea id="fia_borrador" style="min-height:120px;" placeholder="Pega aquí lo que te devolvió tu ChatGPT..."></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button><button class="btn" onclick="guardarMensajeIa(${siniestroId}, ${hitoId||'null'})">Guardar borrador</button></div>
+  `, true);
+}
+function copiarContextoIA(){
+  const el = document.getElementById('fia_contexto');
+  el.select();
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(el.value);
+    else document.execCommand('copy');
+    toast('Contexto copiado.', 'success');
+  }catch(e){ toast('No se pudo copiar automáticamente; selecciona el texto manualmente.', 'warn'); }
+}
+async function guardarMensajeIa(siniestroId, hitoId){
+  const contexto_usado = document.getElementById('fia_contexto').value;
+  const borrador = document.getElementById('fia_borrador').value.trim();
+  await api('POST','/api/mensajes-ia', { siniestro_id: siniestroId, hito_id: hitoId, contexto_usado, borrador });
+  toast('Borrador guardado.', 'success');
+  closeModal(); render();
+}
+async function cambiarEstadoMensajeIa(id, estado){
+  try{
+    await api('PATCH','/api/mensajes-ia/'+id, { estado });
+    toast(estado==='enviado' ? 'Mensaje marcado como enviado y registrado en la bitácora.' : 'Mensaje marcado como revisado.', 'success');
+    render();
+  }catch(e){}
+}
+function formNuevoSiniestro(){
+  showModal(`
+    <h3>Nuevo siniestro</h3>
+    <div class="field"><label>Número de siniestro</label><input id="f_numero" placeholder="0186561262A"></div>
+    <div class="row-flex">
+      <div class="field"><label>Aseguradora</label><select id="f_aseguradora" onchange="actualizarHintMapfre('f_aseguradora','f_hint_mapfre')">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Vehículo</label><input id="f_vehiculo" placeholder="Marca / modelo"></div>
+    </div>
+    <p class="subtle" id="f_hint_mapfre" style="display:none;margin-top:-6px;">Para MAPFRE: captura el número tal como viene en la ODA, <b>sin agregar la terminación 1, 2 o 3</b>.</p>
+    <div class="row-flex">
+      <div class="field"><label>Placas</label><input id="f_placas"></div>
+      <div class="field"><label>Fecha de ingreso</label><input id="f_fecha" type="date" value="${todayISO()}"></div>
+    </div>
+    <p class="subtle">Si dejas vehículo o placas vacíos, el siniestro se guarda como "Pendiente de completar" y podrás editarlo después.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarSiniestro()">Guardar</button></div>
+  `);
+}
+async function guardarSiniestro(){
+  try{
+    const s = await api('POST','/api/siniestros', {
+      numero: document.getElementById('f_numero').value.trim(), aseguradora: document.getElementById('f_aseguradora').value,
+      vehiculo: document.getElementById('f_vehiculo').value, placas: document.getElementById('f_placas').value, fecha_ingreso: document.getElementById('f_fecha').value
+    });
+    if(s.advertencia) toast(s.advertencia, 'warn'); else toast('Siniestro registrado.', 'success');
+    closeModal(); goSiniestro(s.id);
+  }catch(e){
+    if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.id); }
+  }
+}
+function abrirFormEditarSiniestro(id){
+  api('GET','/api/siniestros/'+id).then(s=>{
+    const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
+    const REQ_OPCIONES = [['por_definir','Por definir'],['si','Sí'],['no','No']];
+    showModal(`
+      <h3>Editar siniestro ${esc(s.numero)}</h3>
+      <!-- Punto 2 del documento PORTAL SC (Orlando, 8-sep-2026): Alejandra en ocasiones captura mal el
+           número de siniestro y antes no había forma de corregirlo -- se agrega aquí, con la misma
+           validación de duplicados que ya protege el alta (POST /api/siniestros). -->
+      <div class="row-flex">
+        <div class="field"><label>Número de siniestro</label><input id="fe_numero" value="${esc(s.numero||'')}" onkeyup="actualizarHintMapfre('fe_aseguradora','fe_hint_mapfre')"></div>
+        <div class="field"><label>Aseguradora</label><select id="fe_aseguradora" onchange="actualizarHintMapfre('fe_aseguradora','fe_hint_mapfre')">${ASEGURADORAS.map(a=>`<option ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+      </div>
+      <p class="subtle" id="fe_hint_mapfre" style="display:none;margin-top:-6px;">Para MAPFRE: captura el número tal como viene en la ODA, <b>sin agregar la terminación 1, 2 o 3</b>.</p>
+      <div class="row-flex">
+        <div class="field"><label>Vehículo</label><input id="fe_vehiculo" value="${esc(s.vehiculo||'')}"></div>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Placas</label><input id="fe_placas" value="${esc(s.placas||'')}"></div>
+        <div class="field"><label>Año/modelo</label><input id="fe_anio" value="${esc(s.anio_modelo||'')}"></div>
+      </div>
+      <div class="field"><label>Notas</label><textarea id="fe_notas">${esc(s.notas||'')}</textarea></div>
+      ${esAtencionCliente?`
+      <div class="section" style="border-top:1px solid var(--borde,#e5e7eb);margin-top:10px;padding-top:10px;">
+        <h4 style="margin:0 0 8px;">Datos de cliente (módulo Alejandra)</h4>
+        <div class="row-flex">
+          <div class="field"><label>Nombre del cliente</label><input id="fe_cliente_nombre" value="${esc(s.cliente_nombre||'')}"></div>
+          <div class="field"><label>Teléfono / WhatsApp</label><input id="fe_cliente_telefono" value="${esc(s.cliente_telefono||'')}"></div>
+        </div>
+        <div class="field"><label>Correo</label><input id="fe_cliente_correo" type="email" value="${esc(s.cliente_correo||'')}"></div>
+        <div class="field"><label>Notas de contacto</label><textarea id="fe_cliente_notas">${esc(s.cliente_notas||'')}</textarea></div>
+        <div class="row-flex">
+          <div class="field"><label>Orden de admisión</label><input id="fe_orden_admision" value="${esc(s.orden_admision||'')}"></div>
+          <div class="field"><label>Etapa actual</label><input id="fe_etapa_actual" value="${esc(s.etapa_actual||'')}"></div>
+        </div>
+        <div class="field"><label>¿Requiere cambio de refacciones?</label><select id="fe_requiere_refacciones">
+          ${REQ_OPCIONES.map(([v,l])=>`<option value="${v}" ${s.requiere_refacciones===v?'selected':''}>${l}</option>`).join('')}
+        </select></div>
+      </div>`:''}
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionSiniestro(${id})">Guardar cambios</button></div>
+    `);
+  });
+}
+async function guardarEdicionSiniestro(id){
+  const payload = {
+    numero: document.getElementById('fe_numero').value, aseguradora: document.getElementById('fe_aseguradora').value, vehiculo: document.getElementById('fe_vehiculo').value,
+    placas: document.getElementById('fe_placas').value, anio_modelo: document.getElementById('fe_anio').value, notas: document.getElementById('fe_notas').value
+  };
+  const campoCliente = document.getElementById('fe_cliente_nombre');
+  if(campoCliente){
+    payload.cliente_nombre = campoCliente.value;
+    payload.cliente_telefono = document.getElementById('fe_cliente_telefono').value;
+    payload.cliente_correo = document.getElementById('fe_cliente_correo').value;
+    payload.cliente_notas = document.getElementById('fe_cliente_notas').value;
+    payload.orden_admision = document.getElementById('fe_orden_admision').value;
+    payload.etapa_actual = document.getElementById('fe_etapa_actual').value;
+    payload.requiere_refacciones = document.getElementById('fe_requiere_refacciones').value;
+  }
+  try{
+    await api('PATCH','/api/siniestros/'+id, payload);
+    toast('Siniestro actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    // El toast de error ya lo mostró api(); si es un número duplicado, se deja el formulario abierto
+    // para que se corrija -- no se navega a ningún lado (a diferencia del alta, aquí no hay un siniestro
+    // "nuevo" a medio crear que convenga redirigir).
+  }
+}
+// Hallazgo M-01 (Informe Daniela): con cientos de siniestros, un <select> plano era imposible de usar
+// a ojo -- se cambia por un campo de texto con búsqueda nativa (datalist) por número o vehículo.
+function formNuevoPedido(){
+  api('GET','/api/siniestros').then(siniestros=>{
+    window.__siniestrosParaPedido = siniestros;
+    showModal(`
+      <h3>Nuevo pedido</h3>
+      <div class="field"><label>Siniestro</label>
+        <input id="f_sin_buscar" list="dl_siniestros" placeholder="Escribe para buscar por número o vehículo…" autocomplete="off">
+        <datalist id="dl_siniestros">${siniestros.map(s=>`<option value="${esc(s.numero)} — ${esc(s.vehiculo||'')}">`).join('')}</datalist>
+      </div>
+      <div class="row-flex">
+        <div class="field"><label>Número de pedido</label><input id="f_numped" placeholder="1137000"></div>
+        <div class="field"><label>Fecha prevista</label><input id="f_fechaprev" type="date" value="${todayISO()}"></div>
+      </div>
+      <div class="field"><label>Estatus Inpart</label><select id="f_estinpart">${['Aguardando confirmación','En procesamiento','Facturado','Entregado','Recibido','Cancelado','Otro'].map(e=>`<option>${e}</option>`).join('')}</select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarPedido()">Guardar</button></div>
+    `);
+  });
+}
+async function guardarPedido(confirmarFechaPrevista){
+  const textoSiniestro = document.getElementById('f_sin_buscar').value;
+  const numeroBuscado = textoSiniestro.split(' — ')[0].trim();
+  const siniestroElegido = (window.__siniestrosParaPedido||[]).find(s=>s.numero===numeroBuscado);
+  if(!siniestroElegido){ toast('Selecciona un siniestro de la lista (escribe y elige una de las sugerencias).', 'error'); return; }
+  const payload = {
+    numero: document.getElementById('f_numped').value.trim(), siniestro_id: siniestroElegido.id,
+    fecha_prevista: document.getElementById('f_fechaprev').value, estatus_inpart: document.getElementById('f_estinpart').value
+  };
+  if(confirmarFechaPrevista) payload.confirmar_fecha_prevista = true;
+  try{
+    const p = await api('POST','/api/pedidos', payload, { silent: true });
+    if(p.advertencias && p.advertencias.length) p.advertencias.forEach(a=>toast(a,'warn')); else toast('Pedido registrado.', 'success');
+    closeModal(); goSiniestro(p.siniestro_id);
+  }catch(e){
+    if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.siniestro_id); return; }
+    // Hallazgo A-05: fecha prevista hoy o anterior — pedir confirmación explícita en vez de bloquear en silencio.
+    if(e.data && e.data.error === 'FECHA_PREVISTA_INVALIDA'){
+      if(confirm(e.data.mensaje + ' ¿Confirmas que es correcta y quieres continuar?')) return guardarPedido(true);
+      return;
+    }
+    toast((e.data && e.data.error) || e.message || 'Error al guardar el pedido.', 'error');
+  }
+}
+function formNuevoProveedor(){
+  showModal(`
+    <h3>Nuevo proveedor</h3>
+    <div class="field"><label>Razón social</label><input id="f_rs"></div>
+    <div class="row-flex">
+      <div class="field"><label>Contacto</label><input id="f_cont"></div>
+      <div class="field"><label>Correo</label><input id="f_correo" type="email"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Teléfono</label><input id="f_tel"></div>
+      <div class="field"><label>Teléfono alterno</label><input id="f_tel_alt"></div>
+    </div>
+    <div class="field"><label>Reglas especiales</label><textarea id="f_regla" placeholder="Ej. confirmar siempre por teléfono además de correo."></textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarProveedor()">Guardar</button></div>
+  `);
+}
+async function guardarProveedor(){
+  const razon_social = document.getElementById('f_rs').value.trim();
+  if(!razon_social){ toast('La razón social es obligatoria.', 'error'); return; }
+  try{
+    const pv = await api('POST','/api/proveedores', {
+      razon_social, contacto: document.getElementById('f_cont').value, correo: document.getElementById('f_correo').value,
+      telefono: document.getElementById('f_tel').value, telefono_alterno: document.getElementById('f_tel_alt').value,
+      regla_especial: document.getElementById('f_regla').value
+    });
+    toast('Proveedor registrado.', 'success');
+    closeModal(); goProveedor(pv.id);
+  }catch(e){}
+}
+async function abrirFormEditarProveedor(id){
+  const datos = await api('GET','/api/proveedores/'+id);
+  showModal(`
+    <h3>Editar proveedor</h3>
+    <div class="row-flex">
+      <div class="field"><label>Contacto</label><input id="fpv_cont" value="${esc(datos.contacto||'')}"></div>
+      <div class="field"><label>Correo</label><input id="fpv_correo" type="email" value="${esc(datos.correo||'')}"></div>
+    </div>
+    <div class="row-flex">
+      <div class="field"><label>Teléfono</label><input id="fpv_tel" value="${esc(datos.telefono||'')}"></div>
+      <div class="field"><label>Teléfono alterno</label><input id="fpv_tel_alt" value="${esc(datos.telefono_alterno||'')}"></div>
+    </div>
+    <div class="field"><label>Reglas especiales</label><textarea id="fpv_regla">${esc(datos.regla_especial||'')}</textarea></div>
+    <div class="field"><label><input id="fpv_activo" type="checkbox" ${datos.activo?'checked':''}> Proveedor activo</label></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionProveedor(${id})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionProveedor(id){
+  try{
+    await api('PATCH','/api/proveedores/'+id, {
+      contacto: document.getElementById('fpv_cont').value, correo: document.getElementById('fpv_correo').value,
+      telefono: document.getElementById('fpv_tel').value, telefono_alterno: document.getElementById('fpv_tel_alt').value,
+      regla_especial: document.getElementById('fpv_regla').value, activo: document.getElementById('fpv_activo').checked ? 1 : 0
+    });
+    toast('Proveedor actualizado.', 'success');
+    closeModal(); goProveedor(id);
+  }catch(e){}
+}
+
+/* ===================== VISTA: REGLAS ===================== */
+function viewReglas(){
+  const reglas = [
+    ['R-01','Al revisar Inpart, usar como fecha inicial el 1 de enero del año en curso y como final el día actual.'],
+    ['R-02','Número que empieza con "018" y termina en "A" se trata como siniestro GNP; los más cortos suelen ser pedidos.'],
+    ['R-03','Antes de generar un correo, se agrupan y revisan todas las piezas de cada proveedor en ese pedido.'],
+    ['R-04','Cualquier pieza recibida se excluye del correo, sin mencionarlo en el cuerpo.'],
+    ['R-05','Si todas las piezas del pedido están recibidas o canceladas, no se genera correo.'],
+    ['R-06','Facturado no equivale a recibido: sigue pendiente hasta confirmar recepción física.'],
+    ['R-07','Ningún proveedor se bloquea permanentemente; solo exclusiones temporales por envío con motivo.'],
+    ['R-08','Seguimientos GNP copian por defecto a cristian.hernandezortiz@gnp.com.mx, luis.ramirezalvarez@gnp.com.mx y roveytia@hotmail.com.'],
+    ['R-09','Los destinatarios de copia se pueden editar o quitar antes de aprobar el correo.'],
+    ['R-10','Nunca se guardan contraseñas de Inpart, Gmail ni ningún otro sistema en el tablero.']
+  ];
+  return `
+  <h2>Reglas operativas</h2>
+  <div class="section"><table><thead><tr><th>ID</th><th>Regla</th></tr></thead><tbody>
+  ${reglas.map(r=>`<tr><td>${r[0]}</td><td>${esc(r[1])}</td></tr>`).join('')}
+  </tbody></table></div>
+  <div class="section">
+    <h3>Sobre las pruebas de este sistema</h3>
+    <p class="subtle">Las pruebas de aceptación (CA-01 a CA-10 y el caso real de Daniela) ahora son un archivo de pruebas automatizadas real en el proyecto (<code>tests/api.test.js</code>), que falla de verdad si una regla se rompe — no un panel que siempre marca "aprobado" (corrección F-09).</p>
+  </div>`;
+}
+
+/* ===================== VISTA: RESPALDOS (solo admin) ===================== */
+async function viewRespaldos(){
+  const lista = await api('GET', '/api/respaldos');
+  function fmtBytes(n){
+    if(n > 1024*1024) return (n/1024/1024).toFixed(2) + ' MB';
+    if(n > 1024) return (n/1024).toFixed(0) + ' KB';
+    return n + ' B';
+  }
+  return `
+  <h2>Respaldos de la base de datos</h2>
+  <p class="subtle">Ítem 11 del triage de Daniela. Se crea un respaldo automático completo cada 24 horas
+  (se conservan los últimos 14). Además del respaldo automático de Render (instantánea diaria del disco,
+  conservada al menos 7 días, restaurable desde su panel), aquí puedes crear y descargar un respaldo
+  manual de la base de datos en cualquier momento — por ejemplo, antes de una carga masiva grande.</p>
+  <div class="section">
+    <button class="btn" onclick="crearRespaldoAhora()">Crear respaldo ahora</button>
+  </div>
+  <div class="section">
+    ${lista.length===0?'<div class="empty">Sin respaldos todavía. Crea el primero con el botón de arriba.</div>':`
+    <table><thead><tr><th>Archivo</th><th>Tamaño</th><th>Creado</th><th></th></tr></thead><tbody>
+    ${lista.map(r=>`<tr>
+      <td>${esc(r.nombre)}</td>
+      <td>${fmtBytes(r.tamano_bytes)}</td>
+      <td>${fmtFechaHora(r.creado_en)}</td>
+      <td><a class="link" href="/api/respaldos/${encodeURIComponent(r.nombre)}/descargar" target="_blank">Descargar</a></td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+async function crearRespaldoAhora(){
+  await api('POST', '/api/respaldos');
+  render();
+}
+
+/* ===================== INIT ===================== */
+(async function init(){
+  try{
+    const r = await api('GET','/api/auth/me', null, { silent:true });
+    currentUser = r.user;
+    document.getElementById('topHeader').classList.remove('hidden');
+    document.getElementById('footerNote').classList.remove('hidden');
+    document.getElementById('userChip').textContent = currentUser.nombre + ' · ' + currentUser.rol;
+    render();
+  }catch(e){
+    renderLogin();
+  }
+})();
