@@ -471,9 +471,19 @@ router.get('/bandeja-clientes', requireAuth, (req, res)=>{
 // cumplieron los requisitos reales de admisión de Alejandra (fecha_hora_disponible_revision sellada) --
 // antes aparecían TODOS los no-terminados sin importar si ya estaban realmente disponibles para revisar.
 router.get('/bandeja-tecnica', requireAuth, (req, res)=>{
+  // Punto 9 del documento PORTAL SC (Orlando, 8-sep-2026): "diferencias entre ambas tablas? por qué en
+  // una tabla sale diferente información?" -- comparando las capturas que mandó, la respuesta es que esta
+  // bandeja ("Revisión técnica", tarjeta propia de Orlando) y /api/reportes/pendientes-revision ("Pendientes
+  // de revisión", la que aparece en Inicio) usaban criterios parecidos pero NO idénticos: la segunda ya
+  // excluía expedientes que ya se habían enviado a valuación (valuacion_fecha_envio con valor), pero esta
+  // bandeja no lo hacía -- un expediente cuya revisión técnica quedó inconsistente (p. ej. por carga
+  // masiva) podía seguir apareciendo aquí como "pendiente de revisar" aun cuando ya se mandó a valuar.
+  // Se alinea el mismo filtro en ambas, para que un expediente no "desaparezca" de una bandeja y siga
+  // vivo en la otra.
   const siniestros = db.prepare(`SELECT * FROM siniestros WHERE archivado = 0
     AND (estado_revision_tecnica IS NULL OR estado_revision_tecnica != 'revision_terminada')
     AND fecha_hora_disponible_revision IS NOT NULL
+    AND (valuacion_fecha_envio IS NULL OR valuacion_fecha_envio = '')
     ORDER BY fecha_hora_disponible_revision ASC`).all();
   const ahoraISO = new Date().toISOString().slice(0,10);
   const out = siniestros.map(s=>{

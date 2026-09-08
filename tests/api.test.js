@@ -3896,3 +3896,204 @@ test('FRONT-4 (reporte de Roberto, 3-sep-2026): las horas de la Línea de tiempo
   assert.match(appJs, /fmtFechaHora\(a\.creado_en\)/, 'archivos (fecha de carga) debe usar fmtFechaHora');
   assert.match(appJs, /fmtFechaHora\(z\.fecha_recepcion\)/, 'piezas recibidas (fecha de recepción) debe usar fmtFechaHora');
 });
+
+/* ===================== Puntos del documento PORTAL SC (Orlando, 8-sep-2026) ===================== */
+
+test('PORTAL-1 (punto 2): Alejandra puede editar el número de un siniestro mal capturado, con el mismo bloqueo de duplicados que el alta', async () => {
+  const uno = (await req('POST', '/api/siniestros', { numero: 'PORTAL1-A', aseguradora: 'GNP' })).data;
+  const dos = (await req('POST', '/api/siniestros', { numero: 'PORTAL1-B', aseguradora: 'GNP' })).data;
+
+  // Nota: no se usa la cuenta real "alejandra@serviciocristian.mx" porque REQ-DANIELA-19 le resetea la
+  // contraseña más arriba en esta misma suite; se crea una cuenta de prueba propia con el rol, igual que
+  // hace FASE0-3/PROCESO-WHATSAPP-1, para no depender del orden de las demás pruebas.
+  const dbP1 = require('../server/db');
+  const bcryptP1 = require('bcryptjs');
+  dbP1.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba PORTAL1', 'atencion.portal1.test@serviciocristian.mx', bcryptP1.hashSync('x',4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.portal1.test@serviciocristian.mx', password: 'x' });
+  const chocado = await req('PATCH', '/api/siniestros/' + uno.id, { numero: 'PORTAL1-B' });
+  assert.equal(chocado.status, 409, 'no debe permitir dejar dos siniestros con el mismo número');
+
+  const vacio = await req('PATCH', '/api/siniestros/' + uno.id, { numero: '   ' });
+  assert.equal(vacio.status, 400, 'el número no puede quedar vacío');
+
+  const corregido = await req('PATCH', '/api/siniestros/' + uno.id, { numero: 'PORTAL1-A-CORREGIDO' });
+  assert.equal(corregido.status, 200);
+  assert.equal(corregido.data.numero, 'PORTAL1-A-CORREGIDO');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  void dos;
+});
+
+test('PORTAL-2 (punto 3): recordatorio de MAPFRE sin terminación 1/2/3, sin recortar números reales que legítimamente terminan así', async () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(appJs, /function actualizarHintMapfre\(/, 'debe existir el helper de recordatorio de MAPFRE');
+  assert.match(appJs, /sel\.value === 'Mapfre'/, 'el recordatorio debe activarse específicamente para Mapfre');
+  // No debe existir ninguna transformación automática que recorte el último carácter del número
+  // capturado -- eso corrompería números reales que terminan en 1/2/3 (ver seed 4264105314000171).
+  assert.ok(!/numero\.slice\(0,\s*-1\)/.test(appJs), 'no debe recortar a ciegas el último carácter del número capturado');
+
+  // El número real de MAPFRE del seed (termina en 171, dígito final "1") debe seguir aceptándose tal cual,
+  // sin que ninguna regla de negocio lo altere.
+  const s = (await req('POST', '/api/siniestros', { numero: '4264105314000171-PORTAL2', aseguradora: 'Mapfre' })).data;
+  assert.equal(s.numero, '4264105314000171-PORTAL2', 'un número real de MAPFRE que termina en 1 debe guardarse íntegro, sin recorte automático');
+});
+
+test('PORTAL-3 (punto 1): "Daño oculto detectado" ya no es una opción elegible en el panel de revisión técnica -- vive en el proceso de producción de Beto', async () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.ok(!/<option value="dano_oculto_detectado" \$\{s\.estado_evidencia===/.test(appJs),
+    'ya no debe existir como <option> seleccionable dentro del <select> de estado_evidencia');
+  // La ruta correcta para daño oculto durante producción (evidencia autorizable a la aseguradora) ya
+  // existe vía complementos -- debe seguir existiendo.
+  assert.match(appJs, /abrirFormNuevoComplemento|complementos/, 'el flujo real de daño oculto (complementos, proceso de Beto) debe seguir presente');
+});
+
+test('PORTAL-4 (punto 4): "Revisión terminada" sella su fecha automáticamente, solo una vez, y se limpia si se reabre', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PORTAL4-TEST', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
+  const terminada1 = await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  assert.equal(terminada1.status, 200);
+  assert.ok(terminada1.data.revision_tecnica_terminada_en, 'debe sellar la fecha automáticamente al terminar la revisión');
+  const selloOriginal = terminada1.data.revision_tecnica_terminada_en;
+
+  // Reenviar el mismo estado (p. ej. re-guardar el formulario) no debe mover el sello.
+  const reenviado = await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  assert.equal(reenviado.data.revision_tecnica_terminada_en, selloOriginal, 'un segundo envío del mismo estado no debe sobrescribir el sello (gana el primer registro)');
+
+  // Reabrir la revisión limpia el sello; volver a terminarla genera uno nuevo.
+  const reabierta = await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'requiere_desarme' });
+  assert.equal(reabierta.data.revision_tecnica_terminada_en, null, 'al reabrir la revisión, el sello debe limpiarse');
+  const terminada2 = await req('PATCH', '/api/siniestros/' + s.id, { estado_revision_tecnica: 'revision_terminada' });
+  assert.ok(terminada2.data.revision_tecnica_terminada_en, 'al volver a terminar la revisión, debe sellarse de nuevo');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('PORTAL-9: "Revisión técnica" y "Pendientes de revisión" deben coincidir -- un expediente ya enviado a valuación no debe seguir apareciendo como pendiente de revisar', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PORTAL9-TEST', aseguradora: 'GNP' })).data;
+  const db = require('../server/db');
+  // Simula el caso real que reportó Orlando (una fecha_hora_disponible_revision sellada, sin
+  // estado_revision_tecnica terminado, típico de datos importados por lote).
+  db.prepare("UPDATE siniestros SET fecha_hora_disponible_revision = datetime('now') WHERE id = ?").run(s.id);
+
+  let bandejaTecnica = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  let pendientesRevision = (await req('GET', '/api/reportes/pendientes-revision')).data;
+  assert.ok(bandejaTecnica.some(f => f.id === s.id), 'antes de enviarse a valuación, debe aparecer en Revisión técnica');
+  assert.ok(pendientesRevision.some(f => f.id === s.id), 'antes de enviarse a valuación, debe aparecer en Pendientes de revisión');
+
+  // Se envía a valuación (aunque la revisión técnica haya quedado inconsistente, sin marcar terminada).
+  db.prepare("UPDATE siniestros SET valuacion_fecha_envio = '2026-09-08' WHERE id = ?").run(s.id);
+
+  bandejaTecnica = (await req('GET', '/api/reportes/bandeja-tecnica')).data;
+  pendientesRevision = (await req('GET', '/api/reportes/pendientes-revision')).data;
+  assert.ok(!bandejaTecnica.some(f => f.id === s.id), 'ya enviado a valuación, no debe seguir en Revisión técnica (antes sí se quedaba, mostrando información distinta a la otra bandeja)');
+  assert.ok(!pendientesRevision.some(f => f.id === s.id), 'ya enviado a valuación, tampoco debe aparecer en Pendientes de revisión');
+});
+
+test('PORTAL-5-8: flujo completo de Autosurtidos -- piezas requisitadas, roles por etapa, y bloqueo de avance sin inventario condicional', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'PORTAL58-TEST', aseguradora: 'GNP' })).data;
+
+  // Antes de marcarlo como AUTO_SURTIDO, no se pueden capturar piezas de autosurtido.
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const antesDeMarcar = await req('POST', '/api/autosurtido-piezas', { siniestro_id: s.id, pieza: 'Cofre' });
+  assert.equal(antesDeMarcar.status, 400, 'no debe aceptar piezas de autosurtido si el expediente aún no está marcado como AUTO_SURTIDO');
+
+  const marcado = await req('PATCH', '/api/siniestros/' + s.id, { tipo_reparacion: 'AUTO_SURTIDO' });
+  assert.equal(marcado.status, 200);
+  assert.equal(marcado.data.tipo_reparacion, 'AUTO_SURTIDO');
+
+  // Daniela (operativo) no puede capturar piezas -- ese trabajo es de Vanessa/Orlando.
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const danielaPiezaProhibida = await req('POST', '/api/autosurtido-piezas', { siniestro_id: s.id, pieza: 'Cofre' });
+  assert.equal(danielaPiezaProhibida.status, 403, 'Daniela no debe poder capturar piezas de autosurtido');
+
+  // Orlando/Vanessa capturan las piezas -- una incompleta, otra completa.
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const piezaIncompleta = (await req('POST', '/api/autosurtido-piezas', { siniestro_id: s.id, pieza: 'Cofre' })).data;
+  assert.equal(piezaIncompleta.requisitada, false, 'una pieza sin costo/tiempo/proveedor no debe quedar requisitada');
+
+  const origenInvalido = await req('POST', '/api/autosurtido-piezas', { siniestro_id: s.id, pieza: 'Faro', proveedor_origen: 'Amazon' });
+  assert.equal(origenInvalido.status, 400, 'un origen de proveedor fuera del catálogo debe rechazarse');
+
+  const piezaCompleta = (await req('POST', '/api/autosurtido-piezas', {
+    siniestro_id: s.id, pieza: 'Faro delantero', costo: 1500, tiempo_entrega: '3 días',
+    proveedor_origen: 'Mercado Libre', proveedor_nombre: 'Tienda X', proveedor_link: 'https://articulo.mercadolibre.com.mx/x'
+  })).data;
+  assert.equal(piezaCompleta.requisitada, true, 'una pieza con pieza/costo/tiempo/proveedor completos debe quedar requisitada');
+
+  // Con una pieza incompleta, el expediente NO debe aparecer todavía en la lista de Daniela (aunque ya
+  // esté "enviado") -- el punto 6 exige que TODAS las piezas estén requisitadas.
+  const enviadoConIncompleta = await req('PATCH', '/api/siniestros/' + s.id, { enviado_propietario: 1 });
+  assert.equal(enviadoConIncompleta.status, 200);
+  const listaConIncompleta = (await req('GET', '/api/autosurtido-piezas?siniestro_id=' + s.id)).data;
+  assert.equal(listaConIncompleta.every(p => p.requisitada), false, 'todavía debe quedar una pieza sin requisitar en este punto de la prueba');
+
+  // Se completa la pieza que faltaba.
+  await req('PATCH', '/api/autosurtido-piezas/' + piezaIncompleta.id, { costo: 800, tiempo_entrega: '2 días', proveedor_origen: 'Radec', proveedor_nombre: 'Radec Toluca' });
+  const listaCompleta = (await req('GET', '/api/autosurtido-piezas?siniestro_id=' + s.id)).data;
+  assert.equal(listaCompleta.every(p => p.requisitada), true, 'con ambas piezas completas, todo el expediente debe quedar requisitado');
+
+  // Presupuesto en Excel: el fileFilter del backend debe aceptarlo ahora (antes solo PDF/imágenes).
+  const fd = new FormData();
+  fd.append('entidad_tipo', 'siniestro');
+  fd.append('entidad_id', String(s.id));
+  fd.append('tipo', 'presupuesto_autosurtido');
+  fd.append('archivo', new Blob([Buffer.from('col1,col2\\n1,2')], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'presupuesto.xlsx');
+  const subidaPresupuesto = await fetch(BASE + '/api/archivos', { method: 'POST', headers: { Cookie: cookie }, body: fd });
+  assert.equal(subidaPresupuesto.status, 201, 'el presupuesto de autosurtido en Excel debe poder subirse (antes el backend solo aceptaba PDF/imágenes)');
+
+  // Daniela (operativo) marca la cotización terminada -- Alejandra no debe poder hacerlo. Cuenta de
+  // prueba propia (mismo motivo que PORTAL-1): la cuenta real de Alejandra ya tiene contraseña impredecible
+  // en este punto de la suite.
+  const dbP58 = require('../server/db');
+  const bcryptP58 = require('bcryptjs');
+  dbP58.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba PORTAL58', 'atencion.portal58.test@serviciocristian.mx', bcryptP58.hashSync('x',4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.portal58.test@serviciocristian.mx', password: 'x' });
+  const alejandraCotizaProhibido = await req('PATCH', '/api/siniestros/' + s.id, { autosurtido_cotizado_en: '2026-09-08' });
+  assert.equal(alejandraCotizaProhibido.status, 403, 'Alejandra no debe poder marcar la cotización de Daniela');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const danielaReingresoProhibido = await req('PATCH', '/api/siniestros/' + s.id, { autosurtido_reingreso_en: '2026-09-08' });
+  assert.equal(danielaReingresoProhibido.status, 403, 'Daniela no debe poder registrar el reingreso físico -- eso es de Alejandra');
+
+  const cotizado = await req('PATCH', '/api/siniestros/' + s.id, { autosurtido_cotizado_en: '2026-09-08' });
+  assert.equal(cotizado.status, 200);
+  assert.equal(cotizado.data.autosurtido_cotizado_en, '2026-09-08');
+
+  // Alejandra registra el reingreso físico.
+  await req('POST', '/api/auth/login', { email: 'atencion.portal58.test@serviciocristian.mx', password: 'x' });
+  const reingreso = await req('PATCH', '/api/siniestros/' + s.id, { autosurtido_reingreso_en: '2026-09-09' });
+  assert.equal(reingreso.status, 200);
+  assert.equal(reingreso.data.autosurtido_reingreso_en, '2026-09-09');
+
+  // Punto 8: mientras no se cargue el inventario condicional, Vanessa/Orlando no pueden avanzar el
+  // expediente a la siguiente etapa (estado_expediente).
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const avanceBloqueado = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'en_captura' });
+  assert.equal(avanceBloqueado.status, 400, 'sin la carga de inventario condicional, no debe poder avanzar el expediente de un autosurtido ya reingresado');
+
+  // Orlando/Vanessa tampoco pueden marcar la carga de inventario -- es de Alejandra.
+  const orlandoInventarioProhibido = await req('PATCH', '/api/siniestros/' + s.id, { autosurtido_inventario_cargado: 1 });
+  assert.equal(orlandoInventarioProhibido.status, 403, 'Orlando no debe poder marcar la carga de inventario condicional -- eso es de Alejandra');
+
+  await req('POST', '/api/auth/login', { email: 'atencion.portal58.test@serviciocristian.mx', password: 'x' });
+  const inventarioCargado = await req('PATCH', '/api/siniestros/' + s.id, { autosurtido_inventario_cargado: 1 });
+  assert.equal(inventarioCargado.status, 200);
+  assert.equal(inventarioCargado.data.autosurtido_inventario_cargado, 1);
+  assert.ok(inventarioCargado.data.autosurtido_inventario_cargado_en, 'debe sellar la fecha de carga de inventario automáticamente');
+
+  // Ahora sí, con el inventario cargado, Orlando/Vanessa pueden avanzar el expediente.
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const avancePermitido = await req('PATCH', '/api/siniestros/' + s.id, { estado_expediente: 'en_captura' });
+  assert.equal(avancePermitido.status, 200, 'con la carga de inventario ya hecha, el avance del expediente debe permitirse');
+
+  // Eliminar una pieza (rol correcto) queda auditado y ya no aparece en la lista.
+  const eliminada = await req('DELETE', '/api/autosurtido-piezas/' + piezaIncompleta.id);
+  assert.equal(eliminada.status, 200);
+  const listaFinal = (await req('GET', '/api/autosurtido-piezas?siniestro_id=' + s.id)).data;
+  assert.equal(listaFinal.find(p => p.id === piezaIncompleta.id), undefined, 'la pieza eliminada ya no debe aparecer en la lista');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});

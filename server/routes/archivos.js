@@ -10,7 +10,13 @@ const router = express.Router();
 const UPLOAD_DIR = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'uploads') : path.join(__dirname, '..', '..', 'uploads');
 if(!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive:true });
 
-const ALLOWED_MIME = ['application/pdf','image/jpeg','image/png','image/webp','image/heic'];
+// Punto 6 del documento PORTAL SC (Orlando, 8-sep-2026): el presupuesto de autosurtido se sube como
+// Excel/CSV (tipo 'presupuesto_autosurtido', ver public/app.js#archivoTipo) -- sin esto, el fileFilter de
+// abajo lo habría rechazado con "Tipo de archivo no permitido" a pesar de que el <select> del frontend ya
+// ofrecía esa opción. 'application/vnd.ms-excel' es el mimetype que muchos navegadores/SO reportan para
+// .xlsx (no solo para el .xls legado), así que se acepta también por seguridad.
+const ALLOWED_MIME = ['application/pdf','image/jpeg','image/png','image/webp','image/heic',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.ms-excel','text/csv','application/csv'];
 const storage = multer.diskStorage({
   destination: (req,file,cb)=> cb(null, UPLOAD_DIR),
   filename: (req,file,cb)=> cb(null, Date.now() + '-' + Math.round(Math.random()*1e9) + path.extname(file.originalname))
@@ -19,7 +25,7 @@ const upload = multer({
   storage,
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req,file,cb)=>{
-    if(!ALLOWED_MIME.includes(file.mimetype)) return cb(new Error('Tipo de archivo no permitido. Solo PDF o imágenes (jpg, png, webp, heic).'));
+    if(!ALLOWED_MIME.includes(file.mimetype)) return cb(new Error('Tipo de archivo no permitido. Solo PDF, imágenes (jpg, png, webp, heic) o Excel/CSV (xlsx, xls, csv).'));
     cb(null, true);
   }
 });

@@ -27,7 +27,37 @@ function fmtFechaHora(s){
   if(isNaN(d.getTime())) return esc(s);
   return d.toLocaleString('es-MX', { timeZone:'America/Mexico_City', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
 }
+// Punto 4 del documento PORTAL SC (Orlando, 8-sep-2026): "ideal que la nomenclatura de fecha sea en el
+// formato día/mes/año." Varios campos de solo FECHA (sin hora) -- fecha_borrador_captura,
+// excel_capturado_fecha, etc. -- venían de un <input type="date"> y se mostraban tal cual (AAAA-MM-DD,
+// el formato nativo del input), nunca pasaban por un formateador. fmtFechaHora ya usa DD/MM/AAAA para
+// fecha+hora; este helper hermano hace lo mismo pero solo con la fecha, sin inventar una hora que no
+// existe para estos campos.
+function fmtFecha(s){
+  if(!s) return '';
+  const str = String(s).trim();
+  if(!str) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+  if(!m) return esc(str);
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
 function uidLocal(){ return 'tmp'+Math.random().toString(36).slice(2); }
+// Punto 3 del documento PORTAL SC (Orlando, 8-sep-2026): "los siniestros de MAPFRE, manejarlos sin la
+// terminación ya sea 1, 2 o 3, solo los números que vienen en la ODA -- no habría forma de confundirse ya
+// que los datos adicionales del auto (marca, tipo, color, placa, VIN) serían diferentes." Deliberadamente
+// NO se recorta el número que se captura de forma automática: los números reales de MAPFRE son cadenas
+// largas que legítimamente pueden terminar en 1, 2 o 3 como parte del número real (ver el ejemplo del
+// seed: 4264105314000171) -- recortar a ciegas el último carácter corrompería números correctos. En vez
+// de eso, se muestra un recordatorio junto al campo cuando la aseguradora es Mapfre, para que quien
+// captura no agregue esa terminación por su cuenta; la protección real contra duplicados (mismo número
+// base, otro vehículo) sigue siendo la validación de "ya existe un siniestro con ese número" que ya existe
+// tanto en el alta como en la edición.
+function actualizarHintMapfre(idSelectAseguradora, idHint){
+  const sel = document.getElementById(idSelectAseguradora);
+  const hint = document.getElementById(idHint);
+  if(!sel || !hint) return;
+  hint.style.display = sel.value === 'Mapfre' ? 'block' : 'none';
+}
 
 let currentUser = null;
 const ASEGURADORAS = ['GNP','ANA','Inbursa','Allianz','La Latinoamericana','Mapfre','Afirme','Zurich'];
@@ -179,6 +209,7 @@ const TABS = [
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
   {k:'pendientes-hoy', label:'Pendientes de hoy', roles:['atencion_cliente','admin','jefe']},
   {k:'kanban', label:'Kanban', roles:['operativo','admin','jefe']},
+  {k:'autosurtidos', label:'Autosurtidos', roles:['operativo','admin','jefe']},
   {k:'incidencias', label:'Incidencias', roles:['operativo','admin','jefe']},
   {k:'correos', label:'Correos pendientes', roles:['operativo','admin']},
   {k:'lista', label:'Lista maestra', roles:['operativo','admin','jefe']},
@@ -256,6 +287,7 @@ async function render(){
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
     else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
+    else if(state.view==='autosurtidos') app.innerHTML = await viewAutosurtidos();
     else if(state.view==='ov-pendientes-revision') app.innerHTML = await viewOvPendientesRevision();
     else if(state.view==='incidencias') app.innerHTML = await viewIncidencias();
     else if(state.view==='lista') app.innerHTML = await viewLista();
@@ -713,6 +745,39 @@ async function revertirLoteCargaMasiva(loteId){
 }
 
 /* ===================== VISTA: INCIDENCIAS (bandeja dedicada) ===================== */
+/* ===================== Puntos 5-8 PORTAL SC (Orlando, 8-sep-2026): tablero de Autosurtidos (Daniela) ==== */
+async function viewAutosurtidos(){
+  // Candidatos: expedientes de autosurtido ya enviados y no archivados. La visibilidad final (punto 6:
+  // "para que el expediente sea visible... deberá contar con todos los campos debidamente requisitados")
+  // se filtra en el cliente comparando cada candidato contra su propia tabla de piezas -- no hay un solo
+  // query de servidor para "todas las piezas de todos los siniestros" en este módulo, así que se resuelve
+  // aquí, expediente por expediente.
+  // La ruta GET /api/siniestros solo filtra por aseguradora/q/archivado -- tipo_reparacion y
+  // enviado_propietario se filtran aquí, del lado del cliente, para no tocar esa ruta compartida por
+  // el resto del sistema.
+  const todos = await api('GET','/api/siniestros');
+  const candidatos = todos.filter(s=>s.tipo_reparacion==='AUTO_SURTIDO' && s.enviado_propietario===1);
+  const listos = [];
+  for(const s of candidatos){
+    const piezas = await api('GET','/api/autosurtido-piezas?siniestro_id='+s.id);
+    if(piezas.length > 0 && piezas.every(p=>p.requisitada)) listos.push({ s, piezas });
+  }
+  return `
+  <h2>Autosurtidos</h2>
+  <p class="subtle">Expedientes de auto surtido enviados con todas sus piezas requisitadas (pieza, costo, tiempo de entrega y proveedor completos) -- listos para que Daniela cotice.</p>
+  ${listos.length===0?'<div class="empty">Sin expedientes listos para cotizar todavía.</div>':`
+  <table><thead><tr><th>Siniestro</th><th>Piezas</th><th>Cotización</th><th>Reingreso</th><th>Inventario</th><th></th></tr></thead><tbody>
+  ${listos.map(({s,piezas})=>`<tr>
+    <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
+    <td>${piezas.length}</td>
+    <td>${s.autosurtido_cotizado_en?`<span class="badge verde">${fmtFecha(s.autosurtido_cotizado_en)}</span>`:'<span class="badge ambar">Pendiente</span>'}</td>
+    <td>${s.autosurtido_reingreso_en?`<span class="badge verde">${fmtFecha(s.autosurtido_reingreso_en)}</span>`:'<span class="badge gris">Sin registrar</span>'}</td>
+    <td>${s.autosurtido_inventario_cargado?'<span class="badge verde">Cargado</span>':'<span class="badge ambar">Pendiente</span>'}</td>
+    <td><button class="btn small secondary" onclick="goSiniestro(${s.id})">Abrir</button></td>
+  </tr>`).join('')}
+  </tbody></table>`}`;
+}
+
 async function viewIncidencias(){
   const abiertas = await api('GET','/api/incidencias?estado=abierta');
   const enProceso = await api('GET','/api/incidencias?estado=en_proceso');
@@ -1066,6 +1131,17 @@ async function viewSiniestro(id){
     const puedeAdmision = currentUser && ['atencion_cliente','vanessa','admin','jefe'].includes(currentUser.rol);
     const puedeTecnica = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
     const puedeCaptura = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
+    // Puntos 5-8 del documento PORTAL SC (Orlando, 8-sep-2026): flujo de Autosurtidos -- solo se consulta
+    // la tabla de piezas si el expediente en verdad es autosurtido, para no gastar una llamada de más en
+    // el resto de los expedientes.
+    const puedeDanielaAutosurtido = currentUser && ['operativo','admin','jefe'].includes(currentUser.rol);
+    const puedeAlejandraAutosurtido = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
+    let piezasAutosurtido = [];
+    let presupuestoArchivo = null;
+    if(s.tipo_reparacion === 'AUTO_SURTIDO'){
+      piezasAutosurtido = await api('GET','/api/autosurtido-piezas?siniestro_id='+id);
+      presupuestoArchivo = archivosDisp.find(a=>a.tipo==='presupuesto_autosurtido') || null;
+    }
     const LABEL_ADM = { admitido:'Admitido', condicionado:'Condicionado', no_admitido:'No admitido' };
     const BADGE_ADM = { admitido:'verde', condicionado:'ambar', no_admitido:'rojo' };
     const LABEL_REV = { en_revision:'En revisión', requiere_desarme:'Requiere desarme', revision_terminada:'Revisión terminada' };
@@ -1097,7 +1173,7 @@ async function viewSiniestro(id){
     <h3 style="margin-top:20px;">Revisión técnica (Orlando)</h3>
     <p class="subtle">Secciones 5.3/5.4 del documento maestro: daño relacionado/no relacionado, visible/oculto, y si requiere desarme.</p>
     <table class="kv"><tbody>
-      <tr><td>Estado de revisión</td><td><span class="badge ${s.estado_revision_tecnica==='revision_terminada'?'verde':s.estado_revision_tecnica==='requiere_desarme'?'ambar':'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span></td></tr>
+      <tr><td>Estado de revisión</td><td><span class="badge ${s.estado_revision_tecnica==='revision_terminada'?'verde':s.estado_revision_tecnica==='requiere_desarme'?'ambar':'gris'}">${LABEL_REV[s.estado_revision_tecnica]||'Sin iniciar'}</span>${s.estado_revision_tecnica==='revision_terminada'&&s.revision_tecnica_terminada_en?` <span class="subtle">— terminada el ${fmtFechaHora(s.revision_tecnica_terminada_en)}</span>`:''}</td></tr>
       <tr><td>Riesgo de seguridad</td><td>${s.riesgo_seguridad?`<span class="badge rojo">No seguro</span> — ${esc(s.riesgo_seguridad_motivo||'')}`:'No'}</td></tr>
       <tr><td>Estado de evidencia</td><td>${s.estado_evidencia?esc(LABEL_EVID[s.estado_evidencia]||s.estado_evidencia):'—'}</td></tr>
     </tbody></table>
@@ -1122,12 +1198,39 @@ async function viewSiniestro(id){
     <h3 style="margin-top:20px;">Captura y envío (Orlando + Vanessa)</h3>
     <p class="subtle">Continuación del flujo de Vanessa: Excel capturado, fotos/carpeta completas y envío al propietario. Cualquiera de los dos puede capturarlo — el sistema no distingue quién lo hizo.</p>
     <table class="kv"><tbody>
-      <tr><td>Fecha de entrega del borrador a captura</td><td>${esc(s.fecha_borrador_captura||'—')}</td></tr>
-      <tr><td>Excel capturado</td><td>${s.excel_capturado?`<span class="badge verde">Sí</span> · ${esc(s.excel_capturado_fecha||'')}`:'<span class="badge gris">No</span>'}</td></tr>
-      <tr><td>Fotos/carpeta completas</td><td>${s.fotos_completas?`<span class="badge verde">Sí</span> · ${esc(s.fotos_completas_fecha||'')}`:'<span class="badge gris">No</span>'}</td></tr>
-      <tr><td>Enviado al propietario</td><td>${s.enviado_propietario?`<span class="badge verde">Sí</span> · ${esc(s.enviado_propietario_fecha||'')}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Fecha de entrega del borrador a captura</td><td>${fmtFecha(s.fecha_borrador_captura)||'—'}</td></tr>
+      <tr><td>Excel capturado</td><td>${s.excel_capturado?`<span class="badge verde">Sí</span> · ${fmtFecha(s.excel_capturado_fecha)}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>Fotos/carpeta completas</td><td>${s.fotos_completas?`<span class="badge verde">Sí</span> · ${fmtFecha(s.fotos_completas_fecha)}`:'<span class="badge gris">No</span>'}</td></tr>
+      <tr><td>${s.tipo_reparacion==='AUTO_SURTIDO'?'Enviado a Daniela':'Enviado al propietario'}</td><td>${s.enviado_propietario?`<span class="badge verde">Sí</span> · ${fmtFecha(s.enviado_propietario_fecha)}`:'<span class="badge gris">No</span>'}</td></tr>
     </tbody></table>
-    ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormCapturaEnvio(${id})">Actualizar captura / envío</button></div>`:''}`;
+    ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormCapturaEnvio(${id})">Actualizar captura / envío</button></div>`:''}
+
+    ${s.tipo_reparacion !== 'AUTO_SURTIDO' ? '' : `
+    <h3 style="margin-top:20px;">Autosurtido -- piezas, cotización y reingreso</h3>
+    <p class="subtle">Puntos 5-8 del documento PORTAL SC (Orlando, 8-sep-2026). El expediente aparece en "Autosurtidos" (tablero de Daniela) cuando esté enviado y TODAS las piezas de esta tabla tengan pieza, costo, tiempo de entrega y proveedor completos.</p>
+    <table><thead><tr><th>Pieza</th><th>Costo</th><th>Tiempo de entrega</th><th>Proveedor</th><th></th><th></th></tr></thead><tbody>
+    ${piezasAutosurtido.length===0?'<tr><td colspan="6" class="empty">Sin piezas capturadas todavía.</td></tr>':piezasAutosurtido.map(p=>`
+      <tr>
+        <td>${esc(p.pieza||'—')}</td>
+        <td>${p.costo!=null?fmtMoney(p.costo):'—'}</td>
+        <td>${esc(p.tiempo_entrega||'—')}</td>
+        <td>${esc(p.proveedor_nombre||'—')}${p.proveedor_origen?` (${esc(p.proveedor_origen)})`:''}${p.proveedor_link?` · <a class="link" href="${esc(p.proveedor_link)}" target="_blank">link</a>`:''}</td>
+        <td>${!p.requisitada?'<span class="badge ambar">Falta completar</span>':'<span class="badge verde">Completa</span>'}</td>
+        <td>${puedeCaptura?`<button class="btn small secondary" onclick="abrirFormEditarPiezaAutosurtido(${p.id},${id})">Editar</button> <button class="btn small ghost" onclick="eliminarPiezaAutosurtido(${p.id},${id})">Eliminar</button>`:''}</td>
+      </tr>`).join('')}
+    </tbody></table>
+    ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaPiezaAutosurtido(${id})">+ Agregar pieza</button></div>`:''}
+    <table class="kv" style="margin-top:12px;"><tbody>
+      <tr><td>Presupuesto (Excel)</td><td>${presupuestoArchivo?`<a class="link" href="/api/archivos/${presupuestoArchivo.id}/descargar" target="_blank">${esc(presupuestoArchivo.nombre_original)}</a>`:'<span class="badge gris">Sin subir -- ver pestaña Archivos</span>'}</td></tr>
+      <tr><td>Cotización de Daniela</td><td>${s.autosurtido_cotizado_en?`<span class="badge verde">Terminada · ${fmtFecha(s.autosurtido_cotizado_en)}</span>`:'<span class="badge ambar">Pendiente</span>'}</td></tr>
+      <tr><td>Reingreso físico</td><td>${s.autosurtido_reingreso_en?`<span class="badge verde">Registrado · ${fmtFecha(s.autosurtido_reingreso_en)}</span>`:'<span class="badge gris">Sin registrar</span>'}</td></tr>
+      <tr><td>Carga de inventario condicional</td><td>${s.autosurtido_inventario_cargado?`<span class="badge verde">Cargado · ${fmtFecha(s.autosurtido_inventario_cargado_en)}</span>`:'<span class="badge ambar">Pendiente</span>'}</td></tr>
+    </tbody></table>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      ${puedeDanielaAutosurtido && !s.autosurtido_cotizado_en ? `<button class="btn small secondary" onclick="marcarAutosurtidoCotizado(${id})">Marcar cotización terminada (Daniela)</button>` : ''}
+      ${puedeAlejandraAutosurtido && s.autosurtido_cotizado_en && !s.autosurtido_reingreso_en ? `<button class="btn small secondary" onclick="marcarAutosurtidoReingreso(${id})">Marcar reingreso físico (Alejandra)</button>` : ''}
+      ${puedeAlejandraAutosurtido && s.autosurtido_reingreso_en && !s.autosurtido_inventario_cargado ? `<button class="btn small secondary" onclick="marcarAutosurtidoInventario(${id})">Marcar carga de inventario (Alejandra)</button>` : ''}
+    </div>`}`;
   } else if(state.subtabSiniestro==='expediente'){
     const documentos = await api('GET','/api/documentos-expediente?siniestro_id='+id);
     const puedeExpediente = currentUser && ['vanessa','orlando','admin','jefe'].includes(currentUser.rol);
@@ -1467,8 +1570,8 @@ async function viewSiniestro(id){
     </td></tr>`).join('')}
     </tbody></table>
     <form id="formArchivo" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;" onsubmit="return subirArchivo(event, ${id})">
-      <input type="file" id="archivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic" required>
-      <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option><option value="orden_admision">Orden de admisión</option><option value="inventario_fisico">Inventario físico/fotográfico</option></select>
+      <input type="file" id="archivoInput" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.xlsx,.xls,.csv" required>
+      <select id="archivoTipo"><option>Evidencia</option><option>Valuación</option><option>Orden de trabajo</option><option>Comparativo</option><option>Pedido</option><option value="orden_admision">Orden de admisión</option><option value="inventario_fisico">Inventario físico/fotográfico</option><option value="presupuesto_autosurtido">Presupuesto autosurtido (Excel)</option></select>
       <button class="btn small" type="submit">Subir archivo real</button>
     </form>
     ${enPapelera.length>0?`<h4 style="margin-top:16px;">Papelera (${enPapelera.length})</h4>
@@ -1676,8 +1779,17 @@ function abrirFormRevisionTecnica(siniestroId){
         <option value="" ${!s.estado_evidencia?'selected':''}>Sin definir</option>
         <option value="evidencia_completa" ${s.estado_evidencia==='evidencia_completa'?'selected':''}>Evidencia completa</option>
         <option value="desarme_parcial" ${s.estado_evidencia==='desarme_parcial'?'selected':''}>Desarme parcial</option>
-        <option value="dano_oculto_detectado" ${s.estado_evidencia==='dano_oculto_detectado'?'selected':''}>Daño oculto detectado</option>
+        ${s.estado_evidencia==='dano_oculto_detectado'?`<option value="dano_oculto_detectado" selected>Daño oculto detectado (valor anterior -- ya no se puede volver a elegir aquí)</option>`:''}
       </select></div>
+      <!-- Corrección de Orlando (documento PORTAL SC, 8-sep-2026): "la opción de daño oculto en este panel,
+           cómo aplicaría? se supone que un daño oculto es durante la reparación que requiera mandar
+           evidencia autorizable a la aseguradora -- favor de eliminar de este listado, y colocarla en el
+           lugar correcto: durante el proceso de producción." Esa opción correcta ya existe -- el botón
+           "+ Agregar complemento" (daño oculto) de la sección de Producción, visible solo para quien
+           puede capturar producción, que registra causa/fecha/pieza/importe/impacto y sigue el flujo real
+           de complementos hacia la aseguradora. Aquí, en Revisión técnica (captura inicial de Orlando),
+           ya no se puede ELEGIR "Daño oculto detectado" -- si un expediente antiguo ya lo tenía guardado,
+           se sigue mostrando (no se pierde el dato), pero no puede volver a seleccionarse.
       <div class="field"><label>¿Riesgo de seguridad (vehículo no seguro)?</label><select id="frt_riesgo" onchange="document.getElementById('frt_riesgo_motivo_wrap').style.display=this.value==='1'?'block':'none'">
         <option value="0" ${!s.riesgo_seguridad?'selected':''}>No</option>
         <option value="1" ${s.riesgo_seguridad?'selected':''}>Sí</option>
@@ -2697,7 +2809,7 @@ async function abrirFormCapturaEnvio(siniestroId){
     <div class="row-flex">
       <div class="field"><label><input id="fcap_excel" type="checkbox" ${s.excel_capturado?'checked':''}> Excel capturado</label>${s.excel_capturado_fecha?`<div class="subtle">Desde: ${s.excel_capturado_fecha}</div>`:''}</div>
       <div class="field"><label><input id="fcap_fotos" type="checkbox" ${s.fotos_completas?'checked':''}> Fotos completas</label>${s.fotos_completas_fecha?`<div class="subtle">Desde: ${s.fotos_completas_fecha}</div>`:''}</div>
-      <div class="field"><label><input id="fcap_enviado" type="checkbox" ${s.enviado_propietario?'checked':''}> Enviado al propietario</label>${s.enviado_propietario_fecha?`<div class="subtle">Desde: ${s.enviado_propietario_fecha}</div>`:''}</div>
+      <div class="field"><label><input id="fcap_enviado" type="checkbox" ${s.enviado_propietario?'checked':''}> ${s.tipo_reparacion==='AUTO_SURTIDO'?'Enviado a Daniela':'Enviado al propietario'}</label>${s.enviado_propietario_fecha?`<div class="subtle">Desde: ${fmtFecha(s.enviado_propietario_fecha)}</div>`:''}</div>
     </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarCapturaEnvio(${siniestroId})">Guardar</button></div>
   `);
@@ -2717,6 +2829,108 @@ async function guardarCapturaEnvio(siniestroId){
   }catch(e){
     if(e.message){ /* el toast del error ya se mostró */ }
   }
+}
+
+/* ===================== Puntos 5-8 PORTAL SC (Orlando, 8-sep-2026): Autosurtidos ===================== */
+function abrirFormNuevaPiezaAutosurtido(siniestroId){
+  showModal(`
+    <h3>Agregar pieza de autosurtido</h3>
+    <div class="field"><label>Pieza</label><input id="fap_pieza" placeholder="Descripción de la pieza"></div>
+    <div class="row-flex">
+      <div class="field"><label>Costo</label><input id="fap_costo" type="number" step="0.01" placeholder="0.00"></div>
+      <div class="field"><label>Tiempo de entrega</label><input id="fap_tiempo" placeholder="Ej. 3 días"></div>
+    </div>
+    <div class="field"><label>Origen del proveedor</label>
+      <select id="fap_origen" onchange="document.getElementById('fap_link_wrap').style.display=this.value==='Mercado Libre'?'block':'none'">
+        <option value="">-- Selecciona --</option>
+        <option>Radec</option><option>Grimex</option><option>Agencia</option><option>Mercado Libre</option><option>Otro</option>
+      </select>
+    </div>
+    <div class="field"><label>Nombre del proveedor</label><input id="fap_nombre" placeholder="Ej. Radec sucursal Toluca"></div>
+    <div class="field" id="fap_link_wrap" style="display:none;"><label>Link del producto (Mercado Libre)</label><input id="fap_link" placeholder="https://..."><div class="subtle">El link se manda al equipo por WhatsApp de forma manual -- este sistema no lo envía solo.</div></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarNuevaPiezaAutosurtido(${siniestroId})">Guardar</button></div>
+  `);
+}
+async function guardarNuevaPiezaAutosurtido(siniestroId){
+  try{
+    await api('POST','/api/autosurtido-piezas', {
+      siniestro_id: siniestroId,
+      pieza: document.getElementById('fap_pieza').value,
+      costo: document.getElementById('fap_costo').value,
+      tiempo_entrega: document.getElementById('fap_tiempo').value,
+      proveedor_origen: document.getElementById('fap_origen').value || null,
+      proveedor_nombre: document.getElementById('fap_nombre').value,
+      proveedor_link: document.getElementById('fap_link') ? document.getElementById('fap_link').value : ''
+    });
+    toast('Pieza agregada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function abrirFormEditarPiezaAutosurtido(piezaId, siniestroId){
+  const filas = await api('GET','/api/autosurtido-piezas?siniestro_id='+siniestroId);
+  const p = filas.find(x=>String(x.id)===String(piezaId));
+  if(!p){ toast('Pieza no encontrada.', 'error'); return; }
+  showModal(`
+    <h3>Editar pieza de autosurtido</h3>
+    <div class="field"><label>Pieza</label><input id="fap_pieza" value="${esc(p.pieza||'')}"></div>
+    <div class="row-flex">
+      <div class="field"><label>Costo</label><input id="fap_costo" type="number" step="0.01" value="${p.costo!=null?p.costo:''}"></div>
+      <div class="field"><label>Tiempo de entrega</label><input id="fap_tiempo" value="${esc(p.tiempo_entrega||'')}"></div>
+    </div>
+    <div class="field"><label>Origen del proveedor</label>
+      <select id="fap_origen" onchange="document.getElementById('fap_link_wrap').style.display=this.value==='Mercado Libre'?'block':'none'">
+        <option value="">-- Selecciona --</option>
+        ${['Radec','Grimex','Agencia','Mercado Libre','Otro'].map(o=>`<option ${p.proveedor_origen===o?'selected':''}>${o}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label>Nombre del proveedor</label><input id="fap_nombre" value="${esc(p.proveedor_nombre||'')}"></div>
+    <div class="field" id="fap_link_wrap" style="${p.proveedor_origen==='Mercado Libre'?'':'display:none;'}"><label>Link del producto (Mercado Libre)</label><input id="fap_link" value="${esc(p.proveedor_link||'')}"><div class="subtle">El link se manda al equipo por WhatsApp de forma manual -- este sistema no lo envía solo.</div></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEdicionPiezaAutosurtido(${piezaId})">Guardar</button></div>
+  `);
+}
+async function guardarEdicionPiezaAutosurtido(piezaId){
+  try{
+    await api('PATCH','/api/autosurtido-piezas/'+piezaId, {
+      pieza: document.getElementById('fap_pieza').value,
+      costo: document.getElementById('fap_costo').value,
+      tiempo_entrega: document.getElementById('fap_tiempo').value,
+      proveedor_origen: document.getElementById('fap_origen').value || null,
+      proveedor_nombre: document.getElementById('fap_nombre').value,
+      proveedor_link: document.getElementById('fap_link') ? document.getElementById('fap_link').value : ''
+    });
+    toast('Pieza actualizada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function eliminarPiezaAutosurtido(piezaId, siniestroId){
+  const ok = await confirmDialog('¿Eliminar esta pieza de autosurtido?', { textoOk:'Sí, eliminar' });
+  if(!ok) return;
+  try{
+    await api('DELETE','/api/autosurtido-piezas/'+piezaId);
+    toast('Pieza eliminada.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarAutosurtidoCotizado(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { autosurtido_cotizado_en: todayISO() });
+    toast('Cotización marcada como terminada.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarAutosurtidoReingreso(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { autosurtido_reingreso_en: todayISO() });
+    toast('Reingreso físico registrado.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarAutosurtidoInventario(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { autosurtido_inventario_cargado: 1 });
+    toast('Carga de inventario condicional registrada.', 'success');
+    render();
+  }catch(e){}
 }
 
 async function intentarCerrarSiniestro(siniestroId){
@@ -3063,8 +3277,9 @@ function formNuevoExpediente(){
     <div class="field"><label><input type="checkbox" id="fx_particular" onchange="toggleFxParticular()"> Cliente particular (sin aseguradora)</label></div>
     <div class="row-flex">
       <div class="field"><label>Número de siniestro</label><input id="fx_numero" placeholder="Si aún no lo tienes, usa un folio propio"></div>
-      <div class="field"><label>Aseguradora</label><select id="fx_aseguradora">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Aseguradora</label><select id="fx_aseguradora" onchange="actualizarHintMapfre('fx_aseguradora','fx_hint_mapfre')">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
     </div>
+    <p class="subtle" id="fx_hint_mapfre" style="display:none;margin-top:-6px;">Para MAPFRE: captura el número tal como viene en la ODA, <b>sin agregar la terminación 1, 2 o 3</b>.</p>
     <div class="row-flex">
       <div class="field"><label>Tipo comunicación</label><select id="fx_canal"><option>WhatsApp</option><option>Teléfono</option></select></div>
       <div class="field"><label>Ubicación</label><select id="fx_ubicacion"><option value="Piso">Piso</option><option value="Tránsito">Tránsito</option></select></div>
@@ -3592,9 +3807,10 @@ function formNuevoSiniestro(){
     <h3>Nuevo siniestro</h3>
     <div class="field"><label>Número de siniestro</label><input id="f_numero" placeholder="0186561262A"></div>
     <div class="row-flex">
-      <div class="field"><label>Aseguradora</label><select id="f_aseguradora">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Aseguradora</label><select id="f_aseguradora" onchange="actualizarHintMapfre('f_aseguradora','f_hint_mapfre')">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
       <div class="field"><label>Vehículo</label><input id="f_vehiculo" placeholder="Marca / modelo"></div>
     </div>
+    <p class="subtle" id="f_hint_mapfre" style="display:none;margin-top:-6px;">Para MAPFRE: captura el número tal como viene en la ODA, <b>sin agregar la terminación 1, 2 o 3</b>.</p>
     <div class="row-flex">
       <div class="field"><label>Placas</label><input id="f_placas"></div>
       <div class="field"><label>Fecha de ingreso</label><input id="f_fecha" type="date" value="${todayISO()}"></div>
@@ -3621,8 +3837,15 @@ function abrirFormEditarSiniestro(id){
     const REQ_OPCIONES = [['por_definir','Por definir'],['si','Sí'],['no','No']];
     showModal(`
       <h3>Editar siniestro ${esc(s.numero)}</h3>
+      <!-- Punto 2 del documento PORTAL SC (Orlando, 8-sep-2026): Alejandra en ocasiones captura mal el
+           número de siniestro y antes no había forma de corregirlo -- se agrega aquí, con la misma
+           validación de duplicados que ya protege el alta (POST /api/siniestros). -->
       <div class="row-flex">
-        <div class="field"><label>Aseguradora</label><select id="fe_aseguradora">${ASEGURADORAS.map(a=>`<option ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+        <div class="field"><label>Número de siniestro</label><input id="fe_numero" value="${esc(s.numero||'')}" onkeyup="actualizarHintMapfre('fe_aseguradora','fe_hint_mapfre')"></div>
+        <div class="field"><label>Aseguradora</label><select id="fe_aseguradora" onchange="actualizarHintMapfre('fe_aseguradora','fe_hint_mapfre')">${ASEGURADORAS.map(a=>`<option ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+      </div>
+      <p class="subtle" id="fe_hint_mapfre" style="display:none;margin-top:-6px;">Para MAPFRE: captura el número tal como viene en la ODA, <b>sin agregar la terminación 1, 2 o 3</b>.</p>
+      <div class="row-flex">
         <div class="field"><label>Vehículo</label><input id="fe_vehiculo" value="${esc(s.vehiculo||'')}"></div>
       </div>
       <div class="row-flex">
@@ -3653,7 +3876,7 @@ function abrirFormEditarSiniestro(id){
 }
 async function guardarEdicionSiniestro(id){
   const payload = {
-    aseguradora: document.getElementById('fe_aseguradora').value, vehiculo: document.getElementById('fe_vehiculo').value,
+    numero: document.getElementById('fe_numero').value, aseguradora: document.getElementById('fe_aseguradora').value, vehiculo: document.getElementById('fe_vehiculo').value,
     placas: document.getElementById('fe_placas').value, anio_modelo: document.getElementById('fe_anio').value, notas: document.getElementById('fe_notas').value
   };
   const campoCliente = document.getElementById('fe_cliente_nombre');
@@ -3666,9 +3889,15 @@ async function guardarEdicionSiniestro(id){
     payload.etapa_actual = document.getElementById('fe_etapa_actual').value;
     payload.requiere_refacciones = document.getElementById('fe_requiere_refacciones').value;
   }
-  await api('PATCH','/api/siniestros/'+id, payload);
-  toast('Siniestro actualizado.', 'success');
-  closeModal(); render();
+  try{
+    await api('PATCH','/api/siniestros/'+id, payload);
+    toast('Siniestro actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){
+    // El toast de error ya lo mostró api(); si es un número duplicado, se deja el formulario abierto
+    // para que se corrija -- no se navega a ningún lado (a diferencia del alta, aquí no hay un siniestro
+    // "nuevo" a medio crear que convenga redirigir).
+  }
 }
 // Hallazgo M-01 (Informe Daniela): con cientos de siniestros, un <select> plano era imposible de usar
 // a ojo -- se cambia por un campo de texto con búsqueda nativa (datalist) por número o vehículo.

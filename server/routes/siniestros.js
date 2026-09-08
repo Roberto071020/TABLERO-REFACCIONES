@@ -33,6 +33,13 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
       'piezas_autorizadas_cambio','estado_valuacion'],
     roles:['orlando','admin','jefe'], nombre:'valuación/autorización' },
   { campos:['estado_produccion','entrega_compromiso_gnp'], roles:['beto','orlando','admin','jefe'], nombre:'producción' },
+  // Puntos 5-8 del documento PORTAL SC (Orlando, 8-sep-2026): flujo de Autosurtidos. Daniela cotiza
+  // (autosurtido_cotizado_en) y regresa el expediente a Alejandra, quien agenda la cita de ingreso
+  // (cita_fecha, ya cubierto por el grupo de admisión), anota el reingreso físico y carga el inventario
+  // condicional (los tres restantes).
+  { campos:['autosurtido_cotizado_en'], roles:['operativo','admin','jefe'], nombre:'cotización de autosurtido (Daniela)' },
+  { campos:['autosurtido_reingreso_en','autosurtido_inventario_cargado','autosurtido_inventario_cargado_en'],
+    roles:['atencion_cliente','admin','jefe'], nombre:'reingreso e inventario de autosurtido (Alejandra)' },
   { campos:['estado_calidad'], roles:['beto','orlando','admin','jefe'], nombre:'calidad' },
   { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada'],
     roles:['beto','atencion_cliente','admin','jefe'], nombre:'entrega' },
@@ -136,12 +143,29 @@ router.post('/', requireAuth, (req, res)=>{
   res.status(201).json({ ...creado, advertencia: completo ? null : 'Faltan datos (vehículo/placas). Queda marcado como Pendiente de completar.' });
 });
 
+// Punto 2 del documento PORTAL SC (Orlando, 8-sep-2026): "en el tablero de Alejandra, que le permita
+// editar los datos capturados del siniestro, ya que en ocasiones los captura erróneamente y no hay modo
+// de poder editarlo." El formulario "Editar" ya existía para vehículo/placas/año/notas/cliente, pero el
+// NÚMERO de siniestro (el dato que más le importa a Orlando cuando se equivoca al capturarlo) nunca fue
+// editable -- no estaba en la lista de campos del PATCH general. Se agrega aquí, con la MISMA validación
+// de duplicados que ya usa el alta (POST): nunca se permite dejar dos siniestros con el mismo número.
+function numeroDuplicado(numero, idPropio){
+  const fila = db.prepare('SELECT * FROM siniestros WHERE numero = ? AND id != ?').get(String(numero).trim(), idPropio);
+  return fila || null;
+}
+
 router.patch('/:id', requireAuth, (req, res)=>{
   const anterior = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!anterior) return res.status(404).json({ error:'Siniestro no encontrado.' });
   const moduloSinPermiso = campoRestringidoSinPermiso(req.body, req.session.user.rol);
   if(moduloSinPermiso) return res.status(403).json({ error: `No tienes permiso para modificar campos de ${moduloSinPermiso}.` });
-  const campos = ['aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
+  if(req.body.numero !== undefined){
+    const numeroNuevo = String(req.body.numero || '').trim();
+    if(!numeroNuevo) return res.status(400).json({ error:'El número de siniestro no puede quedar vacío.' });
+    const dup = numeroDuplicado(numeroNuevo, req.params.id);
+    if(dup) return res.status(409).json({ error:'Ya existe otro siniestro con ese número (no se crean duplicados).', duplicado: dup });
+  }
+  const campos = ['numero','aseguradora','vehiculo','anio_modelo','placas','vin','fecha_ingreso','ubicacion','responsable','estatus_general','notas',
     'cliente_nombre','cliente_telefono','cliente_correo','cliente_notas','orden_admision','canal_origen','etapa_actual','prioridad',
     'requiere_refacciones','deducible','forma_pago','fecha_entrega_prevista','fecha_entrega_real','postventa_programada','postventa_completada',
     'estado_valuacion','estado_produccion','estado_calidad','ingreso_tipo','ingreso_seguro','piezas_autorizadas_cambio','entrega_compromiso_gnp',
@@ -160,10 +184,45 @@ router.patch('/:id', requireAuth, (req, res)=>{
     'estado_calidad','entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega',
     'finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios','postventa_resultado','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada',
     // Propuesta Orlando/Vanessa fusionados: Excel capturado, fotos/carpeta completas, enviado al propietario
-    'fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha'];
+    'fecha_borrador_captura','excel_capturado','excel_capturado_fecha','fotos_completas','fotos_completas_fecha','enviado_propietario','enviado_propietario_fecha',
+    // Documento PORTAL SC (Orlando, 8-sep-2026), puntos 7 y 8: flujo de Autosurtidos.
+    'autosurtido_cotizado_en','autosurtido_reingreso_en','autosurtido_inventario_cargado','autosurtido_inventario_cargado_en'];
   const nuevo = { ...anterior };
   campos.forEach(c=>{ if(req.body[c] !== undefined) nuevo[c] = req.body[c]; });
+  if(req.body.numero !== undefined) nuevo.numero = String(req.body.numero).trim();
   nuevo.completo = calcularCompleto(nuevo);
+
+  // Punto 4 del documento PORTAL SC (Orlando, 8-sep-2026): timestamp AUTOMÁTICO, nunca capturado a mano
+  // -- se sella solo la PRIMERA vez que estado_revision_tecnica pasa a 'revision_terminada' (mismo patrón
+  // "gana el primer registro" que fecha_borrador_captura/excel_capturado_fecha). Si ya se había marcado
+  // y alguien vuelve a mandar 'revision_terminada' (p. ej. re-guardar el mismo formulario), no se
+  // sobrescribe -- sigue reflejando cuándo se terminó la revisión la primera vez.
+  if(nuevo.estado_revision_tecnica === 'revision_terminada' && anterior.estado_revision_tecnica !== 'revision_terminada' && !anterior.revision_tecnica_terminada_en){
+    nuevo.revision_tecnica_terminada_en = new Date().toISOString().replace('T',' ').slice(0,19);
+  } else {
+    nuevo.revision_tecnica_terminada_en = anterior.revision_tecnica_terminada_en;
+  }
+  // Si la revisión deja de estar en 'revision_terminada' (se reabre), el sello se limpia -- ya no es
+  // cierto que "terminó" en ese momento; si se vuelve a marcar terminada después, se vuelve a sellar.
+  if(anterior.estado_revision_tecnica === 'revision_terminada' && nuevo.estado_revision_tecnica !== 'revision_terminada'){
+    nuevo.revision_tecnica_terminada_en = null;
+  }
+
+  // Punto 8: "carga de inventario condicional" -- se sella sola la primera vez que se marca (mismo
+  // patrón que excel_capturado_fecha), y a partir de aquí se normaliza a booleano real.
+  nuevo.autosurtido_inventario_cargado = (nuevo.autosurtido_inventario_cargado===1||nuevo.autosurtido_inventario_cargado===true||nuevo.autosurtido_inventario_cargado==='1') ? 1 : 0;
+  if(nuevo.autosurtido_inventario_cargado && !anterior.autosurtido_inventario_cargado && !nuevo.autosurtido_inventario_cargado_en){
+    nuevo.autosurtido_inventario_cargado_en = new Date().toISOString().slice(0,10);
+  }
+  // Punto 8: mientras el expediente sea autosurtido y ya haya reingresado, no puede pasar a Vanessa
+  // (estado_expediente no puede salir de su valor por defecto) sin la carga de inventario condicional.
+  // Antes del reingreso no aplica -- el expediente ni siquiera debería estar en captura todavía.
+  if(nuevo.tipo_reparacion === 'AUTO_SURTIDO' && anterior.autosurtido_reingreso_en
+      && !nuevo.autosurtido_inventario_cargado
+      && req.body.estado_expediente !== undefined && req.body.estado_expediente
+      && req.body.estado_expediente !== anterior.estado_expediente){
+    return res.status(400).json({ error:'Este expediente es autosurtido y ya reingresó: falta la carga de inventario condicional (Alejandra) antes de poder pasarlo a captura.' });
+  }
 
   // Propuesta Orlando/Vanessa: "quién registra la fecha de entrega del borrador a captura" — Roberto
   // confirmó que gana la primera vez que se registra, sin importar quién la mandó. Si ya tenía valor,
@@ -300,7 +359,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
   nuevo.aseguradora_ruta_refacciones = ruta.ruta;
   nuevo.aseguradora_regla_aplicada = ruta.regla;
 
-  db.prepare(`UPDATE siniestros SET aseguradora=?,vehiculo=?,anio_modelo=?,placas=?,vin=?,fecha_ingreso=?,ubicacion=?,responsable=?,estatus_general=?,notas=?,completo=?,
+  db.prepare(`UPDATE siniestros SET numero=?,aseguradora=?,vehiculo=?,anio_modelo=?,placas=?,vin=?,fecha_ingreso=?,ubicacion=?,responsable=?,estatus_general=?,notas=?,completo=?,
       cliente_nombre=?,cliente_telefono=?,cliente_correo=?,cliente_notas=?,orden_admision=?,canal_origen=?,etapa_actual=?,prioridad=?,
       requiere_refacciones=?,deducible=?,forma_pago=?,fecha_entrega_prevista=?,fecha_entrega_real=?,postventa_programada=?,postventa_completada=?,
       estado_valuacion=?,estado_produccion=?,estado_calidad=?,ingreso_tipo=?,ingreso_seguro=?,piezas_autorizadas_cambio=?,entrega_compromiso_gnp=?,entrega_compromiso_establecido_en=?,
@@ -314,9 +373,10 @@ router.patch('/:id', requireAuth, (req, res)=>{
       entrega_receptor=?,entrega_identificacion=?,entrega_kilometraje=?,entrega_combustible=?,entrega_llaves_entregadas=?,entrega_observacion=?,estado_entrega=?,
       finiquito_estado=?,finiquito_fecha=?,finiquito_observacion=?,encuesta_estado=?,encuesta_calificacion=?,encuesta_comentarios=?,postventa_resultado=?,deducible_pagado_confirmado_en=?,entrega_encuesta_gnp_solicitada=?,
       fecha_borrador_captura=?,excel_capturado=?,excel_capturado_fecha=?,fotos_completas=?,fotos_completas_fecha=?,enviado_propietario=?,enviado_propietario_fecha=?,
+      revision_tecnica_terminada_en=?,autosurtido_cotizado_en=?,autosurtido_reingreso_en=?,autosurtido_inventario_cargado=?,autosurtido_inventario_cargado_en=?,
       archivado=?,archivado_en=?,
       actualizado_en=datetime('now') WHERE id=?`)
-    .run(nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
+    .run(nuevo.numero, nuevo.aseguradora, nuevo.vehiculo, nuevo.anio_modelo, nuevo.placas, nuevo.vin, nuevo.fecha_ingreso, nuevo.ubicacion, nuevo.responsable, nuevo.estatus_general, nuevo.notas, nuevo.completo,
       nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.cliente_notas, nuevo.orden_admision, nuevo.canal_origen, nuevo.etapa_actual, nuevo.prioridad,
       nuevo.requiere_refacciones, nuevo.deducible, nuevo.forma_pago, nuevo.fecha_entrega_prevista, nuevo.fecha_entrega_real, nuevo.postventa_programada, nuevo.postventa_completada,
       nuevo.estado_valuacion, nuevo.estado_produccion, nuevo.estado_calidad, nuevo.ingreso_tipo, nuevo.ingreso_seguro, nuevo.piezas_autorizadas_cambio, nuevo.entrega_compromiso_gnp, nuevo.entrega_compromiso_establecido_en,
@@ -330,6 +390,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.entrega_receptor, nuevo.entrega_identificacion, nuevo.entrega_kilometraje, nuevo.entrega_combustible, nuevo.entrega_llaves_entregadas, nuevo.entrega_observacion, nuevo.estado_entrega,
       nuevo.finiquito_estado, nuevo.finiquito_fecha, nuevo.finiquito_observacion, nuevo.encuesta_estado, nuevo.encuesta_calificacion, nuevo.encuesta_comentarios, nuevo.postventa_resultado, nuevo.deducible_pagado_confirmado_en, (nuevo.entrega_encuesta_gnp_solicitada===undefined||nuevo.entrega_encuesta_gnp_solicitada===null||nuevo.entrega_encuesta_gnp_solicitada==='')?null:(nuevo.entrega_encuesta_gnp_solicitada?1:0),
       nuevo.fecha_borrador_captura, nuevo.excel_capturado, nuevo.excel_capturado_fecha, nuevo.fotos_completas, nuevo.fotos_completas_fecha, nuevo.enviado_propietario, nuevo.enviado_propietario_fecha,
+      nuevo.revision_tecnica_terminada_en, nuevo.autosurtido_cotizado_en, nuevo.autosurtido_reingreso_en, nuevo.autosurtido_inventario_cargado, nuevo.autosurtido_inventario_cargado_en,
       nuevo.archivado, nuevo.archivado_en,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });

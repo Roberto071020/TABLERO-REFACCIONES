@@ -1325,6 +1325,64 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_eventos_piloto_run ON whatsapp_
 db.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_comunicaciones_piloto_run ON whatsapp_comunicaciones_manuales(piloto_run_id);`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_errores_piloto_run ON whatsapp_errores(piloto_run_id);`);
 
+/* ===================== Documento PORTAL SC (Orlando, 8-sep-2026) =====================
+   Punto 4: "Fecha de borrador de captura... lo que sería bueno es que se muestre al lado de 'Revisión
+   terminada' la fecha en la que se actualiza ese campo." Se agrega un timestamp AUTOMÁTICO (no capturado
+   a mano) que se sella la primera vez que estado_revision_tecnica pasa a 'revision_terminada' -- mismo
+   patrón "gana el primer registro" que ya usan excel_capturado_fecha/fotos_completas_fecha. No se toca ni
+   se quita fecha_borrador_captura (sigue siendo un dato real y distinto: cuándo se entregó el borrador
+   físico a captura, no cuándo terminó la revisión técnica) -- Orlando lo planteó como duda, no como orden
+   firme de eliminarlo; se deja para que lo confirme. */
+if(!tieneColumna('siniestros', 'revision_tecnica_terminada_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN revision_tecnica_terminada_en TEXT;`);
+}
+
+/* Puntos 5 a 8: flujo de Autosurtidos.
+   - autosurtido_cotizado_en: Daniela termina de cotizar todas las piezas en la tabla autosurtido_piezas
+     (todos los campos requisitados) y regresa el expediente a Alejandra para cita de ingreso.
+   - autosurtido_reingreso_en: Alejandra anota que el vehículo ya reingresó físicamente al taller para
+     reparar -- esto es lo que lo hace aparecer en el tablero de Vanessa como "Autosurtido: listo para
+     enviar a Roberto".
+   - autosurtido_inventario_cargado / _en: carga de inventario CONDICIONAL de Alejandra (punto 8) --
+     mientras no esté cargada, el expediente autosurtido no puede pasar a Vanessa (no puede salir de
+     estado_expediente='en_captura' hacia adelante). Es un segundo inventario, específico del reingreso
+     para reparación -- distinto del inventario de admisión inicial (mismo tipo de archivo reutilizado,
+     'inventario_fisico', pero otro momento del proceso). */
+if(!tieneColumna('siniestros', 'autosurtido_cotizado_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN autosurtido_cotizado_en TEXT;`);
+}
+if(!tieneColumna('siniestros', 'autosurtido_reingreso_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN autosurtido_reingreso_en TEXT;`);
+}
+if(!tieneColumna('siniestros', 'autosurtido_inventario_cargado')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN autosurtido_inventario_cargado INTEGER NOT NULL DEFAULT 0;`);
+}
+if(!tieneColumna('siniestros', 'autosurtido_inventario_cargado_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN autosurtido_inventario_cargado_en TEXT;`);
+}
+
+// Punto 6: tabla de piezas de autosurtido -- Pieza (descripción), Costo, Tiempo de entrega, Proveedor
+// (nombre + origen: Radec/Grimex/Agencia/Mercado Libre; si es Mercado Libre, proveedor_link guarda el
+// link del producto, que el equipo manda a Roberto por WhatsApp -- eso queda fuera del sistema, es un
+// paso manual del equipo). "Requisitada" (para el punto 5, visibilidad en el tablero de Daniela) significa
+// que pieza, costo, tiempo_entrega y proveedor_nombre están todos completos.
+db.exec(`
+CREATE TABLE IF NOT EXISTS autosurtido_piezas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  pieza TEXT NOT NULL DEFAULT '',
+  costo REAL,
+  tiempo_entrega TEXT,
+  proveedor_origen TEXT CHECK(proveedor_origen IS NULL OR proveedor_origen IN ('Radec','Grimex','Agencia','Mercado Libre','Otro')),
+  proveedor_nombre TEXT,
+  proveedor_link TEXT,
+  creado_por INTEGER REFERENCES usuarios(id),
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_autosurtido_piezas_siniestro ON autosurtido_piezas(siniestro_id);
+`);
+
 module.exports = db;
 
 
