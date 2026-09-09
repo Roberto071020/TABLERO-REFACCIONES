@@ -4097,3 +4097,127 @@ test('PORTAL-5-8: flujo completo de Autosurtidos -- piezas requisitadas, roles p
 
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
+
+/* ===================== Fase 1, punto 10 PORTAL SC (Orlando, 8-sep-2026): Google Drive ===================== */
+// Estas pruebas corren SIN credenciales reales de Google (no hay GOOGLE_DRIVE_CLIENT_ID/_SECRET/_API_KEY
+// en el entorno de pruebas) -- por diseño: verifican que "vincular/desvincular carpeta" funciona ya
+// (no toca la API de Google), y que todo lo que sí necesitaría hablar con Google responde 501 con un
+// mensaje claro, nunca una respuesta simulada.
+
+test('GOOGLEDRIVE-1: la migración agrega las columnas de carpeta a siniestros y la tabla google_drive_tokens', async () => {
+  const db = require('../server/db');
+  const cols = db.prepare('PRAGMA table_info(siniestros)').all().map(c => c.name);
+  for (const c of ['drive_carpeta_id', 'drive_carpeta_nombre', 'drive_carpeta_link', 'drive_carpeta_vinculada_en', 'drive_carpeta_vinculada_por']) {
+    assert.ok(cols.includes(c), `siniestros debe tener la columna ${c}`);
+  }
+  const tabla = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='google_drive_tokens'").get();
+  assert.ok(tabla, 'debe existir la tabla google_drive_tokens');
+});
+
+test('GOOGLEDRIVE-2: /estado y /config-publica reflejan honestamente que no hay credenciales configuradas (nunca simulan una conexión)', async () => {
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const estado = await req('GET', '/api/google-drive/estado');
+  assert.equal(estado.status, 200);
+  assert.equal(estado.data.configurado, false, 'en el entorno de pruebas no hay credenciales de Google -- debe decir configurado:false');
+  assert.equal(estado.data.autorizado, false);
+  assert.match(estado.data.motivo, /GOOGLE_DRIVE_CLIENT_ID/, 'el motivo debe explicar qué variables faltan');
+
+  const config = await req('GET', '/api/google-drive/config-publica');
+  assert.equal(config.status, 501, 'sin configurar, config-publica debe responder 501, no datos falsos');
+});
+
+test('GOOGLEDRIVE-3: vincular/desvincular carpeta SÍ funciona sin credenciales -- solo guarda lo que el Picker devolvería', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'GDRIVE3-TEST', aseguradora: 'GNP' })).data;
+
+  // Un rol sin permiso (atencion_cliente) no puede vincular.
+  const db = require('../server/db');
+  const bcrypt = require('bcryptjs');
+  db.prepare('INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES (?,?,?,?)')
+    .run('Atencion Cliente Prueba GDRIVE3', 'atencion.gdrive3.test@serviciocristian.mx', bcrypt.hashSync('x', 4), 'atencion_cliente');
+  await req('POST', '/api/auth/login', { email: 'atencion.gdrive3.test@serviciocristian.mx', password: 'x' });
+  const prohibido = await req('POST', `/api/google-drive/siniestros/${s.id}/carpeta`, { carpeta_id: 'drive-folder-123', carpeta_nombre: 'AVANZA BLANCO 2008 0187929781A TRANSITO' });
+  assert.equal(prohibido.status, 403, 'atencion_cliente no debe poder vincular la carpeta de Drive');
+
+  // Orlando sí puede.
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const sinId = await req('POST', `/api/google-drive/siniestros/${s.id}/carpeta`, { carpeta_nombre: 'Sin id' });
+  assert.equal(sinId.status, 400, 'sin carpeta_id no debe poder vincular');
+
+  const vinculada = await req('POST', `/api/google-drive/siniestros/${s.id}/carpeta`, {
+    carpeta_id: 'drive-folder-123', carpeta_nombre: 'AVANZA BLANCO 2008 0187929781A TRANSITO', carpeta_link: 'https://drive.google.com/drive/folders/drive-folder-123'
+  });
+  assert.equal(vinculada.status, 200);
+
+  const siniestroActualizado = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(siniestroActualizado.drive_carpeta_id, 'drive-folder-123');
+  assert.equal(siniestroActualizado.drive_carpeta_nombre, 'AVANZA BLANCO 2008 0187929781A TRANSITO');
+  assert.ok(siniestroActualizado.drive_carpeta_vinculada_en, 'debe sellar la fecha de vinculación');
+
+  // Desvincular: atencion_cliente sigue sin poder.
+  await req('POST', '/api/auth/login', { email: 'atencion.gdrive3.test@serviciocristian.mx', password: 'x' });
+  const desvincularProhibido = await req('DELETE', `/api/google-drive/siniestros/${s.id}/carpeta`);
+  assert.equal(desvincularProhibido.status, 403);
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const desvinculada = await req('DELETE', `/api/google-drive/siniestros/${s.id}/carpeta`);
+  assert.equal(desvinculada.status, 200);
+  const siniestroLimpio = (await req('GET', '/api/siniestros/' + s.id)).data;
+  assert.equal(siniestroLimpio.drive_carpeta_id, null, 'desvincular debe dejar la carpeta en null');
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('GOOGLEDRIVE-4: listar/descargar archivos responde con errores claros y NUNCA inventa contenido cuando falta carpeta o credenciales', async () => {
+  const s = (await req('POST', '/api/siniestros', { numero: 'GDRIVE4-TEST', aseguradora: 'GNP' })).data;
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+
+  // Sin carpeta vinculada todavía: 404 explícito, no una lista vacía disfrazada de "ya conectado".
+  const sinCarpeta = await req('GET', `/api/google-drive/siniestros/${s.id}/archivos`);
+  assert.equal(sinCarpeta.status, 404);
+  assert.match(sinCarpeta.data.error, /no tiene una carpeta/);
+
+  const sinCarpetaDescarga = await req('GET', `/api/google-drive/siniestros/${s.id}/archivos/algun-file-id/descargar`);
+  assert.equal(sinCarpetaDescarga.status, 404);
+
+  // Con carpeta vinculada pero sin credenciales: 501, no una respuesta simulada.
+  await req('POST', `/api/google-drive/siniestros/${s.id}/carpeta`, { carpeta_id: 'drive-folder-456', carpeta_nombre: 'Carpeta de prueba' });
+  const conCarpetaSinCredenciales = await req('GET', `/api/google-drive/siniestros/${s.id}/archivos`);
+  assert.equal(conCarpetaSinCredenciales.status, 501);
+  assert.match(conCarpetaSinCredenciales.data.error, /GOOGLE_DRIVE_CLIENT_ID/);
+
+  const descargaSinCredenciales = await req('GET', `/api/google-drive/siniestros/${s.id}/archivos/algun-file-id/descargar`);
+  assert.equal(descargaSinCredenciales.status, 501);
+
+  // Expediente inexistente: 404 en ambas rutas.
+  const noExiste = await req('GET', '/api/google-drive/siniestros/9999999/archivos');
+  assert.equal(noExiste.status, 404);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('GOOGLEDRIVE-5: el flujo de autorización OAuth exige el rol correcto y, sin credenciales, responde 501 en vez de intentar redirigir a Google', async () => {
+  // vanessa NO está en ROLES_AUTORIZACION (solo orlando/admin/jefe) -- aunque sí puede vincular carpetas.
+  await req('POST', '/api/auth/login', { email: 'vanessa@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const vanessaProhibida = await req('GET', '/api/google-drive/oauth/iniciar');
+  assert.equal(vanessaProhibida.status, 403, 'vanessa no debe poder autorizar el conector -- solo orlando/admin/jefe');
+
+  await req('POST', '/api/auth/login', { email: 'orlando@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const sinCredenciales = await req('GET', '/api/google-drive/oauth/iniciar');
+  assert.equal(sinCredenciales.status, 501, 'sin credenciales configuradas, iniciar OAuth debe responder 501, no intentar redirigir a Google con un client_id vacío');
+
+  const callbackSinCredenciales = await req('GET', '/api/google-drive/oauth/callback?code=x&state=y');
+  assert.equal(callbackSinCredenciales.status, 501);
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('GOOGLEDRIVE-6: la pestaña Expediente y Valuación del frontend traen la sección de Carpeta de Google Drive con las acciones correctas', async () => {
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(appJs, /function renderCarpetaDrive\(/, 'debe existir el render de la sección de carpeta de Drive');
+  assert.match(appJs, /function abrirVincularCarpetaDrive\(/, 'debe existir el flujo de vinculación (Picker)');
+  assert.match(appJs, /function desvincularCarpetaDrive\(/, 'debe existir la acción de desvincular');
+  // La pestaña de Orlando/Vanessa (expediente) debe poder vincular/desvincular; la de Roberto (valuación)
+  // solo debe mostrar contenido de solo lectura (puedeEditar=false).
+  assert.match(appJs, /renderCarpetaDrive\(s, driveEstadoExp, driveArchivosExp, puedeExpediente\)/);
+  assert.match(appJs, /renderCarpetaDrive\(s, driveEstadoVal, driveArchivosVal, false\)/);
+});
