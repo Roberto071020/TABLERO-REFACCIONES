@@ -1255,6 +1255,10 @@ async function viewSiniestro(id){
     </tbody></table>
     ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormExpedienteDigital(${id})">Actualizar expediente</button></div>`:''}
 
+    <h4 style="margin-top:16px;">Carpeta de Google Drive</h4>
+    <p class="subtle">Punto 10 (Orlando): la carpeta real vive en Google Drive (Aseguradora &gt; Mes &gt; Siniestro). Aquí solo se vincula y se descarga su contenido.</p>
+    ${renderCarpetaDrive(s, driveEstadoExp, driveArchivosExp, puedeExpediente)}
+
     <h4 style="margin-top:16px;">Checklist documental</h4>
     ${documentos.length===0?'<div class="empty">Sin documentos registrados todavía.</div>':`
     <table><thead><tr><th>Documento</th><th>Versión</th><th>Estado</th><th>Folio</th><th>Archivo</th><th>Autor</th><th></th></tr></thead><tbody>
@@ -1275,6 +1279,14 @@ async function viewSiniestro(id){
     const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
     const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
     const reautorizaciones = await api('GET','/api/complementos?siniestro_id='+id+'&tipo=no_autorizado_inicial');
+    // Fase 1, punto 10 PORTAL SC (Orlando, 8-sep-2026): Roberto necesita ver y descargar el contenido de
+    // la carpeta de Drive desde su propio tablero (pestaña Valuación), sin poder vincular/desvincular --
+    // eso es tarea de Orlando/Vanessa en la pestaña Expediente.
+    const driveEstadoVal = await api('GET','/api/google-drive/estado', null, {silent:true}).catch(()=>null);
+    let driveArchivosVal = null;
+    if(s.drive_carpeta_id && driveEstadoVal && driveEstadoVal.configurado && driveEstadoVal.autorizado){
+      driveArchivosVal = await api('GET','/api/google-drive/siniestros/'+id+'/archivos', null, {silent:true}).catch(e=>({__error: e.message}));
+    }
     body = `
     <h3>Valuación</h3>
     <p class="subtle">Sección 5.6 del documento maestro. Sistema de valuación tomado del expediente digital (${esc(s.sistema_valuacion||'sin definir')}).</p>
@@ -1287,6 +1299,10 @@ async function viewSiniestro(id){
       <tr><td>Observaciones</td><td>${esc(s.valuacion_observaciones||'—')}</td></tr>
     </tbody></table>
     ${puedeValuacion?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormValuacion(${id})">Actualizar valuación</button></div>`:''}
+
+    <h3 style="margin-top:20px;">Carpeta de Google Drive</h3>
+    <p class="subtle">Contenido de la carpeta vinculada en la pestaña Expediente (fotos, Excel de revisión, etc.), para descarga directa.</p>
+    ${renderCarpetaDrive(s, driveEstadoVal, driveArchivosVal, false)}
 
     <h3 style="margin-top:20px;">Autorización</h3>
     <p class="subtle">Sección 5.7. Las piezas autorizadas a cambio alimentan la regla GNP 1-3 = autosurtido obligatorio.</p>
@@ -1906,6 +1922,117 @@ async function guardarEdicionHallazgo(hallazgoId){
     });
     toast('Hallazgo actualizado.', 'success');
     closeModal(); render();
+  }catch(e){}
+}
+
+// ===================== Fase 1, punto 10 PORTAL SC (Orlando, 8-sep-2026): carpeta de Google Drive del
+// expediente. Ver server/routes/googleDrive.js para el detalle de diseño (Picker + drive.file, proxy de
+// descarga vía backend). Mientras no haya credenciales reales configuradas en el servidor, /estado
+// responde configurado:false y aquí se muestra el aviso correspondiente en vez de intentar cargar los
+// scripts de Google.
+let _driveScriptsPromise = null;
+function cargarScriptsGoogleDrive(){
+  if(_driveScriptsPromise) return _driveScriptsPromise;
+  const cargarScript = src => new Promise((resolve,reject)=>{
+    const el = document.createElement('script');
+    el.src = src; el.async = true; el.defer = true;
+    el.onload = resolve; el.onerror = ()=>reject(new Error('No se pudo cargar '+src));
+    document.head.appendChild(el);
+  });
+  _driveScriptsPromise = Promise.all([
+    cargarScript('https://accounts.google.com/gsi/client'),
+    cargarScript('https://apis.google.com/js/api.js')
+  ]);
+  return _driveScriptsPromise;
+}
+
+function renderCarpetaDrive(s, driveEstado, driveArchivos, puedeEditar){
+  let html = '';
+  if(s.drive_carpeta_id){
+    html += `<table class="kv"><tbody>
+      <tr><td>Carpeta vinculada</td><td>${s.drive_carpeta_link?`<a class="link" href="${esc(s.drive_carpeta_link)}" target="_blank">${esc(s.drive_carpeta_nombre||s.drive_carpeta_id)}</a>`:esc(s.drive_carpeta_nombre||s.drive_carpeta_id)}</td></tr>
+      <tr><td>Vinculada el</td><td>${fmtFecha((s.drive_carpeta_vinculada_en||'').slice(0,10))}</td></tr>
+    </tbody></table>`;
+    if(!driveEstado || !driveEstado.configurado || !driveEstado.autorizado){
+      html += `<p class="subtle">${esc((driveEstado&&driveEstado.motivo)||'Integración de Google Drive no configurada todavía.')}</p>`;
+    } else if(driveArchivos && driveArchivos.__error){
+      html += `<p class="subtle">No se pudo cargar el contenido de la carpeta: ${esc(driveArchivos.__error)}</p>`;
+    } else if(Array.isArray(driveArchivos)){
+      html += driveArchivos.length===0 ? '<div class="empty">La carpeta no tiene archivos todavía.</div>' : `
+      <table><thead><tr><th>Archivo</th><th>Modificado</th><th></th></tr></thead><tbody>
+      ${driveArchivos.map(f=>`<tr>
+        <td>${esc(f.name)}</td>
+        <td class="subtle">${f.modifiedTime?fmtFecha(f.modifiedTime.slice(0,10)):'—'}</td>
+        <td><a class="link" href="/api/google-drive/siniestros/${s.id}/archivos/${encodeURIComponent(f.id)}/descargar" target="_blank">Descargar</a></td>
+      </tr>`).join('')}
+      </tbody></table>`;
+    }
+    if(puedeEditar){
+      html += `<div style="margin-top:8px;"><button class="btn small danger" onclick="desvincularCarpetaDrive(${s.id})">Desvincular carpeta</button></div>`;
+    }
+  } else if(puedeEditar){
+    html += `<p class="subtle">Sin carpeta vinculada todavía.</p><div style="margin-top:8px;"><button class="btn small" onclick="abrirVincularCarpetaDrive(${s.id})">Vincular carpeta de Google Drive</button></div>`;
+  } else {
+    html += `<div class="empty">Sin carpeta de Google Drive vinculada todavía.</div>`;
+  }
+  return html;
+}
+
+async function abrirVincularCarpetaDrive(siniestroId){
+  let estado;
+  try{ estado = await api('GET','/api/google-drive/estado'); }catch(e){ return; }
+  if(!estado.configurado){
+    showModal(`<h3>Conectar Google Drive</h3><p class="subtle">${esc(estado.motivo)}</p><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    return;
+  }
+  if(!estado.autorizado){
+    showModal(`<h3>Conectar Google Drive</h3><p class="subtle">${esc(estado.motivo||'Configurado, pero nadie ha autorizado el conector todavía.')}</p><p class="subtle">Solo Orlando puede autorizarlo, con su propia cuenta de Google (una sola vez, desde su sesión en el tablero).</p><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button>${(currentUser&&['orlando','admin','jefe'].includes(currentUser.rol))?`<button class="btn" onclick="window.location='/api/google-drive/oauth/iniciar'">Autorizar con Google</button>`:''}</div>`);
+    return;
+  }
+  let config;
+  try{ config = await api('GET','/api/google-drive/config-publica'); }catch(e){ return; }
+  try{
+    await cargarScriptsGoogleDrive();
+  }catch(e){
+    toast('No se pudieron cargar los scripts de Google. Revisa tu conexión e inténtalo de nuevo.', 'error');
+    return;
+  }
+  gapi.load('picker', ()=>{
+    google.accounts.oauth2.initTokenClient({
+      client_id: config.clientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: (tokenResponse)=>{
+        if(!tokenResponse || !tokenResponse.access_token){ toast('No se obtuvo autorización de Google.', 'error'); return; }
+        const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS).setSelectFolderEnabled(true).setIncludeFolders(true);
+        const picker = new google.picker.PickerBuilder()
+          .addView(view)
+          .setOAuthToken(tokenResponse.access_token)
+          .setDeveloperKey(config.apiKey)
+          .setAppId(config.appId||'')
+          .setCallback(async (data)=>{
+            if(data.action === google.picker.Action.PICKED){
+              const doc = data.docs[0];
+              try{
+                await api('POST','/api/google-drive/siniestros/'+siniestroId+'/carpeta', { carpeta_id: doc.id, carpeta_nombre: doc.name, carpeta_link: doc.url });
+                toast('Carpeta vinculada.', 'success');
+                render();
+              }catch(e){}
+            }
+          })
+          .build();
+        picker.setVisible(true);
+      }
+    }).requestAccessToken();
+  });
+}
+
+async function desvincularCarpetaDrive(siniestroId){
+  const ok = await confirmDialog('¿Desvincular la carpeta de Google Drive de este expediente? El contenido en Drive no se borra, solo deja de estar ligado aquí.', {titulo:'Desvincular carpeta', textoOk:'Desvincular', peligro:true});
+  if(!ok) return;
+  try{
+    await api('DELETE','/api/google-drive/siniestros/'+siniestroId+'/carpeta');
+    toast('Carpeta desvinculada.', 'success');
+    render();
   }catch(e){}
 }
 
