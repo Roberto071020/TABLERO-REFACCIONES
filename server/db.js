@@ -1383,6 +1383,47 @@ CREATE TABLE IF NOT EXISTS autosurtido_piezas (
 CREATE INDEX IF NOT EXISTS idx_autosurtido_piezas_siniestro ON autosurtido_piezas(siniestro_id);
 `);
 
+// ===================== Fase 1, punto 10 PORTAL SC (Orlando, 8-sep-2026): integración con Google Drive
+// (sin credenciales reales -- diseño confirmado por Orlando el 8-sep-2026, ver
+// Respuesta_Punto10_GoogleDrive.docx). Orlando vincula, con el selector oficial de Google (Picker,
+// alcance drive.file -- no exige auditoría CASA), la carpeta real del expediente en su Drive
+// (orlando.svcristian@gmail.com); el tablero guarda aquí solo el identificador y la liga de esa carpeta,
+// nunca su contenido. Roberto necesita poder DESCARGAR el contenido completo desde el tablero sin usar su
+// propia cuenta de Google -- por eso el backend guarda el token de Orlando (google_drive_tokens, la única
+// cuenta que autoriza) y lo usa para listar/descargar en nombre de quien esté viendo el expediente.
+if(!tieneColumna('siniestros', 'drive_carpeta_id')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN drive_carpeta_id TEXT;`);
+}
+if(!tieneColumna('siniestros', 'drive_carpeta_nombre')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN drive_carpeta_nombre TEXT;`);
+}
+if(!tieneColumna('siniestros', 'drive_carpeta_link')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN drive_carpeta_link TEXT;`);
+}
+if(!tieneColumna('siniestros', 'drive_carpeta_vinculada_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN drive_carpeta_vinculada_en TEXT;`);
+}
+if(!tieneColumna('siniestros', 'drive_carpeta_vinculada_por')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN drive_carpeta_vinculada_por INTEGER REFERENCES usuarios(id);`);
+}
+
+// Un solo registro por usuario que autorizó el conector (en la práctica, solo Orlando). access_token y
+// expiry_en son de corta duración y se refrescan solos con refresh_token en cada llamada real a la API
+// (ver server/routes/googleDrive.js) -- nunca se guardan en texto plano en ningún otro lado ni se
+// devuelven al frontend.
+db.exec(`
+CREATE TABLE IF NOT EXISTS google_drive_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER NOT NULL UNIQUE REFERENCES usuarios(id),
+  access_token TEXT,
+  refresh_token TEXT,
+  expiry_en TEXT,
+  scope TEXT,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+
 module.exports = db;
 
 

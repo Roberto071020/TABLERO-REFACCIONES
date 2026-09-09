@@ -77,6 +77,9 @@ app.use('/api/respaldos', require('./routes/respaldos'));
 app.use('/api/discrepancias-proveedor', require('./routes/discrepanciasProveedor'));
 app.use('/api/vales-pendientes', require('./routes/valesPendientes'));
 app.use('/api/autosurtido-piezas', require('./routes/autosurtidoPiezas'));
+// Fase 1, punto 10 PORTAL SC (Orlando, 8-sep-2026): integración con Google Drive -- sin credenciales
+// reales configuradas todavía; ver server/routes/googleDrive.js (estaConfigurado()).
+app.use('/api/google-drive', require('./routes/googleDrive'));
 app.use('/api/whatsapp-fase-a', require('./routes/whatsappFaseA')); // solo lectura, admin, no enlazado desde ninguna pantalla
 
 // ---- Frontend estático ----
