@@ -81,6 +81,9 @@ app.use('/api/autosurtido-piezas', require('./routes/autosurtidoPiezas'));
 // reales configuradas todavía; ver server/routes/googleDrive.js (estaConfigurado()).
 app.use('/api/google-drive', require('./routes/googleDrive'));
 app.use('/api/whatsapp-fase-a', require('./routes/whatsappFaseA')); // solo lectura, admin, no enlazado desde ninguna pantalla
+// Rama aislada whatsapp-bandeja-manual (14-sep-2026): bandeja manual asistida (WhatsApp Web) para
+// Alejandra/Vanessa/Daniela, sobre los eventos que el motor de arriba ya detecta -- ver server/routes/whatsappBandejaManual.js.
+app.use('/api/whatsapp-manual', require('./routes/whatsappBandejaManual'));
 
 // ---- Frontend estático ----
 // Reporte (2-sep-2026): varios "bugs" reportados ya estaban corregidos en el código pero el navegador

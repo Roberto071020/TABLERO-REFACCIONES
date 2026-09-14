@@ -1424,6 +1424,53 @@ CREATE TABLE IF NOT EXISTS google_drive_tokens (
 );
 `);
 
+
+/* ===================== WhatsApp -- bandeja manual asistida (rama aislada, 14-sep-2026) =====================
+   Autorización explícita de Roberto: bandeja para que Alejandra/Vanessa/Daniela envíen manualmente, vía
+   WhatsApp Web (enlace wa.me), los mensajes que el motor de WhatsApp Fase A YA detecta y registra en
+   whatsapp_eventos_registrados (server/whatsappFaseA.js) -- ese motor de detección/bloqueo/vigencia/
+   horario/plantillas NO se toca ni se modifica en esta rama; esta tabla solo AÑADE una capa de flujo
+   humano (reservar, revalidar, abrir wa.me, confirmar) sobre eventos que ya existen.
+   Cada fila representa el intento de envío MANUAL de un evento concreto (evento_id es UNIQUE): así un
+   mensaje confirmado ('enviado') estructuralmente nunca puede volver a reclamarse ni duplicarse. */
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_envios_manuales (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  evento_id INTEGER NOT NULL UNIQUE REFERENCES whatsapp_eventos_registrados(id),
+  siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+  plantilla_codigo TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente','reservado','enviado','cancelado')),
+  texto TEXT NOT NULL,
+  telefono TEXT,
+  abierto_por INTEGER REFERENCES usuarios(id),
+  abierto_en TEXT,
+  reserva_expira_en TEXT,
+  confirmado_por INTEGER REFERENCES usuarios(id),
+  confirmado_en TEXT,
+  cancelado_motivo TEXT,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_manuales_estado ON whatsapp_envios_manuales(estado);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_manuales_siniestro ON whatsapp_envios_manuales(siniestro_id);
+`);
+
+// Historial de cambios (punto pedido explícitamente por Roberto: "mantener internamente... historial de
+// cambios y protección contra duplicados"), sin saturar la pantalla -- se guarda aparte, no se muestra en
+// la lista principal.
+db.exec(`
+CREATE TABLE IF NOT EXISTS whatsapp_envios_manuales_historial (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  envio_id INTEGER NOT NULL REFERENCES whatsapp_envios_manuales(id),
+  evento TEXT NOT NULL,
+  usuario_id INTEGER REFERENCES usuarios(id),
+  detalle TEXT,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_manuales_historial_envio ON whatsapp_envios_manuales_historial(envio_id);
+`);
+
 module.exports = db;
+
 
 

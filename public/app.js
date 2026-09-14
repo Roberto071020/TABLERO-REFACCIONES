@@ -41,6 +41,24 @@ function fmtFecha(s){
   if(!m) return esc(str);
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
+// Bandeja de WhatsApp (rama whatsapp-bandeja-manual): "antigüedad" de un mensaje pendiente -- cuánto
+// tiempo lleva detectado, en un texto corto y legible, sin saturar la pantalla con una fecha completa.
+function fmtAntiguedad(s){
+  if(!s) return '';
+  let iso = String(s).trim();
+  if(!iso) return '';
+  if(iso.includes(' ') && !iso.includes('T')) iso = iso.replace(' ', 'T');
+  if(!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  const minutos = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+  if(minutos < 1) return 'hace un momento';
+  if(minutos < 60) return `hace ${minutos} min`;
+  const horas = Math.round(minutos / 60);
+  if(horas < 24) return `hace ${horas} h`;
+  const dias = Math.round(horas / 24);
+  return `hace ${dias} día${dias===1?'':'s'}`;
+}
 function uidLocal(){ return 'tmp'+Math.random().toString(36).slice(2); }
 // Punto 3 del documento PORTAL SC (Orlando, 8-sep-2026): "los siniestros de MAPFRE, manejarlos sin la
 // terminación ya sea 1, 2 o 3, solo los números que vienen en la ODA -- no habría forma de confundirse ya
@@ -173,7 +191,7 @@ async function guardarPassword(){
 }
 
 /* ===================== ESTADO / NAV ===================== */
-let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{}, filtrosHistorial:{} };
+let state = { view:'inicio', siniestroId:null, proveedorId:null, subtabSiniestro:'pedidos', filtros:{}, filtrosHistorial:{}, whatsappSubview:'pendientes', whatsappQ:'' };
 
 // Triage documento de Daniela (DEF-023/REQ-022): traducir los códigos internos de auditoría a texto
 // legible en la línea de tiempo, en vez de mostrar el nombre técnico crudo (alta_carga_masiva, etc.).
@@ -227,12 +245,28 @@ const TABS = [
   {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
   {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
   {k:'reglas', label:'Reglas', roles:['admin','jefe']},
-  {k:'respaldos', label:'Respaldos', roles:['admin']}
+  {k:'respaldos', label:'Respaldos', roles:['admin']},
+  // Bandeja manual asistida de WhatsApp (rama whatsapp-bandeja-manual, 14-sep-2026): abierta a TODOS los
+  // usuarios autenticados para consultar pendientes/historial -- el envío/confirmación en sí ya se acota
+  // por rol dentro de la propia vista (whatsappBandeja.ROLES_ENVIO en el backend), no aquí en el menú.
+  {k:'whatsapp', label:'WhatsApp'}
 ];
+// Contador discreto de pendientes junto al acceso de "WhatsApp" en el menú general -- se actualiza en
+// segundo plano (no bloquea el render de las pestañas) y se vuelve a pedir cada vez que se navega.
+let whatsappPendientesBadge = null;
+async function actualizarBadgeWhatsapp(){
+  if(!currentUser) return;
+  try{
+    const r = await api('GET','/api/whatsapp-manual/resumen', null, { silent:true });
+    whatsappPendientesBadge = r.pendientes;
+  }catch(e){ /* silencioso: un contador que no cargó no debe interrumpir el resto del tablero */ }
+  const nav = document.getElementById('mainTabs');
+  if(nav) renderTabs();
+}
 function renderTabs(){
   const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
   document.getElementById('mainTabs').innerHTML = visibles.map(t=>
-    `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}</button>`).join('') +
+    `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}${t.k==='whatsapp' && whatsappPendientesBadge?` <span class="badge-count">${whatsappPendientesBadge}</span>`:''}</button>`).join('') +
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
 function goTo(view){ state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
@@ -304,10 +338,12 @@ async function render(){
     else if(state.view==='calidad') app.innerHTML = await viewCalidad();
     else if(state.view==='reglas') app.innerHTML = viewReglas();
     else if(state.view==='respaldos') app.innerHTML = await viewRespaldos();
+    else if(state.view==='whatsapp') app.innerHTML = await viewWhatsapp();
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
     if(e.message !== 'Sesión expirada. Vuelve a iniciar sesión.') app.innerHTML = `<div class="empty">No se pudo cargar la vista: ${esc(e.message)}</div>`;
   }
+  actualizarBadgeWhatsapp(); // en segundo plano, no bloquea el render ya mostrado.
 }
 
 /* ===================== VISTA: INICIO ===================== */
@@ -4151,6 +4187,103 @@ function viewReglas(){
     <h3>Sobre las pruebas de este sistema</h3>
     <p class="subtle">Las pruebas de aceptación (CA-01 a CA-10 y el caso real de Daniela) ahora son un archivo de pruebas automatizadas real en el proyecto (<code>tests/api.test.js</code>), que falla de verdad si una regla se rompe — no un panel que siempre marca "aprobado" (corrección F-09).</p>
   </div>`;
+}
+
+/* ===================== VISTA: WHATSAPP (bandeja manual asistida) ===================== */
+// Rama aislada whatsapp-bandeja-manual (14-sep-2026): pantalla MUY simple, autorizada por Roberto, para
+// que Alejandra/Vanessa/Daniela envíen manualmente por WhatsApp Web los mensajes que el motor de WhatsApp
+// Fase A ya detecta (server/whatsappFaseA.js, sin tocar). Sin filtros avanzados, sin selección de
+// plantilla, sin redacción manual, sin envío masivo -- un solo botón principal por mensaje.
+function puedeEnviarWhatsapp(){
+  return currentUser && ['atencion_cliente','vanessa','operativo'].includes(currentUser.rol);
+}
+async function viewWhatsapp(){
+  const [resumenWa, lista] = await Promise.all([
+    api('GET','/api/whatsapp-manual/resumen'),
+    state.whatsappSubview==='pendientes' ? api('GET','/api/whatsapp-manual/pendientes'+(state.whatsappQ?('?q='+encodeURIComponent(state.whatsappQ)):''))
+      : state.whatsappSubview==='en_proceso' ? api('GET','/api/whatsapp-manual/en-proceso'+(state.whatsappQ?('?q='+encodeURIComponent(state.whatsappQ)):''))
+      : api('GET','/api/whatsapp-manual/enviados'+(state.whatsappQ?('?q='+encodeURIComponent(state.whatsappQ)):'')),
+  ]);
+  whatsappPendientesBadge = resumenWa.pendientes;
+  const SUB = state.whatsappSubview;
+  const filaAcciones = (item) => {
+    if(SUB === 'pendientes'){
+      if(item.tipo === 'informativo' || !item.accionable){
+        return `<span class="subtle">${esc(item.motivo || 'Mensaje bloqueado; requiere revisión.')}</span>`;
+      }
+      if(!puedeEnviarWhatsapp()) return `<span class="subtle">Solo consulta</span>`;
+      return `<button class="btn small" onclick="enviarPorWhatsappBandeja(${item.envio_id})">Enviar por WhatsApp</button>`;
+    }
+    if(SUB === 'en_proceso'){
+      const esMio = currentUser && item.abierto_por === currentUser.id;
+      return esMio ? `<button class="btn small secondary" onclick="continuarEnvioWhatsappBandeja(${item.envio_id})">Continuar</button>`
+        : `<span class="subtle">En proceso (${esc(item.abierto_por_nombre||'')})</span>`;
+    }
+    return `<span class="badge verde">Enviado</span>`;
+  };
+  const filas = lista.map(item => `
+    <tr>
+      <td><b>${esc(item.cliente_nombre || '(sin nombre)')}</b><div class="subtle">${esc(item.vehiculo||'')}</div></td>
+      <td>${esc(item.siniestro_numero)}</td>
+      <td>${esc(item.plantilla_nombre)}</td>
+      <td class="subtle">${fmtAntiguedad(item.detectado_en || item.abierto_en || item.confirmado_en)}</td>
+      <td>${filaAcciones(item)}</td>
+    </tr>`).join('');
+  return `
+  <h2>WhatsApp</h2>
+  <p class="subtle">Mensajes que SC Control ya detectó automáticamente, listos para enviarse a mano por WhatsApp Web. El texto es exactamente la plantilla acordada, firmado únicamente como Servicio Cristian.</p>
+  <div class="grid-cards">
+    <div class="card azul" onclick="setWhatsappSubview('pendientes')"><div class="num">${resumenWa.pendientes}</div><div class="label">Pendientes</div></div>
+    <div class="card ambar" onclick="setWhatsappSubview('en_proceso')"><div class="num">${resumenWa.en_proceso}</div><div class="label">En proceso</div></div>
+    <div class="card verde" onclick="setWhatsappSubview('enviados')"><div class="num">${resumenWa.enviados}</div><div class="label">Enviados</div></div>
+  </div>
+  <div class="section">
+    <div class="field"><input placeholder="Buscar por cliente o número de siniestro…" value="${esc(state.whatsappQ)}" oninput="buscarWhatsappBandeja(this.value)"></div>
+    <table><thead><tr><th>Cliente</th><th>Siniestro</th><th>Motivo / etapa</th><th>Antigüedad</th><th></th></tr></thead>
+    <tbody>${filas || `<tr><td colspan="5"><div class="empty">Sin mensajes en "${SUB==='pendientes'?'Pendientes':SUB==='en_proceso'?'En proceso':'Enviados'}".</div></td></tr>`}</tbody></table>
+  </div>`;
+}
+function setWhatsappSubview(sub){ state.whatsappSubview = sub; render(); }
+let _whatsappBuscarTimeout = null;
+function buscarWhatsappBandeja(valor){
+  state.whatsappQ = valor;
+  clearTimeout(_whatsappBuscarTimeout);
+  _whatsappBuscarTimeout = setTimeout(()=> render(), 350);
+}
+// Paso 2-5 del flujo: reclamar atómicamente, revalidar, abrir wa.me, y mostrar únicamente la pregunta de
+// confirmación al regresar.
+async function enviarPorWhatsappBandeja(envioId){
+  try{
+    const envio = await api('POST', `/api/whatsapp-manual/envios/${envioId}/reclamar`, {});
+    abrirWhatsappYConfirmar(envio);
+  }catch(e){
+    render(); // la lista puede haber cambiado (mensaje tomado por alguien más, o ya no vigente).
+  }
+}
+async function continuarEnvioWhatsappBandeja(envioId){
+  try{
+    const envio = await api('GET', `/api/whatsapp-manual/envios/${envioId}`);
+    abrirWhatsappYConfirmar(envio);
+  }catch(e){ render(); }
+}
+function abrirWhatsappYConfirmar(envio){
+  if(envio.link) window.open(envio.link, '_blank');
+  showModal(`
+    <h3>¿El mensaje fue enviado?</h3>
+    <p class="subtle">Siniestro ${esc(envio.siniestro_numero)}</p>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="confirmarEnvioWhatsappBandeja(${envio.id}, false)">No</button>
+      <button class="btn" onclick="confirmarEnvioWhatsappBandeja(${envio.id}, true)">Sí</button>
+    </div>
+  `);
+}
+async function confirmarEnvioWhatsappBandeja(envioId, enviado){
+  try{
+    await api('POST', `/api/whatsapp-manual/envios/${envioId}/confirmar`, { enviado });
+    closeModal();
+    toast(enviado ? 'Envío registrado.' : 'Mensaje liberado; vuelve a Pendientes.', 'success');
+    if(state.view==='whatsapp') render(); else actualizarBadgeWhatsapp();
+  }catch(e){ closeModal(); }
 }
 
 /* ===================== VISTA: RESPALDOS (solo admin) ===================== */

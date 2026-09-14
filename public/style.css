@@ -55,6 +55,9 @@ h3{font-size:15px;}
 .badge.verde{background:var(--verde);}
 .badge.gris{background:var(--gris-500);}
 .badge.morado{background:#7c3aed;}
+/* Bandeja manual asistida de WhatsApp (rama whatsapp-bandeja-manual) -- contador discreto en el menú. */
+.badge-count{display:inline-block;min-width:16px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;background:var(--rojo);color:#fff;vertical-align:2px;margin-left:2px;}
+
 .section{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:18px;box-shadow:var(--shadow-sm);}
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);}
