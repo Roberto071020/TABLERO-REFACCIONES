@@ -17,6 +17,7 @@ const app = require('../server/index');
 const db = require('../server/db');
 const bandeja = require('../server/whatsappBandejaManual');
 const activacion = require('../server/whatsappFaseAActivacion');
+const whatsappFaseA = require('../server/whatsappFaseA');
 
 const PORT = 3995;
 const BASE = 'http://localhost:' + PORT;
@@ -55,8 +56,12 @@ function tel(){ contador++; return '551' + String(1000000 + contador); }
 async function crearSiniestro(campos){
   await login('alejandra@serviciocristian.mx', 'ServicioCristian2026!');
   const numero = campos.numero;
+  // Corrección de Roberto (punto 3, 14-sep-2026): 5.1/6.1 ya no se materializan sin vehículo capturado --
+  // se agrega un vehículo de prueba por defecto aquí (los tests que SÍ quieren probar el caso "falta
+  // vehículo" -- WB-15/WB-16 -- crean el siniestro directamente con req(), sin pasar por este helper, o
+  // pasan vehiculo explícito para sobreescribirlo).
   const body = { aseguradora:'GNP', cliente_nombre:'Cliente '+numero, cliente_correo: numero.toLowerCase()+'@test.mx',
-    cliente_telefono: tel(), ingreso_tipo:'grua', ...campos };
+    cliente_telefono: tel(), ingreso_tipo:'grua', vehiculo:'Vehículo de prueba '+numero, ...campos };
   const r = await req('POST', '/api/siniestros', body);
   assert.equal(r.status, 201, 'creación de siniestro debe funcionar: ' + JSON.stringify(r.data));
   return r.data;
@@ -112,7 +117,7 @@ test('WB-1: todos los roles autenticados pueden CONSULTAR (resumen/pendientes/en
   await login('alejandra@serviciocristian.mx', 'ServicioCristian2026!');
   const ok = await req('POST', `/api/whatsapp-manual/envios/${pendiente.envio_id}/reclamar`, {});
   assert.equal(ok.status, 200, JSON.stringify(ok.data));
-  assert.ok(ok.data.link && ok.data.link.startsWith('https://wa.me/52'), 'debe regresar un enlace wa.me listo');
+  assert.ok(ok.data.link && ok.data.link.startsWith('https://web.whatsapp.com/send?phone=52'), 'debe regresar el enlace directo oficial de WhatsApp Web listo');
 
   await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
   assert.equal((await req('POST', `/api/whatsapp-manual/envios/${pendiente.envio_id}/confirmar`, { enviado:true })).status, 403);
@@ -418,4 +423,180 @@ test('WB-12: la pantalla "WhatsApp" existe en el menú y expone únicamente el f
   assert.match(appJs, /function confirmarEnvioWhatsappBandeja\(/);
   assert.match(appJs, /¿El mensaje fue enviado\?/);
   assert.ok(!/selectorPlantilla|redaccionManual|envioMasivo/i.test(appJs), 'no deben existir ganchos de selección de plantilla, redacción manual o envío masivo');
+});
+
+// ===================== WB-14 (punto 1 de la revisión de Roberto): liberado_para_programacion =====
+// Corrección: materializarPendientes() solo tomaba eventos en estado 'registrado'. Un evento que nació
+// bloqueado, se resolvió automáticamente a 'pendiente_revision', y luego un admin lo liberó explícitamente
+// ('liberado_para_programacion', vía resolverPendienteRevision) desaparecía de los informativos bloqueados
+// (ya no está en 'bloqueado'/'pendiente_revision') pero JAMÁS entraba a la bandeja manual como pendiente
+// accionable -- se quedaba huérfano, invisible. Esta prueba recorre el ciclo completo: bloqueado -> revisión
+// humana (automática, al resolverse la condición) -> liberado (acción explícita de admin) -> pendiente
+// accionable en la bandeja -> envío manual confirmado.
+test('WB-14: un evento bloqueado que se libera tras revisión humana (liberado_para_programacion) SÍ entra a la bandeja manual como pendiente accionable, y se puede reclamar y confirmar', async () => {
+  const s = await crearSiniestro({ numero:'WB14', vehiculo:'Chevrolet Aveo 2021' });
+
+  // 1) Nace bloqueado: incidencia delicada abierta ANTES de que el motor registre el 5.2 (mismo patrón que WB-4b).
+  await login('daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!');
+  const pedido = (await req('POST', '/api/pedidos', { siniestro_id: s.id, numero:'PED-WB14', fecha_prevista:'2026-12-01' })).data;
+  const proveedor = (await req('POST', '/api/proveedores', { razon_social:'Proveedor WB14' })).data;
+  const pieza = (await req('POST', '/api/piezas', { pedido_id: pedido.id, descripcion:'Cofre', proveedor_id: proveedor.id })).data;
+  const inc = await req('POST', '/api/incidencias', { pieza_id: pieza.id, tipo:'danada', descripcion:'Pieza dañada' });
+  assert.equal(inc.status, 201, JSON.stringify(inc.data));
+
+  const rr = await patchComo('orlando@serviciocristian.mx','ServicioCristian2026!', s.id, { estado_valuacion:'enviada', valuacion_fecha_envio:'2026-09-14' });
+  assert.equal(rr.status, 200, JSON.stringify(rr.data));
+
+  let evento = db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND plantilla_codigo='5.2'`).get(s.id);
+  assert.ok(evento, 'debe existir el evento 5.2');
+  assert.equal(evento.estado, 'bloqueado', 'debe nacer bloqueado por la incidencia delicada abierta');
+
+  // Mientras sigue bloqueado, NUNCA debe verse como pendiente accionable -- solo informativo.
+  const antes = await buscarEnPendientes('WB14', '5.2');
+  assert.ok(antes);
+  assert.equal(antes.accionable, false);
+  assert.equal(antes.envio_id, null);
+
+  // 2) La condición se resuelve (incidencia cerrada) -- el motor de detección mueve el evento a
+  // pendiente_revision de forma AUTOMÁTICA (revisarBloqueadosResueltos, el mismo barrido periódico ya
+  // construido y probado en whatsappFaseA.js, no algo nuevo de esta bandeja).
+  const resuelveInc = await req('PATCH', `/api/incidencias/${inc.data.id}`, { estado:'resuelta', resolucion:'Pieza correcta confirmada y sustituida el 14-sep-2026.' });
+  assert.equal(resuelveInc.status, 200, JSON.stringify(resuelveInc.data));
+  whatsappFaseA.revisarBloqueadosResueltos(db);
+
+  evento = db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE id=?`).get(evento.id);
+  assert.equal(evento.estado, 'pendiente_revision', 'debe moverse solo a revisión humana en cuanto se resuelve la condición');
+
+  // Mientras está en pendiente_revision (nadie lo ha liberado todavía), tampoco debe verse como accionable.
+  const durante = await buscarEnPendientes('WB14', '5.2');
+  assert.ok(durante, 'debe seguir listado (informativo) mientras espera revisión humana');
+  assert.equal(durante.accionable, false);
+  assert.equal(durante.envio_id, null);
+
+  // 3) Acción explícita de un humano (admin): liberado_para_programacion -- NUNCA implica un envío real,
+  // solo dice "ya lo revisé, sigue vigente" (resolverPendienteRevision, ya construido y probado).
+  const adminId = db.prepare("SELECT id FROM usuarios WHERE email='admin@serviciocristian.mx'").get().id;
+  whatsappFaseA.resolverPendienteRevision(db, {
+    eventoId: evento.id, decision: 'liberado_para_programacion',
+    justificacion: 'Se revalidó la vigencia, la etapa actual y el teléfono del expediente; el texto de la plantilla 5.2 sigue correspondiente; no requiere decisión de Daniela.',
+    usuarioId: adminId,
+  });
+  evento = db.prepare(`SELECT * FROM whatsapp_eventos_registrados WHERE id=?`).get(evento.id);
+  assert.equal(evento.estado, 'liberado_para_programacion');
+
+  // 4) AHORA sí debe entrar a la bandeja manual como pendiente accionable -- este es el hueco que se corrigió.
+  const despues = await buscarEnPendientes('WB14', '5.2');
+  assert.ok(despues, 'debe aparecer en Pendientes tras liberarse');
+  assert.equal(despues.tipo, 'pendiente');
+  assert.equal(despues.accionable, true, 'debe ser accionable -- este es exactamente el hueco corregido (punto 1)');
+  assert.ok(despues.envio_id, 'debe existir una fila real en whatsapp_envios_manuales');
+
+  // 5) Se puede reclamar y confirmar el envío manual con normalidad, como cualquier otro pendiente.
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const rec = await req('POST', `/api/whatsapp-manual/envios/${despues.envio_id}/reclamar`, {});
+  assert.equal(rec.status, 200, JSON.stringify(rec.data));
+  const conf = await req('POST', `/api/whatsapp-manual/envios/${despues.envio_id}/confirmar`, { enviado:true });
+  assert.equal(conf.status, 200);
+  const envioDb = db.prepare('SELECT * FROM whatsapp_envios_manuales WHERE id=?').get(despues.envio_id);
+  assert.equal(envioDb.estado, 'enviado');
+});
+
+// ===================== WB-15 / WB-16 (punto 3 de la revisión de Roberto): falta capturar el vehículo =====
+// Corrección: 5.1 y 6.1 son las únicas dos plantillas que incluyen [Vehículo] justo después de decir "tu
+// unidad" -- si el campo está vacío, la sustitución anterior producía "tu unidad tu unidad" (texto roto).
+// Roberto fue explícito: no se altera el texto acordado ni se inventa un vehículo -- el mensaje se bloquea
+// informativamente hasta que el expediente tenga el dato.
+test('WB-15: 5.1 sin vehículo capturado se bloquea informativamente (nunca "tu unidad tu unidad", nunca accionable); al capturar el vehículo, se materializa como pendiente normal', async () => {
+  await login('alejandra@serviciocristian.mx', 'ServicioCristian2026!');
+  const r = await req('POST', '/api/siniestros', {
+    aseguradora:'GNP', numero:'WB15', cliente_nombre:'Cliente WB15', cliente_correo:'wb15@test.mx',
+    cliente_telefono: tel(), ingreso_tipo:'grua', // OJO: sin "vehiculo" a propósito.
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+
+  const evento = db.prepare(`SELECT id FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND plantilla_codigo='5.1'`).get(r.data.id);
+  assert.ok(evento, 'el evento 5.1 sí debe registrarse en el motor -- whatsappFaseA no exige vehículo, solo la bandeja no puede completar el texto sin inventar');
+
+  const lista = await req('GET', '/api/whatsapp-manual/pendientes');
+  const fila = lista.data.find(x => x.siniestro_numero === 'WB15' && x.plantilla_codigo === '5.1');
+  assert.ok(fila, 'debe listarse, de forma informativa, mientras falte el vehículo');
+  assert.equal(fila.tipo, 'informativo');
+  assert.equal(fila.accionable, false);
+  assert.equal(fila.envio_id, null, 'no debe existir ninguna fila de envío -- nunca se materializa un texto a medias');
+  assert.match(fila.motivo, /vehículo/i);
+  assert.ok(!/vehículo/i.test(fila.motivo) || !fila.motivo.includes('tu unidad tu unidad'), 'el motivo mostrado jamás debe contener el texto roto');
+
+  // Nunca debe existir, en ningún lado (BD ni respuesta), el texto roto "tu unidad tu unidad".
+  const filasEnviosWB15 = db.prepare(`SELECT texto FROM whatsapp_envios_manuales m JOIN siniestros s ON s.id=m.siniestro_id WHERE s.numero='WB15'`).all();
+  assert.equal(filasEnviosWB15.length, 0);
+  assert.equal(bandeja.renderTexto('5.1', { nombre:'Cliente WB15', vehiculo:'' }), null, 'renderTexto debe negarse a producir texto a medias, nunca "tu unidad tu unidad"');
+
+  // Se captura el vehículo -- ahora sí debe materializarse como pendiente accionable normal, con el texto completo.
+  const patch = await patchComo('alejandra@serviciocristian.mx','ServicioCristian2026!', r.data.id, { vehiculo:'Toyota Corolla 2020' });
+  assert.equal(patch.status, 200, JSON.stringify(patch.data));
+
+  const pendiente = await buscarEnPendientes('WB15', '5.1');
+  assert.ok(pendiente, 'debe materializarse en cuanto se captura el vehículo');
+  assert.equal(pendiente.tipo, 'pendiente');
+  assert.equal(pendiente.accionable, true);
+  assert.ok(pendiente.envio_id);
+
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const rec = await req('POST', `/api/whatsapp-manual/envios/${pendiente.envio_id}/reclamar`, {});
+  assert.equal(rec.status, 200, JSON.stringify(rec.data));
+  assert.ok(!rec.data.texto.includes('tu unidad tu unidad'), 'el texto final jamás debe llevar la frase duplicada');
+  assert.ok(rec.data.texto.includes('Toyota Corolla 2020'));
+  await req('POST', `/api/whatsapp-manual/envios/${pendiente.envio_id}/confirmar`, { enviado:false });
+});
+
+test('WB-16: 6.1 sin vehículo capturado se bloquea informativamente igual que 5.1 (mismo tratamiento, sin texto roto)', async () => {
+  // 6.1 es un mensaje de continuidad (72h sin avance) -- se registra aquí directamente con la MISMA función
+  // del motor de detección que usaría un ciclo real (registrarEvento), en vez de simular 72 horas completas,
+  // que ya está cubierto por las pruebas propias de whatsappFaseA.js.
+  const s = await crearSiniestro({ numero:'WB16', vehiculo:'' }); // sin vehiculo a propósito (sobreescribe el default del helper).
+  whatsappFaseA.registrarEvento(db, {
+    siniestroId: s.id, plantillaCodigo: '6.1', disparador: 'continuidad_72h_prueba',
+    variables: { nombre: s.cliente_nombre }, dedupKey: 'wb16-continuidad-1',
+  });
+
+  const evento = db.prepare(`SELECT id, estado FROM whatsapp_eventos_registrados WHERE siniestro_id=? AND plantilla_codigo='6.1'`).get(s.id);
+  assert.ok(evento);
+  assert.equal(evento.estado, 'registrado');
+
+  const lista = await req('GET', '/api/whatsapp-manual/pendientes');
+  const fila = lista.data.find(x => x.siniestro_numero === 'WB16' && x.plantilla_codigo === '6.1');
+  assert.ok(fila, 'debe listarse informativamente mientras falte el vehículo');
+  assert.equal(fila.accionable, false);
+  assert.equal(fila.envio_id, null);
+  assert.match(fila.motivo, /vehículo/i);
+
+  assert.equal(bandeja.renderTexto('6.1', { nombre:'Cliente WB16', vehiculo:'' }), null);
+
+  // Se captura el vehículo -- se materializa igual que 5.1.
+  const patch = await patchComo('alejandra@serviciocristian.mx','ServicioCristian2026!', s.id, { vehiculo:'Kia Rio 2019' });
+  assert.equal(patch.status, 200, JSON.stringify(patch.data));
+  const pendiente = await buscarEnPendientes('WB16', '6.1');
+  assert.ok(pendiente);
+  assert.equal(pendiente.accionable, true);
+  assert.ok(pendiente.envio_id);
+});
+
+// ===================== WB-17 (punto 4 de la revisión de Roberto): orden del más antiguo al más reciente ===
+test('WB-17: Pendientes se muestra del más antiguo al más reciente (antes era al revés) -- se atiende primero lo que lleva más tiempo esperando', async () => {
+  const a = await crearSiniestro({ numero:'WB17A' });
+  const b = await crearSiniestro({ numero:'WB17B' });
+  const pendienteA = await buscarEnPendientes('WB17A', '5.1');
+  const pendienteB = await buscarEnPendientes('WB17B', '5.1');
+  assert.ok(pendienteA && pendienteB);
+
+  // Se fijan marcas de tiempo determinísticas (independiente de la velocidad real de la prueba): A es
+  // claramente más antiguo que B.
+  db.prepare(`UPDATE whatsapp_envios_manuales SET creado_en='2020-01-01 00:00:00' WHERE id=?`).run(pendienteA.envio_id);
+  db.prepare(`UPDATE whatsapp_envios_manuales SET creado_en='2020-01-02 00:00:00' WHERE id=?`).run(pendienteB.envio_id);
+
+  const lista = await req('GET', '/api/whatsapp-manual/pendientes');
+  const idxA = lista.data.findIndex(x => x.envio_id === pendienteA.envio_id);
+  const idxB = lista.data.findIndex(x => x.envio_id === pendienteB.envio_id);
+  assert.ok(idxA >= 0 && idxB >= 0);
+  assert.ok(idxA < idxB, 'el más antiguo (A) debe aparecer ANTES que el más reciente (B) en la lista');
 });

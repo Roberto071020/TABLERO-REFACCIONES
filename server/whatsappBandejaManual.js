@@ -9,7 +9,9 @@
 //     server/whatsappScheduler.js, server/whatsappWebhook.js ni server/whatsappProviders/* -- los USA
 //     (whatsapp_eventos_registrados, validarAntesDeEnviar, etc.), nunca los toca.
 //   - Este archivo JAMÁS hace una llamada HTTP real a WhatsApp/Meta. El único "envío" es abrir, en el
-//     navegador de la persona, el enlace oficial https://wa.me/<telefono>?text=<texto> -- la persona
+//     navegador de la persona, el enlace directo oficial de WhatsApp Web
+//     https://web.whatsapp.com/send?phone=<telefono>&text=<texto> (evita la pantalla intermedia de
+//     wa.me/api.whatsapp.com -- corrección de Roberto, revisión independiente 14-sep-2026, punto 2) -- la persona
 //     manda el mensaje ella misma, con su propia sesión de WhatsApp Web.
 //   - El texto que se prepara es EXACTAMENTE el texto acordado de la plantilla (ver PLANTILLAS_TEXTO),
 //     firmado únicamente como Servicio Cristian -- nunca se le agrega el nombre de quien lo envía, ni
@@ -60,13 +62,24 @@ const PLANTILLAS_TEXTO = {
 };
 
 // Sustituye [Nombre] y [Vehículo]/[Vehiculo] (con o sin acento -- las dos formas aparecen en el catálogo
-// fuente) por las variables reales del expediente. Si una variable llega vacía, se deja un texto neutro
-// en vez de una plantilla rota con corchetes visibles para el cliente.
+// fuente) por las variables reales del expediente.
+//
+// Corrección de Roberto (revisión independiente, 14-sep-2026, punto 3): la versión anterior rellenaba un
+// [Vehículo] vacío con el texto fijo "tu unidad" -- pero 5.1 y 6.1 YA dicen "tu unidad" justo antes del
+// corchete ("Hemos registrado tu unidad [Vehículo]" / "...sobre tu unidad [Vehículo]"), así que el
+// resultado quedaba "tu unidad tu unidad", una plantilla visiblemente rota. Roberto fue explícito: "No
+// alteres el texto acordado ni inventes datos" -- la solución correcta no es cambiar el texto (no nos
+// corresponde) ni inventar un vehículo -- es NO enviar ese mensaje todavía. Por eso, si la plantilla
+// necesita [Vehículo] y el expediente no lo tiene capturado, renderTexto devuelve null (nunca un texto a
+// medias); quien llama a esta función (materializarPendientes/reclamar) debe tratar null como "bloqueado,
+// falta capturar el vehículo" -- ver listarInformativosSinVehiculo().
 function renderTexto(codigo, variables){
   const plantilla = PLANTILLAS_TEXTO[codigo];
   if(!plantilla) return null;
+  const requiereVehiculo = /\[Veh[ií]culo\]/.test(plantilla);
+  const vehiculo = (variables && variables.vehiculo && String(variables.vehiculo).trim()) || '';
+  if(requiereVehiculo && !vehiculo) return null;
   const nombre = (variables && variables.nombre && String(variables.nombre).trim()) || 'estimado cliente';
-  const vehiculo = (variables && variables.vehiculo && String(variables.vehiculo).trim()) || 'tu unidad';
   return plantilla
     .replace(/\[Nombre\]/g, nombre)
     .replace(/\[Veh[ií]culo\]/g, vehiculo);
@@ -140,11 +153,23 @@ function retirarObsoletos(db){
 // materializado (esté pendiente, reservado, enviado o incluso ya cancelado: un evento cancelado por cambio
 // de etapa no debe "revivir" con la misma fila; si vuelve a ser vigente, el motor de detección genera un
 // evento NUEVO con su propia clave de deduplicación, que sí se materializa aquí).
+//
+// Corrección de Roberto (revisión independiente, 14-sep-2026, punto 1): un evento puede llegar aquí en
+// DOS estados válidos, no solo uno. 'registrado' es el caso normal (nunca estuvo bloqueado). Pero un
+// evento que SÍ nació bloqueado (incidencia delicada, teléfono inválido, etc.) sigue el ciclo propio de
+// whatsappFaseA.js: bloqueado -> pendiente_revision (automático, en cuanto la condición ya no aplica) ->
+// liberado_para_programacion (acción explícita de un humano, admin, vía resolverPendienteRevision --
+// nunca implica un envío real, es solo "ya lo revisé, sigue vigente"). whatsappFaseA.validarAntesDeEnviar
+// YA acepta ambos estados como válidos para enviar (ver su propio chequeo de estado) -- el filtro de esta
+// consulta se había quedado corto: solo tomaba 'registrado', así que un evento liberado tras revisión
+// humana nunca entraba a la bandeja manual (se quedaba huérfano: ya no aparecía como informativo bloqueado
+// -- porque dejó de estar en 'bloqueado'/'pendiente_revision' -- pero tampoco se materializaba como
+// pendiente accionable). Se agrega 'liberado_para_programacion' para cerrar ese hueco.
 function materializarPendientes(db){
   const candidatos = db.prepare(`
     SELECT e.* FROM whatsapp_eventos_registrados e
     LEFT JOIN whatsapp_envios_manuales m ON m.evento_id = e.id
-    WHERE e.estado = 'registrado' AND e.es_plantilla_meta = 1 AND m.id IS NULL
+    WHERE e.estado IN ('registrado','liberado_para_programacion') AND e.es_plantilla_meta = 1 AND m.id IS NULL
   `).all();
   let creados = 0;
   for(const evento of candidatos){
@@ -154,8 +179,16 @@ function materializarPendientes(db){
     if(!siniestro) continue;
     let variables = {};
     try{ variables = JSON.parse(evento.variables_json || '{}'); } catch(e){ variables = {}; }
+    // Corrección de Roberto (punto 3, 14-sep-2026): variables_json es una FOTOGRAFÍA del momento en que el
+    // motor de detección registró el evento -- si en ese momento faltaba el vehículo, variables.vehiculo
+    // se queda vacío PARA SIEMPRE en esa fila, aunque el vehículo se capture después en el expediente. Sin
+    // esto, un evento nunca vuelto a evaluar (nadie hace otro cambio que dispare al motor) se quedaría
+    // bloqueado informativamente para siempre incluso después de capturar el dato -- exactamente lo
+    // contrario de lo que se pidió ("al capturar el vehículo, se materializa como pendiente normal"). Se
+    // usan los datos MÁS RECIENTES del expediente (mismo criterio que ya aplicaba reclamar() al reclamar).
+    variables = { nombre: siniestro.cliente_nombre || variables.nombre, vehiculo: siniestro.vehiculo || variables.vehiculo };
     const texto = renderTexto(evento.plantilla_codigo, variables);
-    if(!texto) continue; // código de plantilla desconocido -- por seguridad, no se materializa nada.
+    if(!texto) continue; // sigue faltando el vehículo (u otro dato) -- se lista aparte, informativo (ver listarInformativosSinVehiculo).
     const destino = whatsappFaseA.validarDestino(db, siniestro.id);
     const info = db.prepare(`INSERT INTO whatsapp_envios_manuales (evento_id, siniestro_id, plantilla_codigo, estado, texto, telefono) VALUES (?,?,?, 'pendiente', ?, ?)`)
       .run(evento.id, siniestro.id, evento.plantilla_codigo, texto, destino.valido ? destino.telefonoNormalizado : null);
@@ -212,6 +245,58 @@ function listarInformativosBloqueados(db, { q } = {}){
   }));
 }
 
+// Corrección de Roberto (revisión independiente, 14-sep-2026, punto 3): un evento 5.1/6.1 que ya sería
+// vigente para enviarse, pero cuyo expediente todavía no tiene capturado el vehículo, NUNCA se materializa
+// en whatsapp_envios_manuales (renderTexto devuelve null -- ver comentario ahí) y por lo tanto tampoco
+// aparecía en ningún lado: no es "bloqueado" en el sentido del motor de detección (whatsappFaseA no exige
+// vehículo para 5.1/6.1), así que no lo recoge listarInformativosBloqueados. Se queda huérfano, invisible.
+// Esta función lo hace visible, informativo, sin botón de envío -- consistente con el resto de la bandeja
+// ("una lista única", nada se envía a medias, nunca se inventa un dato). Se filtra con evaluarVigencia
+// (exigirHorario:false) para no duplicar una fila que YA se muestra en listarInformativosBloqueados por
+// otra razón (p. ej. incidencia delicada Y falta de vehículo al mismo tiempo -- se prioriza ese motivo).
+function listarInformativosSinVehiculo(db, { q } = {}){
+  let sql = `
+    SELECT e.id AS evento_id, e.siniestro_id, e.plantilla_codigo, e.variables_json,
+           COALESCE(e.detectado_en, e.creado_en) AS detectado_en,
+           s.numero AS siniestro_numero, s.cliente_nombre, s.vehiculo, s.archivado, s.estatus_general
+    FROM whatsapp_eventos_registrados e
+    JOIN siniestros s ON s.id = e.siniestro_id
+    LEFT JOIN whatsapp_envios_manuales m ON m.evento_id = e.id
+    WHERE e.es_plantilla_meta = 1 AND e.estado IN ('registrado','liberado_para_programacion')
+      AND e.plantilla_codigo IN ('5.1','6.1') AND m.id IS NULL
+      AND (s.vehiculo IS NULL OR TRIM(s.vehiculo) = '')
+      AND (s.archivado IS NULL OR s.archivado = 0) AND s.estatus_general != 'Cerrado'
+  `;
+  const params = [];
+  if(q){
+    sql += ` AND (s.numero LIKE ? OR s.cliente_nombre LIKE ?)`;
+    const like = '%' + q + '%';
+    params.push(like, like);
+  }
+  sql += ' ORDER BY detectado_en DESC';
+  const filas = db.prepare(sql).all(...params);
+  const resultado = [];
+  for(const f of filas){
+    const v = evaluarVigencia(db, f.evento_id, { exigirHorario: false });
+    if(!v.puedeEnviarse) continue; // ya se lista aparte, en listarInformativosBloqueados, por otro motivo.
+    resultado.push({
+      tipo: 'informativo',
+      accionable: false,
+      evento_id: f.evento_id,
+      envio_id: null,
+      siniestro_id: f.siniestro_id,
+      siniestro_numero: f.siniestro_numero,
+      cliente_nombre: f.cliente_nombre,
+      vehiculo: f.vehiculo,
+      plantilla_codigo: f.plantilla_codigo,
+      plantilla_nombre: (whatsappFaseA.PLANTILLAS[f.plantilla_codigo] || {}).nombre || f.plantilla_codigo,
+      motivo: 'Falta capturar el vehículo en el expediente; esta plantilla lo necesita y el texto acordado no se altera ni se completa con datos inventados.',
+      detectado_en: f.detectado_en,
+    });
+  }
+  return resultado;
+}
+
 // Lista principal de Pendientes: fusiona (a) filas 'pendiente' de la bandeja (accionables, salvo que una
 // revalidación en vivo detecte que ya no lo son -- p. ej. una incidencia delicada que se abrió DESPUÉS de
 // materializado el mensaje) con (b) los informativos bloqueados de arriba. Todo en una sola lista, como
@@ -251,7 +336,10 @@ function listarPendientes(db, { q } = {}){
     };
   });
   const informativos = listarInformativosBloqueados(db, { q });
-  return [...accionables, ...informativos].sort((a,b)=> String(b.detectado_en).localeCompare(String(a.detectado_en)));
+  const sinVehiculo = listarInformativosSinVehiculo(db, { q });
+  // Corrección de Roberto (punto 4): del más antiguo al más reciente -- se atiende primero lo que lleva
+  // más tiempo esperando. (Antes: más reciente primero.)
+  return [...accionables, ...informativos, ...sinVehiculo].sort((a,b)=> String(a.detectado_en).localeCompare(String(b.detectado_en)));
 }
 
 function listarEnProceso(db, { q } = {}){
@@ -295,7 +383,7 @@ function obtenerEnvioReservadoPropio(db, { envioId, usuarioId }){
   if(envio.estado !== 'reservado') return { ok:false, status:409, error:'Este mensaje ya no está reservado.' };
   if(envio.abierto_por !== usuarioId) return { ok:false, status:403, error:'Este mensaje fue reservado por otra persona.' };
   const siniestro = db.prepare('SELECT numero FROM siniestros WHERE id=?').get(envio.siniestro_id);
-  const link = envio.telefono ? ('https://wa.me/52' + envio.telefono + '?text=' + encodeURIComponent(envio.texto)) : null;
+  const link = envio.telefono ? ('https://web.whatsapp.com/send?phone=52' + envio.telefono + '&text=' + encodeURIComponent(envio.texto)) : null;
   return { ok:true, status:200, envio: { id: envio.id, siniestro_numero: siniestro && siniestro.numero, plantilla_codigo: envio.plantilla_codigo, telefono: envio.telefono, texto: envio.texto, link, reserva_minutos: RESERVA_TTL_MINUTOS } };
 }
 
@@ -387,7 +475,7 @@ function reclamar(db, { envioId, usuarioId }){
   const telefono = destino.valido ? destino.telefonoNormalizado : envio.telefono;
   db.prepare(`UPDATE whatsapp_envios_manuales SET texto=?, telefono=?, actualizado_en=datetime('now') WHERE id=?`).run(texto, telefono, envioId);
 
-  const link = telefono ? ('https://wa.me/52' + telefono + '?text=' + encodeURIComponent(texto)) : null;
+  const link = telefono ? ('https://web.whatsapp.com/send?phone=52' + telefono + '&text=' + encodeURIComponent(texto)) : null;
   return { ok:true, status:200, envio: { id: envioId, siniestro_numero: siniestro.numero, plantilla_codigo: envio.plantilla_codigo, telefono, texto, link, reserva_minutos: RESERVA_TTL_MINUTOS } };
 }
 
@@ -418,4 +506,5 @@ module.exports = {
   listarPendientes, listarEnProceso, listarEnviados,
   reclamar, confirmar, obtenerEnvioReservadoPropio,
   liberarReservasExpiradas, retirarObsoletos, materializarPendientes, // exportados para pruebas dirigidas.
+  listarInformativosBloqueados, listarInformativosSinVehiculo,
 };

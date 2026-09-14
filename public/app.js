@@ -4250,24 +4250,40 @@ function buscarWhatsappBandeja(valor){
   clearTimeout(_whatsappBuscarTimeout);
   _whatsappBuscarTimeout = setTimeout(()=> render(), 350);
 }
-// Paso 2-5 del flujo: reclamar atómicamente, revalidar, abrir wa.me, y mostrar únicamente la pregunta de
-// confirmación al regresar.
-async function enviarPorWhatsappBandeja(envioId){
+// Paso 2-5 del flujo: reclamar atómicamente, revalidar, abrir WhatsApp Web, y mostrar únicamente la
+// pregunta de confirmación al regresar.
+//
+// Corrección de Roberto (revisión independiente, 14-sep-2026, punto 2): window.open() llamado DESPUÉS de
+// un await ya no cuenta, para Chrome, como resultado directo de un clic del usuario -- el navegador puede
+// tratarlo como ventana emergente no solicitada y bloquearlo silenciosamente. La solución es abrir la
+// pestaña de forma SÍNCRONA, en el mismo evento de clic, antes de cualquier await ('' como URL -- pestaña
+// en blanco) y solo DESPUÉS navegarla (tab.location.href) al enlace de WhatsApp Web ya reclamado y
+// revalidado. Si el reclamo falla (alguien más lo tomó, ya no es vigente, etc.), la pestaña en blanco se
+// cierra sola -- nunca se le deja abierta sin destino.
+function enviarPorWhatsappBandeja(envioId){
+  const tab = window.open('', '_blank');
+  reclamarYAbrirEnPestana(tab, () => api('POST', `/api/whatsapp-manual/envios/${envioId}/reclamar`, {}));
+}
+function continuarEnvioWhatsappBandeja(envioId){
+  const tab = window.open('', '_blank');
+  reclamarYAbrirEnPestana(tab, () => api('GET', `/api/whatsapp-manual/envios/${envioId}`));
+}
+async function reclamarYAbrirEnPestana(tab, solicitud){
   try{
-    const envio = await api('POST', `/api/whatsapp-manual/envios/${envioId}/reclamar`, {});
-    abrirWhatsappYConfirmar(envio);
+    const envio = await solicitud();
+    abrirWhatsappYConfirmar(envio, tab);
   }catch(e){
+    if(tab && !tab.closed) tab.close();
     render(); // la lista puede haber cambiado (mensaje tomado por alguien más, o ya no vigente).
   }
 }
-async function continuarEnvioWhatsappBandeja(envioId){
-  try{
-    const envio = await api('GET', `/api/whatsapp-manual/envios/${envioId}`);
-    abrirWhatsappYConfirmar(envio);
-  }catch(e){ render(); }
-}
-function abrirWhatsappYConfirmar(envio){
-  if(envio.link) window.open(envio.link, '_blank');
+function abrirWhatsappYConfirmar(envio, tab){
+  if(envio.link){
+    if(tab && !tab.closed) tab.location.href = envio.link;
+    else window.open(envio.link, '_blank'); // reabrir el enlace guardado (p. ej. tras navegar de pantalla) sin pestaña previa.
+  } else if(tab && !tab.closed){
+    tab.close();
+  }
   showModal(`
     <h3>¿El mensaje fue enviado?</h3>
     <p class="subtle">Siniestro ${esc(envio.siniestro_numero)}</p>
