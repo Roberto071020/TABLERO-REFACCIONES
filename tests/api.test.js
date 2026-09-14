@@ -30,6 +30,19 @@ async function req(method, url, body) {
   try { data = await res.json(); } catch (e) {}
   return { status: res.status, data };
 }
+// Corrección de Roberto (diagnóstico de fallas preexistentes, 14-sep-2026, punto 5): varias pruebas usaban
+// una fecha prevista escrita como literal fijo (p. ej. '2026-09-10'). Eso funcionaba mientras esa fecha
+// estuviera en el futuro respecto al reloj real de la máquina que corre la prueba, pero deja de funcionar
+// en cuanto el calendario la alcanza: la validación A-05 (server/routes/pedidos.js -- "fecha prevista es
+// hoy o anterior, exige confirmación") empieza a rechazar esas peticiones con 409 -- un comportamiento
+// CORRECTO y ya cubierto por su propia prueba dedicada (A-05), pero que hace que cualquier OTRA prueba que
+// use esa misma fecha fija como dato de prueba incidental deje de pasar, sin que el código de producción
+// tenga ningún defecto. La corrección real es esta: nunca usar una fecha absoluta como dato de prueba
+// cuando lo único que importa es "una fecha futura, distinta de la anterior" -- se calcula relativa a
+// "ahora" para que la prueba nunca vuelva a expirar.
+function fechaFutura(diasDesdeHoy){
+  return new Date(Date.now() + diasDesdeHoy * 86400000).toISOString().slice(0,10);
+}
 
 test.before(async () => {
   await new Promise(resolve => { server = app.listen(PORT, resolve); });
@@ -595,20 +608,26 @@ test('FASE5-1: cuando TODOS los pedidos de un expediente quedan en estado termin
 });
 
 test('FASE5-2: cambiar la fecha prometida de un pedido crea una tarea automática de aviso al cliente', async () => {
+  // Corrección de Roberto (diagnóstico de falla preexistente, punto 5): las dos fechas usadas aquí deben
+  // quedar SIEMPRE en el futuro respecto al momento en que corre la prueba -- de lo contrario, la
+  // validación A-05 (correcta, y cubierta por su propia prueba) rechaza el PATCH con 409 antes de llegar
+  // siquiera a la lógica bajo prueba. Se calculan de forma relativa (fechaFutura), nunca como literales fijos.
+  const fechaInicial = fechaFutura(200);
+  const fechaNueva = fechaFutura(230);
   const s = (await req('POST', '/api/auth/login', { email: 'alejandra@serviciocristian.mx', password: 'ServicioCristian2026!' })) && (await req('POST', '/api/siniestros', { numero: 'FASE5-FECHA', aseguradora: 'GNP', cliente_nombre: 'Y', cliente_telefono: '2', cliente_correo: 'y@y.com' })).data;
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
-  const p = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-FECHA', siniestro_id: s.id, fecha_prevista: '2027-06-01' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'FASE5-PED-FECHA', siniestro_id: s.id, fecha_prevista: fechaInicial })).data;
 
   await req('PATCH', '/api/pedidos/' + p.id, { cotizacion: 'sin cambio de fecha' });
   let tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
   assert.ok(!tareas.some(t => t.disparador === 'fecha_promesa_modificada'), 'no debe crear tarea si la fecha no cambió');
 
-  await req('PATCH', '/api/pedidos/' + p.id, { fecha_prevista: '2026-09-10' });
+  await req('PATCH', '/api/pedidos/' + p.id, { fecha_prevista: fechaNueva });
   tareas = (await req('GET', '/api/tareas?siniestro_id=' + s.id)).data;
   const tarea = tareas.find(t => t.disparador === 'fecha_promesa_modificada');
   assert.ok(tarea, 'debe crear la tarea al cambiar la fecha prometida');
-  assert.match(tarea.descripcion, /2027-06-01/);
-  assert.match(tarea.descripcion, /2026-09-10/);
+  assert.ok(tarea.descripcion.includes(fechaInicial));
+  assert.ok(tarea.descripcion.includes(fechaNueva));
 });
 
 test('FASE5-3: confirmar el hito de Entrega como enviado programa la postventa automáticamente (2-3 días después) y crea su tarea', async () => {
@@ -3832,9 +3851,11 @@ test('REP2026-2: los archivos estáticos (app.js, index.html) se sirven con Cach
 });
 
 test('REP2026-3: "Piezas recibidas" trae la observación de la pieza, para poder distinguir una sincronización automática (sin persona atribuible) de un dato realmente faltante', async () => {
+  // Corrección de Roberto (diagnóstico de falla preexistente, punto 5): mismo caso que FASE5-2 -- fecha
+  // futura calculada, no un literal fijo que termine quedando en el pasado y active la validación A-05.
   await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
   const s = (await req('POST', '/api/siniestros', { numero: 'REP3-SIN', aseguradora: 'GNP' })).data;
-  const p = (await req('POST', '/api/pedidos', { numero: 'REP3-PED', siniestro_id: s.id, fecha_prevista: '2026-09-10' })).data;
+  const p = (await req('POST', '/api/pedidos', { numero: 'REP3-PED', siniestro_id: s.id, fecha_prevista: fechaFutura(200) })).data;
   // El pedido queda "Recibido completo" ANTES de que exista la pieza (nadie confirmó esta pieza a mano);
   // así se reproduce el caso real: la pieza solo se sincroniza más tarde, en el barrido periódico
   // (sincronizarPiezasPedidosExistentes, disparado por /api/reportes/resumen), donde no hay usuario de sesión.
