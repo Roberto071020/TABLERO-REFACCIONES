@@ -1,20 +1,28 @@
-// ===================== Prueba visual/de navegador: apertura SÍNCRONA de la pestaña de WhatsApp Web =====
+// ===================== Prueba visual/de navegador (OPCIONAL): apertura SÍNCRONA de la pestaña =========
 // Corrección de Roberto (revisión independiente, 14-sep-2026, punto 2): "window.open() se ejecuta después
-// de un await, por lo que Chrome puede considerarlo una ventana emergente y bloquearlo... Agrega una
-// prueba visual o de navegador que confirme que realmente se creó la pestaña."
+// de un await... Agrega una prueba visual o de navegador que confirme que realmente se creó la pestaña."
 //
-// Esta prueba corre un navegador Chromium REAL (headless, vía puppeteer-core + @sparticuz/chromium -- el
-// binario de Chromium viaja empaquetado dentro del paquete npm, así que se instala desde el registro de
-// npm, sin depender de la CDN de descargas de Google), inicia sesión de verdad en la pantalla de login,
-// crea un expediente con teléfono válido (así el motor de detección genera un 5.1 accionable), entra a la
-// pantalla "WhatsApp" y hace clic real (evento de mouse sintético de Chromium, no una llamada de JS a
-// .click()) en el botón "Enviar por WhatsApp".
+// Segunda corrección de Roberto (revisión del bundle v2, portabilidad): en Windows, @sparticuz/chromium
+// (binario Linux empaquetado) falla al arrancar -- ENOENT al intentar ejecutar un binario que no corre en
+// ese sistema operativo. Esta prueba NUNCA debe ser obligatoria para correr la suite normal ni para
+// desplegar SC Control: puppeteer-core y @sparticuz/chromium son devDependencies (nunca se instalan en un
+// despliegue de producción -- ver package.json), y esta prueba misma detecta en tiempo de ejecución si hay
+// un navegador Chromium/Chrome REALMENTE utilizable (ruta explícita por variable de entorno, o el binario
+// que trae @sparticuz/chromium SI arranca de verdad en este sistema operativo) y, si no lo hay, se OMITE
+// limpiamente (t.skip) -- nunca falla la suite por esto. La verificación ligera y multiplataforma de la
+// misma corrección (que window.open() ocurre de forma síncrona) vive aparte, sin necesidad de navegador
+// real, en whatsapp-bandeja-manual-popup-sync.test.js -- ESA sí es obligatoria y corre siempre.
 //
-// La prueba intercepta la petición POST /reclamar y RETRASA su respuesta a propósito varios cientos de
-// milisegundos -- si abrirPorWhatsappBandeja() todavía llamara a window.open() DESPUÉS de ese await (el
-// bug original), la pestaña nueva aparecería recién cuando el servidor responde. Con la corrección, la
-// pestaña debe aparecer de inmediato, mucho antes de que se cumpla el retraso artificial -- es la prueba
-// directa, en un navegador real, de que la apertura es síncrona.
+// Para forzar el uso de un navegador específico (por ejemplo, un Chrome/Edge real instalado en Windows),
+// define la variable de entorno PUPPETEER_EXECUTABLE_PATH con la ruta al ejecutable antes de "npm test".
+//
+// Cuando SÍ hay navegador disponible, la prueba corre un Chromium/Chrome real (headless), inicia sesión de
+// verdad en la pantalla de login, crea un expediente con teléfono válido (así el motor de detección genera
+// un 5.1 accionable), entra a la pantalla "WhatsApp" y hace clic real (evento de mouse sintético, no una
+// llamada de JS a .click()) en el botón "Enviar por WhatsApp". Intercepta la petición POST /reclamar y
+// RETRASA su respuesta a propósito varios cientos de milisegundos -- si abrirPorWhatsappBandeja() todavía
+// llamara a window.open() DESPUÉS de ese await (el bug original), la pestaña nueva aparecería recién
+// cuando el servidor responde. Con la corrección, la pestaña debe aparecer de inmediato.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -39,18 +47,47 @@ test.before(async () => {
 });
 test.after(async () => { await new Promise(resolve => server.close(resolve)); });
 
-test('WB-VISUAL: en un navegador real, la pestaña de WhatsApp Web se crea de inmediato al hacer clic -- ANTES de que el servidor responda al reclamo (nunca depende de un await previo)', async (t) => {
-  let puppeteer, chromium;
+// Intenta encontrar un navegador REALMENTE utilizable en esta máquina, en este orden:
+//   1) PUPPETEER_EXECUTABLE_PATH / CHROMIUM_EXECUTABLE_PATH (ruta explícita, cualquier sistema operativo).
+//   2) El binario que trae @sparticuz/chromium, SOLO si además de existir en disco logra arrancar de
+//      verdad (un lanzamiento de prueba, cerrado enseguida) -- en Windows este binario es Linux-only y
+//      falla (ENOENT), así que ahí este paso nunca "pasa".
+// Nunca lanza: cualquier error en el camino se captura y se traduce en "no disponible" -- la prueba que
+// llama a esto decide entonces omitirse limpiamente, nunca fallar por esto.
+async function obtenerNavegadorDisponible(){
+  let puppeteer;
+  try { puppeteer = require('puppeteer-core'); }
+  catch (e) { return { disponible: false, motivo: 'puppeteer-core no está instalado (es una devDependency opcional; no se instala en producción).' }; }
+
+  const rutaExplicita = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROMIUM_EXECUTABLE_PATH;
+  const candidatos = [];
+  if (rutaExplicita) candidatos.push({ executablePath: rutaExplicita, args: [], headless: true, origen: 'ruta explícita (' + rutaExplicita + ')' });
+
   try {
-    puppeteer = require('puppeteer-core');
-    chromium = require('@sparticuz/chromium').default;
-  } catch (e) {
-    t.skip('puppeteer-core / @sparticuz/chromium no están instalados (ejecuta "npm install" para incluir las devDependencies) -- se omite la verificación visual, el resto de la suite no depende de esto.');
+    const chromium = require('@sparticuz/chromium').default;
+    const executablePath = await chromium.executablePath();
+    candidatos.push({ executablePath, args: chromium.args, headless: chromium.headless, origen: '@sparticuz/chromium' });
+  } catch (e) { /* no disponible en este sistema operativo -- se sigue sin este candidato. */ }
+
+  for (const candidato of candidatos) {
+    try {
+      if (!fs.existsSync(candidato.executablePath)) continue; // p. ej. Windows: el binario Linux nunca llega a extraerse -- ENOENT.
+      const browserPrueba = await puppeteer.launch({ executablePath: candidato.executablePath, args: candidato.args, headless: candidato.headless });
+      await browserPrueba.close();
+      return { disponible: true, puppeteer, executablePath: candidato.executablePath, args: candidato.args, headless: candidato.headless, origen: candidato.origen };
+    } catch (e) { /* este candidato no arrancó de verdad en este sistema operativo -- se prueba el siguiente. */ }
+  }
+  return { disponible: false, motivo: 'no se encontró ningún navegador Chromium/Chrome que arranque en este sistema operativo (define PUPPETEER_EXECUTABLE_PATH para forzar uno específico).' };
+}
+
+test('WB-VISUAL (opcional): en un navegador real, la pestaña de WhatsApp Web se crea de inmediato al hacer clic -- ANTES de que el servidor responda al reclamo (nunca depende de un await previo)', async (t) => {
+  const nav = await obtenerNavegadorDisponible();
+  if (!nav.disponible) {
+    t.skip('Sin navegador Chromium/Chrome utilizable en este sistema (' + nav.motivo + '). La verificación equivalente, sin necesidad de navegador, está en whatsapp-bandeja-manual-popup-sync.test.js (esa SÍ es obligatoria).');
     return;
   }
-
-  const executablePath = await chromium.executablePath();
-  const browser = await puppeteer.launch({ executablePath, args: chromium.args, headless: chromium.headless });
+  const { puppeteer, executablePath, args, headless } = nav;
+  const browser = await puppeteer.launch({ executablePath, args, headless });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
