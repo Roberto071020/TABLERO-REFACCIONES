@@ -500,6 +500,155 @@ function confirmar(db, { envioId, usuarioId, enviado }){
   return { ok:true, status:200 };
 }
 
+
+// ===================== Limpieza administrativa de una corrida de piloto (ficticia) ==========================
+// Corrección de Roberto (revisión del plan de despliegue, 15-sep-2026, punto 3): el procedimiento de
+// limpieza que describía el plan anterior no era ejecutable (SQL con comentarios de relleno en vez de
+// valores reales) y, además, el ORDEN en que proponía borrar las tablas era incorrecto: proponía revertir
+// primero whatsapp_eventos_registrados y solo después whatsapp_envios_manuales -- pero
+// whatsapp_envios_manuales.evento_id REFERENCES whatsapp_eventos_registrados(id), y este proyecto corre
+// con PRAGMA foreign_keys=ON (ver server/db.js) en producción, así que ese orden habría lanzado un error
+// de restricción de llave foránea en cuanto whatsapp_envios_manuales todavía tuviera una sola fila
+// apuntando a los eventos que se intentaban borrar primero.
+//
+// Esta función implementa, dentro de UNA sola transacción atómica ("todo o nada"), el orden correcto que
+// Roberto exigió explícitamente:
+//   1) whatsapp_envios_manuales_historial (hijo de whatsapp_envios_manuales)
+//   2) whatsapp_envios_manuales (hijo de whatsapp_eventos_registrados, vía evento_id)
+//   3) los registros de Fase A de ESA corrida: whatsapp_eventos_registrados, whatsapp_errores,
+//      whatsapp_comunicaciones_manuales -- misma lógica y mismo alcance (siniestro_id + piloto_run_id)
+//      que whatsappFaseAActivacion.revertirDatosPiloto(), duplicada aquí a propósito: esa función abre y
+//      cierra su propia transacción (BEGIN/COMMIT), y SQLite no permite anidar transacciones, así que para
+//      que las 4 tablas se limpien dentro de una sola transacción atómica (lo que Roberto pidió: "una ruta
+//      ... transaccional") se repite la misma lógica aquí en vez de llamarla -- y así, además, este archivo
+//      sigue sin tocar whatsappFaseAActivacion.js, que continúa gobernando en solitario la
+//      activación/reversión de Fase A ("límite duro" ya declarado al inicio de este archivo). Si esa
+//      función cambia alguna vez, esta copia debe revisarse a mano.
+//   4) opcionalmente, los expedientes ficticios mismos (tabla siniestros) -- solo si se pide explícitamente
+//      (eliminarExpedientes:true) y solo si, tras los 3 pasos anteriores, no queda NINGUNA otra fila en
+//      NINGUNA tabla del esquema que todavía dependa de ellos. Esto se comprueba en el momento, recorriendo
+//      sqlite_master y PRAGMA foreign_key_list -- nunca con una lista fija escrita a mano, para que la
+//      protección no se quede desactualizada si el esquema crece. Si algo depende todavía de un expediente
+//      (por ejemplo, otra corrida de piloto anterior sobre el mismo número, o cualquier dato real que se le
+//      haya agregado después), se aborta TODA la operación -- ROLLBACK completo, nada se borró, ni siquiera
+//      lo de los pasos 1-3.
+//
+// Seguridad de alcance ("conservar intactas otras corridas y expedientes"): cada DELETE de los pasos 1-3
+// va acotado por siniestro_id Y por piloto_run_id A LA VEZ (nunca solo por siniestro_id) -- así, si el
+// mismo número de expediente ficticio se reutilizó en dos corridas de piloto distintas (el propio diseño
+// de whatsappFaseAActivacion ya anticipa este caso), limpiar la corrida A nunca toca una sola fila de la
+// corrida B sobre ese mismo expediente.
+//
+// Antes de borrar una sola fila, se exige runId Y que la lista de números recibida coincida EXACTAMENTE
+// (ni de más ni de menos) con los expedientes que esa corrida realmente tocó, según la propia fuente de
+// verdad (whatsapp_eventos_registrados.piloto_run_id) -- nunca según lo que asuma quien llama. Sin runId,
+// o sin esa coincidencia exacta, la función devuelve el desacuerdo (qué faltaba, qué sobraba) y NO abre
+// ninguna transacción -- no se borra nada.
+function tablasQueReferencianSiniestros(db){
+  const tablas = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all().map(r => r.name);
+  const resultado = [];
+  for(const t of tablas){
+    if(t === 'siniestros') continue;
+    let fks;
+    try { fks = db.prepare(`PRAGMA foreign_key_list(${t})`).all(); } catch(e){ continue; }
+    if(fks.some(fk => fk.table === 'siniestros')) resultado.push(t);
+  }
+  return resultado;
+}
+
+function limpiarCorridaFicticia(db, { runId, numeros, eliminarExpedientes = false } = {}){
+  const runIdLimpio = String(runId || '').trim();
+  if(!runIdLimpio){
+    return { ok:false, status:400, error:'Falta piloto_run_id. Sin un identificador de corrida exacto, no se borra nada.' };
+  }
+  const numerosLimpios = Array.isArray(numeros) ? [...new Set(numeros.map(n => String(n).trim()).filter(Boolean))] : [];
+  if(!numerosLimpios.length){
+    return { ok:false, status:400, error:'Falta la lista exacta de números de expediente de esta corrida. Sin ella, no se borra nada.' };
+  }
+
+  // Fuente de verdad: qué expedientes tocó REALMENTE esta corrida, según whatsapp_eventos_registrados (la
+  // tabla que lleva piloto_run_id desde su creación) -- nunca se confía en lo que mandó quien llama.
+  const reales = db.prepare(`
+    SELECT DISTINCT s.numero AS numero
+    FROM whatsapp_eventos_registrados e
+    JOIN siniestros s ON s.id = e.siniestro_id
+    WHERE e.piloto_run_id = ?
+  `).all(runIdLimpio).map(r => r.numero);
+
+  if(!reales.length){
+    return { ok:false, status:404, error:'No existe ninguna fila con ese piloto_run_id. No hay nada que revertir con ese identificador -- no se borró nada.' };
+  }
+  const enviadosSet = new Set(numerosLimpios);
+  const realesSet = new Set(reales);
+  const faltan = reales.filter(n => !enviadosSet.has(n));
+  const sobran = numerosLimpios.filter(n => !realesSet.has(n));
+  if(faltan.length || sobran.length){
+    return {
+      ok:false, status:409,
+      error:'La lista de expedientes no coincide exactamente con lo que generó esa corrida. No se borró nada.',
+      esperados: reales, recibidos: numerosLimpios, faltan, sobran,
+    };
+  }
+
+  const ph = numerosLimpios.map(()=>'?').join(',');
+  const siniestros = db.prepare(`SELECT id, numero FROM siniestros WHERE numero IN (${ph})`).all(...numerosLimpios);
+  if(siniestros.length !== numerosLimpios.length){
+    return { ok:false, status:404, error:'Alguno de los expedientes indicados ya no existe. No se borró nada.' };
+  }
+  const ids = siniestros.map(s => s.id);
+  const idPh = ids.map(()=>'?').join(',');
+
+  const resultado = { ok:true, runId: runIdLimpio, numeros: numerosLimpios,
+    historialBorrados:0, enviosBorrados:0, eventosBorrados:0, comunicacionesBorradas:0, erroresBorrados:0, expedientesBorrados:0 };
+
+  db.exec('BEGIN');
+  try{
+    // 1) Historial -- acotado a los envíos que originó ESTA corrida (vía el evento), no a todo el
+    // historial del expediente.
+    resultado.historialBorrados = db.prepare(`
+      DELETE FROM whatsapp_envios_manuales_historial
+      WHERE envio_id IN (
+        SELECT m.id FROM whatsapp_envios_manuales m
+        JOIN whatsapp_eventos_registrados e ON e.id = m.evento_id
+        WHERE e.siniestro_id IN (${idPh}) AND e.piloto_run_id = ?
+      )
+    `).run(...ids, runIdLimpio).changes;
+
+    // 2) Envíos manuales de ESTA corrida (acotados vía el evento que los originó, no solo por
+    // siniestro_id -- así se conserva intacta cualquier otra corrida anterior sobre el mismo expediente).
+    resultado.enviosBorrados = db.prepare(`
+      DELETE FROM whatsapp_envios_manuales
+      WHERE evento_id IN (
+        SELECT id FROM whatsapp_eventos_registrados WHERE siniestro_id IN (${idPh}) AND piloto_run_id = ?
+      )
+    `).run(...ids, runIdLimpio).changes;
+
+    // 3) Registros de Fase A de esta corrida (ver nota arriba: misma lógica que revertirDatosPiloto).
+    resultado.eventosBorrados = db.prepare(`DELETE FROM whatsapp_eventos_registrados WHERE siniestro_id IN (${idPh}) AND piloto_run_id = ?`).run(...ids, runIdLimpio).changes;
+    resultado.comunicacionesBorradas = db.prepare(`DELETE FROM whatsapp_comunicaciones_manuales WHERE siniestro_id IN (${idPh}) AND piloto_run_id = ?`).run(...ids, runIdLimpio).changes;
+    resultado.erroresBorrados = db.prepare(`DELETE FROM whatsapp_errores WHERE siniestro_id IN (${idPh}) AND piloto_run_id = ?`).run(...ids, runIdLimpio).changes;
+
+    // 4) Expedientes ficticios -- solo si se pidió, y solo si de verdad no queda nada más colgando de
+    // ellos en ninguna tabla del esquema (recorrido dinámico, no una lista fija).
+    if(eliminarExpedientes){
+      const dependientes = tablasQueReferencianSiniestros(db);
+      for(const tabla of dependientes){
+        const fila = db.prepare(`SELECT COUNT(*) AS n FROM ${tabla} WHERE siniestro_id IN (${idPh})`).get(...ids);
+        if(fila.n > 0){
+          throw new Error(`No se puede eliminar el expediente: todavía quedan ${fila.n} fila(s) en "${tabla}" (quizá de otra corrida de piloto sobre el mismo número, o datos agregados después). Se cancela toda la limpieza -- nada se borró.`);
+        }
+      }
+      resultado.expedientesBorrados = db.prepare(`DELETE FROM siniestros WHERE id IN (${idPh})`).run(...ids).changes;
+    }
+
+    db.exec('COMMIT');
+  }catch(e){
+    db.exec('ROLLBACK');
+    return { ok:false, status:500, error: e.message };
+  }
+  return resultado;
+}
+
 module.exports = {
   ROLES_ENVIO, RESERVA_TTL_MINUTOS, PLANTILLAS_TEXTO,
   renderTexto, sincronizarBandeja, resumen,
@@ -507,4 +656,5 @@ module.exports = {
   reclamar, confirmar, obtenerEnvioReservadoPropio,
   liberarReservasExpiradas, retirarObsoletos, materializarPendientes, // exportados para pruebas dirigidas.
   listarInformativosBloqueados, listarInformativosSinVehiculo,
+  limpiarCorridaFicticia, tablasQueReferencianSiniestros, // punto 3, revisión del plan (15-sep-2026).
 };
