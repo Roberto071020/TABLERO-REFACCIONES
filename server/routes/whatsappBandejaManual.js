@@ -76,4 +76,17 @@ router.post('/piloto/limpiar', requireAuth, requireRole('admin'), (req, res)=>{
   res.json(r);
 });
 
+// ===================== Historial de una corrida de piloto (solo lectura, admin) =====================
+// Punto 2 de la segunda revisión del plan de despliegue (Roberto, 15-sep-2026): sin acceso a SQL directo
+// en producción, esta ruta permite comprobar quién confirmó "Sí" y quién confirmó "No" durante el piloto
+// -- filtrable por piloto_run_id, por números de expediente, o ambos. Sin ninguno de los dos, responde
+// 400 (nunca se lista el historial completo sin acotar). Ninguna pantalla ni botón nuevo -- se consulta
+// con la misma sesión de admin que ya usa /piloto/limpiar.
+router.get('/piloto/historial', requireAuth, requireRole('admin'), (req, res)=>{
+  const { runId, numeros } = req.query;
+  const r = bandeja.historialPiloto(db, { runId, numeros: typeof numeros === 'string' ? numeros : undefined });
+  if(!r.ok) return res.status(r.status || 400).json({ error: r.error });
+  res.json(r);
+});
+
 module.exports = router;

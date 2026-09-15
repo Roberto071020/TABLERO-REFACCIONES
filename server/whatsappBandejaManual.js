@@ -649,6 +649,57 @@ function limpiarCorridaFicticia(db, { runId, numeros, eliminarExpedientes = fals
   return resultado;
 }
 
+
+// ===================== Historial de una corrida de piloto (solo lectura, admin) =============================
+// Punto 2 de la segunda revisión del plan de despliegue (Roberto, 15-sep-2026): en producción no hay
+// acceso a consultas SQL directas -- el punto 9 del plan ("revisar el historial por consulta directa a la
+// base") no es ejecutable ahí. Esta función expone, de solo lectura, exactamente lo necesario para
+// comprobar quién confirmó "Sí" y quién confirmó "No" durante el piloto: evento, usuario, fecha y
+// expediente -- sin agregar ninguna pantalla ni botón nuevo (solo backend, para consultarlo con la misma
+// sesión de admin que ya usa el resto de las rutas de este archivo).
+//
+// Nunca se puede listar el historial completo sin acotar: exige piloto_run_id, numeros (lista de
+// expedientes), o ambos -- igual que limpiarCorridaFicticia, así no hay forma de asomarse a datos ajenos
+// a la corrida que se está revisando. Cuando se da piloto_run_id, el JOIN con whatsapp_eventos_registrados
+// (la única tabla que lleva ese campo) garantiza que SOLO aparecen filas de esa corrida exacta -- ninguna
+// otra corrida sobre el mismo expediente se cuela, por el mismo motivo por el que limpiarCorridaFicticia
+// tampoco las mezcla (ver ese comentario más arriba).
+function historialPiloto(db, { runId, numeros } = {}){
+  const runIdLimpio = String(runId || '').trim();
+  const numerosLimpios = Array.isArray(numeros)
+    ? [...new Set(numeros.map(n => String(n).trim()).filter(Boolean))]
+    : (typeof numeros === 'string' && numeros.trim()
+        ? [...new Set(numeros.split(',').map(n => n.trim()).filter(Boolean))]
+        : []);
+
+  if(!runIdLimpio && !numerosLimpios.length){
+    return { ok:false, status:400, error:'Especifica piloto_run_id, numeros (lista separada por comas), o ambos -- nunca se lista el historial completo sin acotar.' };
+  }
+
+  const condiciones = [];
+  const params = [];
+  if(runIdLimpio){ condiciones.push('e.piloto_run_id = ?'); params.push(runIdLimpio); }
+  if(numerosLimpios.length){
+    condiciones.push(`s.numero IN (${numerosLimpios.map(()=>'?').join(',')})`);
+    params.push(...numerosLimpios);
+  }
+
+  const historial = db.prepare(`
+    SELECT h.id, h.evento, h.usuario_id, u.nombre AS usuario_nombre, u.email AS usuario_email,
+           h.detalle, h.creado_en AS fecha,
+           m.id AS envio_id, m.plantilla_codigo, s.numero AS siniestro_numero, e.piloto_run_id
+    FROM whatsapp_envios_manuales_historial h
+    JOIN whatsapp_envios_manuales m ON m.id = h.envio_id
+    JOIN whatsapp_eventos_registrados e ON e.id = m.evento_id
+    JOIN siniestros s ON s.id = m.siniestro_id
+    LEFT JOIN usuarios u ON u.id = h.usuario_id
+    WHERE ${condiciones.join(' AND ')}
+    ORDER BY h.creado_en ASC, h.id ASC
+  `).all(...params);
+
+  return { ok:true, runId: runIdLimpio || null, numeros: numerosLimpios, historial };
+}
+
 module.exports = {
   ROLES_ENVIO, RESERVA_TTL_MINUTOS, PLANTILLAS_TEXTO,
   renderTexto, sincronizarBandeja, resumen,
@@ -657,4 +708,5 @@ module.exports = {
   liberarReservasExpiradas, retirarObsoletos, materializarPendientes, // exportados para pruebas dirigidas.
   listarInformativosBloqueados, listarInformativosSinVehiculo,
   limpiarCorridaFicticia, tablasQueReferencianSiniestros, // punto 3, revisión del plan (15-sep-2026).
+  historialPiloto, // punto 2, segunda revisión del plan (15-sep-2026).
 };

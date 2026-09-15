@@ -23,6 +23,25 @@
 //            en cualquier tabla del esquema (se agrega un pedido real a propósito, para simular esto).
 //   WB-PL-7: eliminarExpedientes SÍ borra el expediente cuando de verdad no queda nada más colgando.
 //   WB-PL-8: solo admin puede llamar la ruta -- Alejandra/Vanessa/Daniela reciben 403.
+//
+// Segunda revisión (Roberto, 15-sep-2026): "No uses eliminarExpedientes:true como procedimiento normal
+// -- todo expediente creado por la API genera al menos una tarea automática, esa opción hará ROLLBACK.
+// Usa: limpiar con eliminarExpedientes:false, y después DELETE /api/siniestros/:id (confirmar_numero) --
+// ese endpoint ya limpia sus tareas y demás dependencias normales." También pidió un endpoint de solo
+// lectura para el historial del piloto (no hay acceso a SQL directo en producción). Pruebas nuevas:
+//   WB-PL-9: secuencia completa, SOLO por HTTP (sin ningún DELETE/SQL directo de prueba, salvo para leer
+//            y verificar): crear expediente ficticio -> generar mensaje (reclamar+confirmar) -> limpiar la
+//            corrida con eliminarExpedientes:false -> DELETE /api/siniestros/:id con confirmar_numero ->
+//            confirmar que no queda ninguna fila asociada, en ninguna de las tablas involucradas.
+//   WB-PL-10: demuestra por qué importa el orden -- intentar DELETE /api/siniestros/:id ANTES de limpiar
+//             la corrida (con datos de WhatsApp todavía colgando) falla con la restricción de llave
+//             foránea real -- confirma que saltarse el paso 1 no es una opción silenciosa.
+//   WB-PL-11 a WB-PL-14: GET /api/whatsapp-manual/piloto/historial -- sin runId ni numeros (400, nunca
+//            lista todo sin acotar), filtrado por runId, filtrado por numeros, y que NO mezcla el
+//            historial de otra corrida sobre el mismo expediente (misma garantía de aislamiento que
+//            limpiarCorridaFicticia). Incluye verificar que aparecen exactamente los eventos
+//            "confirmado_enviado" / "liberado_no_enviado" con el usuario correcto -- la evidencia que
+//            pedía el punto 9 del plan, sin necesitar SQL directo.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -268,4 +287,191 @@ test('WB-PL-8: la ruta HTTP exige rol admin -- Alejandra/Vanessa/Daniela reciben
   const rAdmin = await req('POST', '/api/whatsapp-manual/piloto/limpiar', { runId, numeros: ['WBPL8'] });
   assert.equal(rAdmin.status, 200, JSON.stringify(rAdmin.data));
   assert.equal(rAdmin.data.ok, true);
+});
+
+// ===================== WB-PL-9 / WB-PL-10: secuencia real de teardown, solo por HTTP ======================
+// Corrección de Roberto (segunda revisión, 15-sep-2026): eliminarExpedientes:true no es viable como
+// procedimiento normal -- todo expediente creado por la API deja al menos una tarea automática (ver
+// WB-PL-7), y en producción no hay forma de borrar esa tarea con SQL directo. La secuencia real es:
+// limpiar la corrida (eliminarExpedientes:false) y, aparte, usar el endpoint administrativo YA EXISTENTE
+// DELETE /api/siniestros/:id (server/routes/siniestros.js, sin tocar -- ya limpia tareas, pedidos, piezas,
+// hitos y todo lo demás en su propia transacción). Estas dos pruebas NO usan una sola sentencia SQL para
+// borrar nada -- solo para leer y verificar el resultado.
+test('WB-PL-9: secuencia real (limpiar corrida con eliminarExpedientes:false + DELETE /api/siniestros/:id) borra TODO sin SQL directo', async () => {
+  const runId = activacion.iniciarPilotoRun(db);
+  const s = await crearExpedienteFicticioEnCorridaActual('WBPL9');
+
+  // Generar un mensaje real (reclamar + confirmar), igual que en WB-PL-4.
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const pend = await req('GET', '/api/whatsapp-manual/pendientes');
+  const fila = pend.data.find(x => x.siniestro_numero === 'WBPL9');
+  assert.ok(fila, 'debe aparecer como pendiente accionable');
+  const rec = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/reclamar`, {});
+  assert.equal(rec.status, 200, JSON.stringify(rec.data));
+  const conf = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/confirmar`, { enviado: true });
+  assert.equal(conf.status, 200);
+
+  // Confirma (antes de tocar nada) que existe la tarea automática que WB-PL-7 ya documentó -- y que por
+  // eso eliminarExpedientes:true habría hecho ROLLBACK aquí también.
+  const tareasAntes = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE siniestro_id=?`).get(s.id).n;
+  assert.ok(tareasAntes > 0, 'debe existir al menos una tarea automática -- por eso NO se usa eliminarExpedientes:true');
+
+  // Paso 1: limpiar la corrida, SIN pedir eliminarExpedientes.
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const limpieza = await req('POST', '/api/whatsapp-manual/piloto/limpiar', { runId, numeros: ['WBPL9'], eliminarExpedientes: false });
+  assert.equal(limpieza.status, 200, JSON.stringify(limpieza.data));
+  assert.equal(limpieza.data.ok, true);
+  assert.equal(limpieza.data.expedientesBorrados, 0, 'no se pidió eliminarExpedientes -- el expediente debe seguir vivo tras este paso');
+
+  // El expediente y su tarea siguen existiendo -- solo se limpió lo de WhatsApp.
+  const sigueExpediente = db.prepare(`SELECT id FROM siniestros WHERE id=?`).get(s.id);
+  assert.ok(sigueExpediente, 'el expediente debe seguir existiendo tras limpiar solo la corrida');
+  const sigueLaTarea = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE siniestro_id=?`).get(s.id).n;
+  assert.equal(sigueLaTarea, tareasAntes, 'la tarea automática NO se toca en este paso -- eso lo hace el endpoint de borrado, no esta ruta');
+
+  // Paso 2: borrar el expediente con el endpoint administrativo YA EXISTENTE -- por HTTP, con la
+  // confirmación exigida (confirmar_numero), sin ninguna sentencia SQL de por medio.
+  const borrado = await req('DELETE', `/api/siniestros/${s.id}`, { confirmar_numero: 'WBPL9' });
+  assert.equal(borrado.status, 200, JSON.stringify(borrado.data));
+  assert.equal(borrado.data.ok, true);
+
+  // Verificación final: no debe quedar NINGUNA fila asociada, en ninguna de las tablas involucradas --
+  // esto SÍ se comprueba con consultas directas (verificación de la prueba, no parte del procedimiento).
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE id=?`).get(s.id).n, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM tareas WHERE siniestro_id=?`).get(s.id).n, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM whatsapp_eventos_registrados WHERE siniestro_id=?`).get(s.id).n, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM whatsapp_envios_manuales WHERE siniestro_id=?`).get(s.id).n, 0);
+});
+
+test('WB-PL-10: borrar el expediente ANTES de limpiar la corrida falla de verdad (restricción de llave foránea) -- el orden importa', async () => {
+  const runId = activacion.iniciarPilotoRun(db);
+  const s = await crearExpedienteFicticioEnCorridaActual('WBPL10');
+
+  // Intentar el paso 2 sin haber hecho el paso 1 -- todavía hay filas de WhatsApp que dependen del
+  // expediente (whatsapp_eventos_registrados.siniestro_id, whatsapp_envios_manuales.siniestro_id).
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const borradoPrematuro = await req('DELETE', `/api/siniestros/${s.id}`, { confirmar_numero: 'WBPL10' });
+  assert.notEqual(borradoPrematuro.status, 200, 'debe fallar -- todavía hay datos de WhatsApp colgando de este expediente');
+  assert.match(JSON.stringify(borradoPrematuro.data), /FOREIGN KEY|foreign key/i);
+
+  // Nada debió borrarse -- el expediente y sus eventos de WhatsApp siguen intactos.
+  const sigueExpediente = db.prepare(`SELECT id FROM siniestros WHERE id=?`).get(s.id);
+  assert.ok(sigueExpediente, 'el expediente debe seguir existiendo -- el intento falló, no se aplicó a medias');
+  const sigueElEvento = db.prepare(`SELECT COUNT(*) n FROM whatsapp_eventos_registrados WHERE siniestro_id=?`).get(s.id).n;
+  assert.ok(sigueElEvento > 0, 'el evento de WhatsApp debe seguir intacto');
+
+  // Ahora sí, en el orden correcto: limpiar primero, borrar después -- debe funcionar.
+  const limpieza = await req('POST', '/api/whatsapp-manual/piloto/limpiar', { runId, numeros: ['WBPL10'] });
+  assert.equal(limpieza.status, 200, JSON.stringify(limpieza.data));
+  const borradoCorrecto = await req('DELETE', `/api/siniestros/${s.id}`, { confirmar_numero: 'WBPL10' });
+  assert.equal(borradoCorrecto.status, 200, JSON.stringify(borradoCorrecto.data));
+});
+
+// ===================== WB-PL-11 a WB-PL-14: historial de una corrida, solo lectura, sin SQL directo =======
+// Punto 2 de la segunda revisión: GET /api/whatsapp-manual/piloto/historial -- comprueba quién confirmó
+// "Sí" y quién confirmó "No", con fecha, evento y expediente, filtrable por piloto_run_id y/o numeros, sin
+// exponer datos de otra corrida.
+test('WB-PL-11: sin runId ni numeros, el historial responde 400 -- nunca se lista todo sin acotar', async () => {
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const r = await req('GET', '/api/whatsapp-manual/piloto/historial');
+  assert.equal(r.status, 400, JSON.stringify(r.data));
+});
+
+test('WB-PL-12: filtrado por runId trae exactamente los eventos de esa corrida, con usuario, fecha, evento y expediente', async () => {
+  const runId = activacion.iniciarPilotoRun(db);
+  await crearExpedienteFicticioEnCorridaActual('WBPL12');
+
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const pend = await req('GET', '/api/whatsapp-manual/pendientes');
+  const fila = pend.data.find(x => x.siniestro_numero === 'WBPL12');
+  const rec = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/reclamar`, {});
+  assert.equal(rec.status, 200, JSON.stringify(rec.data));
+  const vanessaId = db.prepare(`SELECT id FROM usuarios WHERE email='vanessa@serviciocristian.mx'`).get().id;
+
+  await login('daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!');
+  const confNo = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/confirmar`, { enviado: false });
+  // Solo quien reservó puede confirmar (regla ya aprobada) -- Daniela no reservó, así que esto debe fallar;
+  // se usa Vanessa (quien sí reservó) para dejar un "No" real en el historial.
+  assert.equal(confNo.status, 403);
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const confNoReal = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/confirmar`, { enviado: false });
+  assert.equal(confNoReal.status, 200, JSON.stringify(confNoReal.data));
+
+  // Vuelve a reclamar y esta vez confirma "Sí".
+  const rec2 = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/reclamar`, {});
+  assert.equal(rec2.status, 200, JSON.stringify(rec2.data));
+  const confSi = await req('POST', `/api/whatsapp-manual/envios/${fila.envio_id}/confirmar`, { enviado: true });
+  assert.equal(confSi.status, 200, JSON.stringify(confSi.data));
+
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const r = await req('GET', `/api/whatsapp-manual/piloto/historial?runId=${encodeURIComponent(runId)}`);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.ok, true);
+  assert.equal(r.data.runId, runId);
+  assert.ok(r.data.historial.length >= 3, 'debe incluir al menos: reservado, liberado_no_enviado, confirmado_enviado');
+  for (const fila2 of r.data.historial) {
+    assert.equal(fila2.siniestro_numero, 'WBPL12', 'todas las filas deben pertenecer al expediente de esta corrida');
+  }
+  const noEnviado = r.data.historial.find(h => h.evento === 'liberado_no_enviado');
+  assert.ok(noEnviado, 'debe aparecer el "No"');
+  assert.equal(noEnviado.usuario_id, vanessaId, 'debe registrar quién confirmó el "No"');
+  assert.ok(noEnviado.fecha, 'debe traer fecha');
+  const siEnviado = r.data.historial.find(h => h.evento === 'confirmado_enviado');
+  assert.ok(siEnviado, 'debe aparecer el "Sí"');
+  assert.equal(siEnviado.usuario_id, vanessaId, 'debe registrar quién confirmó el "Sí"');
+});
+
+test('WB-PL-13: filtrado por numeros (sin runId) trae el historial de esos expedientes; filtrar por runId de OTRA corrida no mezcla nada', async () => {
+  const runA = activacion.iniciarPilotoRun(db);
+  const sA = await crearExpedienteFicticioEnCorridaActual('WBPL13A');
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const pendA = await req('GET', '/api/whatsapp-manual/pendientes');
+  const filaA = pendA.data.find(x => x.siniestro_numero === 'WBPL13A');
+  await req('POST', `/api/whatsapp-manual/envios/${filaA.envio_id}/reclamar`, {});
+  await req('POST', `/api/whatsapp-manual/envios/${filaA.envio_id}/confirmar`, { enviado: true });
+
+  const runB = activacion.iniciarPilotoRun(db);
+  await crearExpedienteFicticioEnCorridaActual('WBPL13B');
+  await login('vanessa@serviciocristian.mx', 'ServicioCristian2026!');
+  const pendB = await req('GET', '/api/whatsapp-manual/pendientes');
+  const filaB = pendB.data.find(x => x.siniestro_numero === 'WBPL13B');
+  await req('POST', `/api/whatsapp-manual/envios/${filaB.envio_id}/reclamar`, {});
+  await req('POST', `/api/whatsapp-manual/envios/${filaB.envio_id}/confirmar`, { enviado: true });
+
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+
+  // Por numeros (sin runId): trae el historial de ambos si se piden ambos números.
+  const rAmbos = await req('GET', '/api/whatsapp-manual/piloto/historial?numeros=WBPL13A,WBPL13B');
+  assert.equal(rAmbos.status, 200, JSON.stringify(rAmbos.data));
+  const numerosVistos = new Set(rAmbos.data.historial.map(h => h.siniestro_numero));
+  assert.ok(numerosVistos.has('WBPL13A') && numerosVistos.has('WBPL13B'), 'debe incluir el historial de ambos expedientes pedidos');
+
+  // Por runId de la corrida A: NUNCA debe traer nada de WBPL13B (otra corrida, otro expediente).
+  const rSoloA = await req('GET', `/api/whatsapp-manual/piloto/historial?runId=${encodeURIComponent(runA)}`);
+  assert.equal(rSoloA.status, 200);
+  assert.ok(rSoloA.data.historial.length > 0);
+  for (const fila2 of rSoloA.data.historial) {
+    assert.equal(fila2.siniestro_numero, 'WBPL13A', 'filtrar por el runId de la corrida A nunca debe traer filas de la corrida B');
+  }
+
+  // runId + numeros combinados: sigue acotado a la intersección -- pedir runB pero numeros de A no debe
+  // devolver nada (no coinciden).
+  const rCruzado = await req('GET', `/api/whatsapp-manual/piloto/historial?runId=${encodeURIComponent(runB)}&numeros=WBPL13A`);
+  assert.equal(rCruzado.status, 200);
+  assert.equal(rCruzado.data.historial.length, 0, 'runId de B + número de A no deben coincidir en ninguna fila');
+});
+
+test('WB-PL-14: solo admin puede consultar el historial -- Alejandra/Vanessa/Daniela reciben 403', async () => {
+  const runId = activacion.iniciarPilotoRun(db);
+  await crearExpedienteFicticioEnCorridaActual('WBPL14');
+
+  for (const [email, pass] of [
+    ['alejandra@serviciocristian.mx', 'ServicioCristian2026!'],
+    ['vanessa@serviciocristian.mx', 'ServicioCristian2026!'],
+    ['daniela@serviciocristian.mx', 'ServicioCristian2026-Reset!'],
+  ]) {
+    await login(email, pass);
+    const r = await req('GET', `/api/whatsapp-manual/piloto/historial?runId=${encodeURIComponent(runId)}`);
+    assert.equal(r.status, 403, `${email} no debe poder consultar el historial: ${JSON.stringify(r.data)}`);
+  }
 });
