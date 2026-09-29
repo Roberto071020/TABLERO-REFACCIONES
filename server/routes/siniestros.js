@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision, requisitosAdmisionFaltantes } = require('../utils');
+const { registrarAuditoria, auditarCambios, archivarSiniestrosVencidos, calcularRutaAseguradora, sistemaValuacionSugerido, calcularSemaforo, verificarDisponibleParaRevision, requisitosAdmisionFaltantes, marcarHitoGeneradoAutomatico } = require('../utils');
 const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "solo registro", autorizado por Roberto (3-sep-2026)
 const router = express.Router();
 
@@ -395,6 +395,20 @@ router.patch('/:id', requireAuth, (req, res)=>{
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   whatsappFaseA.procesarTransicionSiniestro(db, { anterior, nuevo }); // solo registro interno, no envía nada
+
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): "un movimiento dentro de SC Control
+  // debe alimentar automáticamente a quien sigue". Beto entra a hojalatería/pintura, o calidad se libera
+  // -> marca el hito de comunicación correspondiente como listo para avisar al cliente (sin que Beto/
+  // Orlando tengan que hacer nada adicional, y sin pisar nada que Alejandra ya haya tocado a mano).
+  if(nuevo.estado_produccion === 'en_laminado' && anterior.estado_produccion !== 'en_laminado'){
+    marcarHitoGeneradoAutomatico(db, req.params.id, 'hojalateria');
+  }
+  if(nuevo.estado_produccion === 'pintura' && anterior.estado_produccion !== 'pintura'){
+    marcarHitoGeneradoAutomatico(db, req.params.id, 'pintura');
+  }
+  if(nuevo.estado_calidad === 'liberado' && anterior.estado_calidad !== 'liberado'){
+    marcarHitoGeneradoAutomatico(db, req.params.id, 'listo_entrega');
+  }
   if(nuevaInconformidad){
     db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
       VALUES (?,?,?,?,'pendiente','automatica','inconformidad_finiquito',?)`)
@@ -505,6 +519,12 @@ router.patch('/:id/entrega', requireAuth, requireRole('operativo','atencion_clie
   const retrabajosCriticos = db.prepare(`SELECT origen FROM retrabajos WHERE siniestro_id = ? AND severidad = 'critica' AND estado != 'cerrado'`).all(s.id);
   if(retrabajosCriticos.length){
     return res.status(400).json({ error:'No se puede registrar la entrega: hay retrabajos críticos sin cerrar.', detalle: retrabajosCriticos.map(r=>r.origen) });
+  }
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): "sin control de calidad aprobado,
+  // el vehículo no puede considerarse listo ni entregarse." Antes solo se bloqueaba el aviso automático
+  // al cliente (plantilla 5.11); ahora también se bloquea el registro de la entrega física en sí.
+  if(s.estado_calidad !== 'liberado'){
+    return res.status(400).json({ error:'No se puede registrar la entrega: el control de calidad todavía no está aprobado/liberado.' });
   }
   const fecha = req.body.fecha_entrega_real || new Date().toISOString().slice(0,10);
   // Registrar/editar la entrega es una decisión fresca: si antes se había bloqueado el archivo automático, se reactiva.

@@ -150,6 +150,10 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const tareasVencidas = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE estado IN ('pendiente','en_proceso') AND fecha_limite != '' AND fecha_limite < ?`).get(hoy).n;
   const mensajesIaPendientes = db.prepare(`SELECT COUNT(*) n FROM mensajes_ia WHERE estado = 'generado'`).get().n;
   const hitosListosSinEnviar = db.prepare(`SELECT COUNT(*) n FROM siniestro_hitos WHERE estado = 'generado'`).get().n;
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): panel general -- mismo criterio
+  // exacto que ya usa GET /bandeja-calidad (Beto/Orlando), solo como número para el panorama de Roberto.
+  const unidadesPendientesCalidad = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado = 0 AND estado_produccion = 'terminado'
+    AND (estado_calidad IS NULL OR estado_calidad != 'liberado' OR fecha_entrega_real IS NULL OR fecha_entrega_real = '')`).get().n;
   // Expedientes con más de 3 días sin ninguna comunicación registrada con el cliente (mismo umbral
   // que ya usa la bandeja de Clientes de Alejandra para "días sin actualización").
   const expedientesSinActualizar = db.prepare(`
@@ -244,7 +248,7 @@ router.get('/resumen', requireAuth, (req, res)=>{
   `).get().prom;
 
   res.json({ pedidosNuevos, piezasVencidas, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
-    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, expedientesSinActualizar,
+    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, unidadesPendientesCalidad, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
     piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
