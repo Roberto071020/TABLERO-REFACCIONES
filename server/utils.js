@@ -55,12 +55,48 @@ function csvTextForced(value){
 
 // Módulo Alejandra (Fase 5): si TODOS los pedidos del expediente quedaron en un estado terminal
 // (Recibido completo / Cancelado / Cerrado), crea una tarea automática para Alejandra, una sola vez.
+// ===================== Reactivación simplificada (28-sep-2026) =====================
+// Autorizado por Roberto: "las acciones realizadas por otros usuarios deben poder generar estos
+// pendientes sin que Alejandra tenga que investigar manualmente". Marca un hito del catálogo de
+// Alejandra (siniestro_hitos) como 'generado' (listo para avisar al cliente) SOLO si sigue en su
+// estado inicial 'pendiente' -- si Alejandra ya lo movió a cualquier otro estado (en_complemento,
+// revisado, enviado, bloqueado, no_aplica, etc.), esta función nunca lo pisa. No reemplaza el
+// mecanismo de "tareas" automáticas ya existente (autorizacion_resuelta, refacciones_completas,
+// etc.); ambos conviven: tareas alimenta "Pendientes de hoy", este helper alimenta el contador
+// "Hitos listos, sin avisar al cliente" que Alejandra ya usa en Inicio.
+function marcarHitoGeneradoAutomatico(db, siniestroId, claveHito){
+  const hito = db.prepare('SELECT id FROM catalogo_hitos WHERE clave=? AND activo=1').get(claveHito);
+  if(!hito) return;
+  let fila = db.prepare('SELECT id, estado FROM siniestro_hitos WHERE siniestro_id=? AND hito_id=?').get(siniestroId, hito.id);
+  if(!fila){
+    // Expediente creado antes de que existiera el catálogo de hitos (o nunca se le habían aprovisionado
+    // filas): las crea todas en 'pendiente', igual que asegurarHitos() en server/routes/hitos.js.
+    const yaHitos = db.prepare('SELECT COUNT(*) c FROM siniestro_hitos WHERE siniestro_id=?').get(siniestroId).c;
+    if(yaHitos === 0){
+      const catalogo = db.prepare('SELECT id FROM catalogo_hitos WHERE activo=1 ORDER BY orden').all();
+      const ins = db.prepare(`INSERT INTO siniestro_hitos (siniestro_id,hito_id,estado) VALUES (?,?,'pendiente')`);
+      catalogo.forEach(h => ins.run(siniestroId, h.id));
+    }
+    fila = db.prepare('SELECT id, estado FROM siniestro_hitos WHERE siniestro_id=? AND hito_id=?').get(siniestroId, hito.id);
+    if(!fila) return;
+  }
+  if(fila.estado !== 'pendiente') return;
+  db.prepare(`UPDATE siniestro_hitos SET estado='generado', fecha_estado=datetime('now'), actualizado_en=datetime('now') WHERE id=?`).run(fila.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: siniestroId, accion:'automatico',
+    valor_nuevo: `Hito "${claveHito}" marcado automáticamente como listo para avisar al cliente`, usuario:null });
+}
+
 function verificarRefaccionesCompletas(db, siniestroId, usuario){
   const TERMINALES = ['Recibido completo','Cancelado','Cerrado'];
   const pedidos = db.prepare('SELECT estatus_operativo FROM pedidos WHERE siniestro_id = ?').all(siniestroId);
   if(pedidos.length === 0) return;
   const todosTerminales = pedidos.every(p => TERMINALES.includes(p.estatus_operativo));
   if(!todosTerminales) return;
+
+  // Reactivación simplificada (28-sep-2026): además de la tarea automática que ya existía, marca el
+  // hito de comunicación "refacciones_completas" como listo para avisar al cliente -- sin pisar nada
+  // que Alejandra ya haya tocado a mano sobre ese hito (ver marcarHitoGeneradoAutomatico).
+  marcarHitoGeneradoAutomatico(db, siniestroId, 'refacciones_completas');
 
   const yaExiste = db.prepare(`SELECT id FROM tareas WHERE siniestro_id=? AND disparador='refacciones_completas' AND estado IN ('pendiente','en_proceso')`).get(siniestroId);
   if(yaExiste) return;
@@ -685,4 +721,4 @@ module.exports = { TZ, nowUTC, toLocal, toLocalDate, registrarAuditoria, auditar
   VENTANA_OPERATIVA_DESDE, aplicaVentanaOperativa, normalizarFechaISO, normalizarFechasCreacionPedidosExistentes,
   requisitosAdmisionCompletos, requisitosAdmisionFaltantes, verificarDisponibleParaRevision, limiteRevisionGrua,
   esquemaSurtidoLabel, porcentajePiezasRecibidas, normalizarAseguradora, normalizarAseguradorasExistentes, ASEGURADORAS_CANONICAS,
-  sincronizarPiezasConEstatusPedido, sincronizarPiezasPedidosExistentes, verificarReingreso90Porciento };
+  sincronizarPiezasConEstatusPedido, sincronizarPiezasPedidosExistentes, verificarReingreso90Porciento, marcarHitoGeneradoAutomatico };
