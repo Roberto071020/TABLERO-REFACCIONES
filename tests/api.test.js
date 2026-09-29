@@ -683,6 +683,14 @@ test('REQ-DANIELA-2: no se puede cerrar un siniestro con pedidos pendientes o si
   assert.equal(intento2.status, 400, 'todavía falta la fecha de entrega');
   assert.match(intento2.data.detalle.join(' '), /entrega/);
 
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): la entrega ahora exige calidad
+  // liberada (regla nueva y universal, no una excepción al módulo de Daniela que sigue igual). Se
+  // libera con un usuario que sí tiene permiso sobre ese campo y se regresa a Daniela para continuar
+  // exactamente el mismo flujo de cierre que esta prueba ya cubría.
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_calidad: 'liberado' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+
   const entrega = await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: '2026-08-20' });
   assert.equal(entrega.status, 200);
 
@@ -695,6 +703,9 @@ test('REQ-DANIELA-3: un pedido cancelado cuenta como terminal para poder cerrar 
   const s = (await req('POST', '/api/siniestros', { numero: 'REQ3-SIN', aseguradora: 'Inbursa' })).data;
   const p = (await req('POST', '/api/pedidos', { numero: 'REQ3-PED', siniestro_id: s.id, fecha_prevista: '2027-06-01' })).data;
   await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Cancelado', motivo_cancelacion: 'Pérdida total' });
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_calidad: 'liberado' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: '2026-08-20' });
   const cierre = await req('PATCH', `/api/siniestros/${s.id}/cerrar`, {});
   assert.equal(cierre.status, 200);
@@ -819,7 +830,12 @@ test('REQ-DANIELA-11: un siniestro entregado hace más de 3 meses se archiva sol
   await req('PATCH', `/api/pedidos/${p.id}`, { estatus_operativo: 'Recibido completo' });
   // Fecha de entrega hace más de 90 días respecto a "hoy" (el entorno de pruebas usa la fecha real del sistema).
   const hace100dias = new Date(Date.now() - 100*86400000).toISOString().slice(0,10);
-  await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: hace100dias });
+  // Reactivación simplificada (28-sep-2026): la entrega ahora exige calidad liberada.
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', `/api/siniestros/${s.id}`, { estado_calidad: 'liberado' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const entregaR11 = await req('PATCH', `/api/siniestros/${s.id}/entrega`, { fecha_entrega_real: hace100dias });
+  assert.equal(entregaR11.status, 200);
 
   const listaDefault = (await req('GET', '/api/siniestros')).data;
   assert.ok(!listaDefault.some(x => x.numero === 'REQ11-SIN'), 'no debe verse en la vista diaria por default');
@@ -1501,9 +1517,14 @@ test('DOC-MAESTRO-F-2: no se puede registrar la entrega con retrabajos críticos
 
   await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
   await req('PATCH', '/api/retrabajos/' + ret.id, { estado: 'cerrado', correccion: 'Ajuste de bisagras de cajuela' });
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): la entrega ahora también exige
+  // calidad liberada, además de sin retrabajos críticos -- se libera aquí para aislar exactamente lo
+  // que esta prueba quiere comprobar (el candado de retrabajos), sin que el nuevo candado de calidad
+  // interfiera con esa aserción.
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
   const permitido = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
-  assert.equal(permitido.status, 200, 'ya sin retrabajos críticos abiertos debe permitirse la entrega');
+  assert.equal(permitido.status, 200, 'ya sin retrabajos críticos abiertos y con calidad liberada debe permitirse la entrega');
 });
 
 test('DOC-MAESTRO-F-3: el finiquito no puede firmarse antes de la entrega; una inconformidad crea una tarea automática', async () => {
@@ -1512,11 +1533,15 @@ test('DOC-MAESTRO-F-3: el finiquito no puede firmarse antes de la entrega; una i
   const sinEntrega = await req('PATCH', '/api/siniestros/' + s.id, { finiquito_estado: 'firmado' });
   assert.equal(sinEntrega.status, 400);
 
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): la entrega ahora exige calidad
+  // liberada; esta prueba no evalúa esa regla (tiene su propia prueba dedicada), así que se libera antes.
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
   await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
   const firmado = await req('PATCH', '/api/siniestros/' + s.id, { finiquito_estado: 'firmado', finiquito_fecha: '2026-08-24' });
   assert.equal(firmado.status, 200);
 
   const s2 = (await req('POST', '/api/siniestros', { numero: 'FASEF-FIN2', aseguradora: 'GNP' })).data;
+  await req('PATCH', '/api/siniestros/' + s2.id, { estado_calidad: 'liberado' });
   await req('PATCH', '/api/siniestros/' + s2.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
   const inconforme = await req('PATCH', '/api/siniestros/' + s2.id, { finiquito_estado: 'inconformidad_abierta', finiquito_observacion: 'Cliente reporta ruido en puerta' });
   assert.equal(inconforme.status, 200);
@@ -1540,6 +1565,95 @@ test('DOC-MAESTRO-F-4: bandeja de calidad incluye producción terminada pendient
   await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
   bandeja = await req('GET', '/api/reportes/bandeja-calidad');
   assert.ok(!bandeja.data.some(x => x.numero === 'FASEF-BANDEJA1'), 'ya no debe aparecer una vez liberado y entregado');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+/* ===================== Reactivación simplificada de SC Control (28-sep-2026, autorizado por Roberto) ===================== */
+
+test('REACT-1: la entrega física se bloquea mientras estado_calidad no esté liberado, con o sin retrabajos', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REACT1-SIN', aseguradora: 'Chubb' })).data;
+
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const bloqueado = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  assert.equal(bloqueado.status, 400, 'sin calidad liberada (estado_calidad null) no debe permitirse la entrega');
+  assert.match(bloqueado.data.error, /calidad/i);
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'en_inspeccion' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const bloqueado2 = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  assert.equal(bloqueado2.status, 400, 'en_inspeccion tampoco es liberado, sigue bloqueada la entrega');
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const permitido = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  assert.equal(permitido.status, 200, 'ya liberado y sin retrabajos críticos, la entrega debe permitirse');
+});
+
+test('REACT-2: hito "hojalateria" se marca automáticamente como generado al entrar el vehículo a laminado', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REACT2-SIN', aseguradora: 'GNP' })).data;
+
+  let hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  let hojalateria = hitos.find(h => h.clave === 'hojalateria');
+  assert.equal(hojalateria.estado, 'pendiente', 'antes de entrar a laminado, el hito sigue pendiente');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'en_laminado' });
+  hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  hojalateria = hitos.find(h => h.clave === 'hojalateria');
+  assert.equal(hojalateria.estado, 'generado', 'al entrar a laminado, el hito de hojalatería debe quedar listo para avisar al cliente');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('REACT-3: hito "pintura" se marca automáticamente al entrar a pintura, y "listo_entrega" al liberar calidad', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REACT3-SIN', aseguradora: 'GNP' })).data;
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'pintura' });
+  let hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  assert.equal(hitos.find(h => h.clave === 'pintura').estado, 'generado', 'al entrar a pintura, ese hito debe quedar listo para avisar al cliente');
+  assert.equal(hitos.find(h => h.clave === 'listo_entrega').estado, 'pendiente', 'listo_entrega no debe adelantarse solo por entrar a pintura');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
+  hitos = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  assert.equal(hitos.find(h => h.clave === 'listo_entrega').estado, 'generado', 'al liberar calidad, listo_entrega debe quedar listo para avisar al cliente');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('REACT-4: el disparo automático de hitos NUNCA pisa un hito que Alejandra ya movió a mano a otro estado', async () => {
+  await req('POST', '/api/auth/login', { email: 'admin@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const s = (await req('POST', '/api/siniestros', { numero: 'REACT4-SIN', aseguradora: 'GNP' })).data;
+
+  const hitosIniciales = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  const hojalateria = hitosIniciales.find(h => h.clave === 'hojalateria');
+  const marcado = await req('PATCH', '/api/hitos/' + hojalateria.id, { estado: 'enviado', mensaje: 'Le informamos que su unidad ya inició hojalatería.' });
+  assert.equal(marcado.status, 200, 'Alejandra ya avisó manualmente al cliente sobre este hito');
+
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'en_laminado' });
+
+  const hitosDespues = (await req('GET', '/api/hitos?siniestro_id=' + s.id)).data;
+  assert.equal(hitosDespues.find(h => h.clave === 'hojalateria').estado, 'enviado', 'el disparo automático no debe pisar el estado que Alejandra ya puso a mano');
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+});
+
+test('REACT-5: /api/reportes/resumen expone unidadesPendientesCalidad y cuenta correctamente producción terminada sin calidad/entrega', async () => {
+  await req('POST', '/api/auth/login', { email: 'beto@serviciocristian.mx', password: 'ServicioCristian2026!' });
+  const antes = (await req('GET', '/api/reportes/resumen')).data.unidadesPendientesCalidad;
+
+  const s = (await req('POST', '/api/siniestros', { numero: 'REACT5-SIN', aseguradora: 'Qualitas' })).data;
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_produccion: 'terminado' });
+  const conUno = (await req('GET', '/api/reportes/resumen')).data.unidadesPendientesCalidad;
+  assert.equal(conUno, antes + 1, 'debe subir en 1 al haber una unidad terminada sin calidad liberada');
+
+  await req('PATCH', '/api/siniestros/' + s.id, { estado_calidad: 'liberado' });
+  await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
+  const entregaR5 = await req('PATCH', '/api/siniestros/' + s.id + '/entrega', { fecha_entrega_real: '2026-08-24' });
+  assert.equal(entregaR5.status, 200);
+  const despues = (await req('GET', '/api/reportes/resumen')).data.unidadesPendientesCalidad;
+  assert.equal(despues, antes, 'al liberar calidad y registrar la entrega, debe volver a bajar');
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
