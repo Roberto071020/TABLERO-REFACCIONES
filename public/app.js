@@ -361,6 +361,20 @@ async function viewInicio(){
   return `
   <h2>Resumen diario</h2>
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
+  ${verRoberto ? `
+  <div class="section">
+    <h3>Panorama general</h3>
+    <p class="subtle">Reactivación simplificada (autorizado 28-sep-2026): un solo lugar con lo esencial para supervisar sin tener que capturar nada -- reúne números que ya existen en las secciones de abajo.</p>
+    <div class="grid-cards">
+      <div class="card verde" onclick="goTo('produccion')"><div class="num">${r.betoListasParaIniciar}</div><div class="label">Vehículos en piso</div></div>
+      <div class="card rojo" onclick="goTo('produccion')"><div class="num">${r.betoVencidas}</div><div class="label">Entregas vencidas</div></div>
+      <div class="card ambar" onclick="goTo('produccion')"><div class="num">${r.betoPorVencer}</div><div class="label">Por vencer (1-2 días)</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('hitosListosSinEnviar','Hitos listos, sin avisar al cliente')"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Clientes pendientes de informar</div></div>
+      <div class="card ${r.unidadesPendientesCalidad>0?'ambar':'verde'}" onclick="goTo('calidad')"><div class="num">${r.unidadesPendientesCalidad}</div><div class="label">Unidades pendientes de calidad</div></div>
+      <div class="card ${r.incidenciasAbiertas>0?'morado':'verde'}" style="${r.incidenciasAbiertas>0?'border-left:4px solid #7c3aed':''}" onclick="abrirDetalleTarjeta('incidenciasAbiertas','Incidencias abiertas')"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
+    </div>
+    ${r.betoEnProcesoDesglose.length?`<p class="subtle" style="margin-top:8px;">Por etapa: ${r.betoEnProcesoDesglose.map(x=>`${LABEL_PROD[x.estado]||x.estado} (${x.n})`).join(' · ')}</p>`:''}
+  </div>` : ''}
   ${verRefacciones && r.pendientesCompletar>0?`<div class="banner ambar">${r.pendientesCompletar} siniestro(s) están "Pendiente de completar" — les falta vehículo o placas. Complétalos desde su ficha.</div>`:''}
   ${verRefacciones?`<div class="grid-cards">
     <div class="card azul" onclick="abrirDetalleTarjeta('pedidosNuevos','Pedidos nuevos')"><div class="num">${r.pedidosNuevos}</div><div class="label">Pedidos nuevos</div></div>
@@ -1213,23 +1227,29 @@ async function viewSiniestro(id){
       <tr><td>Riesgo de seguridad</td><td>${s.riesgo_seguridad?`<span class="badge rojo">No seguro</span> — ${esc(s.riesgo_seguridad_motivo||'')}`:'No'}</td></tr>
       <tr><td>Estado de evidencia</td><td>${s.estado_evidencia?esc(LABEL_EVID[s.estado_evidencia]||s.estado_evidencia):'—'}</td></tr>
     </tbody></table>
-    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormRevisionTecnica(${id})">Actualizar revisión técnica</button></div>`:''}
+    ${puedeTecnica?`<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      ${s.estado_revision_tecnica!=='revision_terminada'?`<button class="btn small" onclick="marcarRevisionTerminada(${id})">Revisión terminada</button>`:''}
+      ${s.estado_revision_tecnica!=='requiere_desarme'?`<button class="btn small secondary" onclick="marcarRequiereDesarme(${id})">Requiere desarme</button>`:''}
+      <button class="btn small ghost" onclick="abrirFormRevisionTecnica(${id})">Más detalles (riesgo, evidencia, tipo de reparación)</button>
+    </div>`:''}
 
-    <h4 style="margin-top:16px;">Daños y hallazgos</h4>
-    ${hallazgos.length===0?'<div class="empty">Sin hallazgos registrados todavía.</div>':`
-    <table><thead><tr><th>Zona/pieza</th><th>Tipo de daño</th><th>Visibilidad</th><th>Relacionado</th><th>Severidad</th><th>Foto</th><th>Autor</th><th></th></tr></thead><tbody>
-    ${hallazgos.map(h=>`<tr>
-      <td>${esc(h.zona_pieza)}${h.observaciones?`<div class="subtle">${esc(h.observaciones)}</div>`:''}</td>
-      <td>${esc(h.tipo_dano||'—')}</td>
-      <td><span class="badge ${h.visibilidad==='oculto'?'rojo':'gris'}">${h.visibilidad==='oculto'?'Oculto':'Visible'}</span></td>
-      <td>${h.relacionado?'Sí':'No'}</td>
-      <td>${esc(h.severidad||'—')}</td>
-      <td>${h.archivo_id?`<a class="link" href="/api/archivos/${h.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
-      <td class="subtle">${esc(h.autor_nombre||'—')}</td>
-      <td>${puedeTecnica?`<button class="btn small secondary" onclick="abrirFormEditarHallazgo(${h.id})">Editar</button>`:''}</td>
-    </tr>`).join('')}
-    </tbody></table>`}
-    ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}
+    <details style="margin-top:16px;">
+      <summary style="cursor:pointer;color:var(--muted,#666);">Daños y hallazgos (${hallazgos.length}) ▾</summary>
+      ${hallazgos.length===0?'<div class="empty">Sin hallazgos registrados todavía.</div>':`
+      <table><thead><tr><th>Zona/pieza</th><th>Tipo de daño</th><th>Visibilidad</th><th>Relacionado</th><th>Severidad</th><th>Foto</th><th>Autor</th><th></th></tr></thead><tbody>
+      ${hallazgos.map(h=>`<tr>
+        <td>${esc(h.zona_pieza)}${h.observaciones?`<div class="subtle">${esc(h.observaciones)}</div>`:''}</td>
+        <td>${esc(h.tipo_dano||'—')}</td>
+        <td><span class="badge ${h.visibilidad==='oculto'?'rojo':'gris'}">${h.visibilidad==='oculto'?'Oculto':'Visible'}</span></td>
+        <td>${h.relacionado?'Sí':'No'}</td>
+        <td>${esc(h.severidad||'—')}</td>
+        <td>${h.archivo_id?`<a class="link" href="/api/archivos/${h.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
+        <td class="subtle">${esc(h.autor_nombre||'—')}</td>
+        <td>${puedeTecnica?`<button class="btn small secondary" onclick="abrirFormEditarHallazgo(${h.id})">Editar</button>`:''}</td>
+      </tr>`).join('')}
+      </tbody></table>`}
+      ${puedeTecnica?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoHallazgo(${id})">+ Agregar hallazgo</button></div>`:''}
+    </details>
 
     <h3 style="margin-top:20px;">Captura y envío (Orlando + Vanessa)</h3>
     <p class="subtle">Continuación del flujo de Vanessa: Excel capturado, fotos/carpeta completas y envío al propietario. Cualquiera de los dos puede capturarlo — el sistema no distingue quién lo hizo.</p>
@@ -1289,26 +1309,33 @@ async function viewSiniestro(id){
       <tr><td>Sistema de valuación</td><td>${esc(s.sistema_valuacion||'—')}</td></tr>
       <tr><td>Folio de expediente</td><td>${esc(s.expediente_folio||'—')}</td></tr>
     </tbody></table>
-    ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormExpedienteDigital(${id})">Actualizar expediente</button></div>`:''}
+    ${puedeExpediente?`<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      ${s.estado_expediente!=='listo_para_valuacion'?`<button class="btn small" onclick="marcarExpedienteListo(${id})">Expediente listo</button>`:''}
+      <button class="btn small ghost" onclick="abrirFormExpedienteDigital(${id})">Más detalles (sistema de valuación, folio)</button>
+    </div>`:''}
 
-    <h4 style="margin-top:16px;">Carpeta de Google Drive</h4>
-    <p class="subtle">Punto 10 (Orlando): la carpeta real vive en Google Drive (Aseguradora &gt; Mes &gt; Siniestro). Aquí solo se vincula y se descarga su contenido.</p>
-    ${renderCarpetaDrive(s, driveEstadoExp, driveArchivosExp, puedeExpediente)}
+    <details style="margin-top:16px;">
+      <summary style="cursor:pointer;color:var(--muted,#666);">Carpeta de Google Drive ▾</summary>
+      <p class="subtle">Punto 10 (Orlando): la carpeta real vive en Google Drive (Aseguradora &gt; Mes &gt; Siniestro). Aquí solo se vincula y se descarga su contenido.</p>
+      ${renderCarpetaDrive(s, driveEstadoExp, driveArchivosExp, puedeExpediente)}
+    </details>
 
-    <h4 style="margin-top:16px;">Checklist documental</h4>
-    ${documentos.length===0?'<div class="empty">Sin documentos registrados todavía.</div>':`
-    <table><thead><tr><th>Documento</th><th>Versión</th><th>Estado</th><th>Folio</th><th>Archivo</th><th>Autor</th><th></th></tr></thead><tbody>
-    ${documentos.map(d=>`<tr>
-      <td>${esc(d.tipo_documento)}${d.notas?`<div class="subtle">${esc(d.notas)}</div>`:''}</td>
-      <td>${d.version}</td>
-      <td><span class="badge ${BADGE_DOC[d.estado]||'gris'}">${LABEL_DOC[d.estado]||d.estado}</span></td>
-      <td>${esc(d.folio||'—')}</td>
-      <td>${d.archivo_id?`<a class="link" href="/api/archivos/${d.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
-      <td class="subtle">${esc(d.autor_nombre||'—')}</td>
-      <td>${puedeExpediente?`<button class="btn small secondary" onclick="abrirFormEditarDocumento(${d.id})">Editar</button>`:''}</td>
-    </tr>`).join('')}
-    </tbody></table>`}
-    ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoDocumento(${id})">+ Agregar documento</button></div>`:''}`;
+    <details style="margin-top:16px;">
+      <summary style="cursor:pointer;color:var(--muted,#666);">Checklist documental (${documentos.length}) ▾</summary>
+      ${documentos.length===0?'<div class="empty">Sin documentos registrados todavía.</div>':`
+      <table><thead><tr><th>Documento</th><th>Versión</th><th>Estado</th><th>Folio</th><th>Archivo</th><th>Autor</th><th></th></tr></thead><tbody>
+      ${documentos.map(d=>`<tr>
+        <td>${esc(d.tipo_documento)}${d.notas?`<div class="subtle">${esc(d.notas)}</div>`:''}</td>
+        <td>${d.version}</td>
+        <td><span class="badge ${BADGE_DOC[d.estado]||'gris'}">${LABEL_DOC[d.estado]||d.estado}</span></td>
+        <td>${esc(d.folio||'—')}</td>
+        <td>${d.archivo_id?`<a class="link" href="/api/archivos/${d.archivo_id}/descargar" target="_blank">Ver</a>`:'—'}</td>
+        <td class="subtle">${esc(d.autor_nombre||'—')}</td>
+        <td>${puedeExpediente?`<button class="btn small secondary" onclick="abrirFormEditarDocumento(${d.id})">Editar</button>`:''}</td>
+      </tr>`).join('')}
+      </tbody></table>`}
+      ${puedeExpediente?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoDocumento(${id})">+ Agregar documento</button></div>`:''}
+    </details>`;
   } else if(state.subtabSiniestro==='valuacion'){
     const puedeValuacion = currentUser && ['orlando','admin','jefe'].includes(currentUser.rol);
     const puedeSolicitarReautorizacion = currentUser && ['admin','jefe'].includes(currentUser.rol);
@@ -1817,6 +1844,26 @@ async function guardarAdmision(siniestroId){
   }catch(e){}
 }
 
+// Reactivación simplificada (28-sep-2026, autorizado por Roberto): dos acciones de un clic para el
+// primer nivel de adopción de Orlando -- "Pendiente de revisión -> Revisado" y, aparte, "Requiere
+// desarme" (un valor más de estado_revision_tecnica, NO relacionado con la tabla `complementos` que se
+// usa en Producción/Valuación -- Roberto fue explícito: son situaciones distintas y no se fusionan).
+// El formulario completo (abrirFormRevisionTecnica, más abajo) sigue existiendo tal cual para riesgo de
+// seguridad, evidencia y tipo de reparación, disponible cuando Orlando lo necesite.
+async function marcarRevisionTerminada(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_revision_tecnica:'revision_terminada' });
+    toast('Revisión marcada como terminada.', 'success');
+    render();
+  }catch(e){}
+}
+async function marcarRequiereDesarme(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_revision_tecnica:'requiere_desarme' });
+    toast('Marcado como "requiere desarme".', 'success');
+    render();
+  }catch(e){}
+}
 function abrirFormRevisionTecnica(siniestroId){
   api('GET','/api/siniestros/'+siniestroId).then(s=>{
     showModal(`
@@ -2072,6 +2119,21 @@ async function desvincularCarpetaDrive(siniestroId){
   }catch(e){}
 }
 
+// Reactivación simplificada (28-sep-2026, autorizado por Roberto): acción de un clic para el primer
+// nivel de adopción de Vanessa -- "Pendiente de captura/preparación -> Expediente listo". El backend
+// sigue validando lo mismo que ya validaba (documentos faltantes/no legibles bloquean el guardado);
+// aquí solo se reutiliza el mismo manejo de error para mostrarlo igual que el formulario completo.
+async function marcarExpedienteListo(siniestroId){
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_expediente:'listo_para_valuacion' });
+    toast('Expediente marcado como listo.', 'success');
+    render();
+  }catch(e){
+    if(e.data && e.data.detalle){
+      showModal(`<h3>No se puede marcar como listo</h3><p class="subtle">Faltan o no son legibles estos documentos:</p><ul>${e.data.detalle.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Entendido</button></div>`);
+    }
+  }
+}
 function abrirFormExpedienteDigital(siniestroId){
   api('GET','/api/siniestros/'+siniestroId).then(s=>{
     showModal(`
@@ -2264,6 +2326,27 @@ async function guardarAutorizacion(siniestroId){
   }catch(e){}
 }
 
+// Reactivación simplificada (28-sep-2026, autorizado por Roberto): "el cambio de etapa debe requerir
+// el mínimo posible de clics". Un solo botón avanza a la siguiente etapa de la secuencia ya confirmada
+// (mecánica -> hojalatería -> pintura -> armado -> pulido -> lavado -> terminado), sin tocar la fecha de
+// entrega ni el candado de compromiso GNP (eso sigue solo en el formulario completo, sin cambios). No
+// se ofrece avance rápido si la etapa actual es "Detenido": ese caso se resuelve a propósito, con el
+// formulario completo, no con un clic.
+const SECUENCIA_PRODUCCION = ['programado','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado'];
+function siguienteEtapaProduccion(actual){
+  const i = SECUENCIA_PRODUCCION.indexOf(actual || '');
+  if(actual === 'detenido' || actual === 'terminado') return null;
+  return SECUENCIA_PRODUCCION[i+1] || SECUENCIA_PRODUCCION[0];
+}
+async function avanzarEtapaProduccion(siniestroId, estadoActual){
+  const siguiente = siguienteEtapaProduccion(estadoActual);
+  if(!siguiente) return;
+  try{
+    await api('PATCH','/api/siniestros/'+siniestroId, { estado_produccion: siguiente });
+    toast('Etapa actualizada.', 'success');
+    render();
+  }catch(e){}
+}
 function abrirFormEtapaProduccion(siniestroId){
   api('GET','/api/siniestros/'+siniestroId).then(s=>{
     // Flujo de reparación (31-ago-2026), punto 6 autorizado por Roberto: en GNP + unidad en piso, la
@@ -3447,37 +3530,44 @@ function formNuevoExpediente(){
       <div class="field"><label>Tipo comunicación</label><select id="fx_canal"><option>WhatsApp</option><option>Teléfono</option></select></div>
       <div class="field"><label>Ubicación</label><select id="fx_ubicacion"><option value="Piso">Piso</option><option value="Tránsito">Tránsito</option></select></div>
     </div>
-    <div class="row-flex">
-      <div class="field"><label>Vehículo</label><input id="fx_vehiculo" placeholder="Marca / modelo (si ya se sabe)"></div>
-      <div class="field"><label>Placas</label><input id="fx_placas"></div>
-    </div>
-    <div class="row-flex">
-      <div class="field"><label>Tipo de ingreso</label><select id="fx_ingreso_tipo" onchange="toggleFxGrua()">
-        <option value="">Sin definir</option>
-        <option value="circulando">Circulando</option>
-        <option value="grua">Grúa</option>
-        <option value="permanece">Se queda todo el proceso</option>
-      </select></div>
-      <div class="field">
-        <label>¿Aplica deducible?</label>
-        <select id="fx_deducible_aplica">
+    <div class="field"><label>Vehículo</label><input id="fx_vehiculo" placeholder="Marca / modelo (si ya se sabe)"></div>
+    <!-- Reactivación simplificada (28-sep-2026, autorizado por Roberto): primera etapa de adopción --
+         Alejandra ve solo lo esencial por default. Nada de esto se elimina ni cambia de requisito: los
+         mismos campos, mismos ids, misma validación de guardarExpediente() -- solo quedan colapsados
+         para no saturar el alta. Se pueden abrir y llenar en el momento, igual que siempre. -->
+    <details id="fx_avanzado">
+      <summary style="cursor:pointer;color:var(--muted,#666);margin:6px 0;">Datos adicionales (opcional por ahora) ▾</summary>
+      <div class="row-flex">
+        <div class="field"><label>Placas</label><input id="fx_placas"></div>
+        <div class="field"><label>Tipo de ingreso</label><select id="fx_ingreso_tipo" onchange="toggleFxGrua()">
           <option value="">Sin definir</option>
-          <option value="1">Sí aplica</option>
-          <option value="0">No aplica</option>
-        </select>
-        <p class="subtle" style="margin:4px 0 0;">Es solo para que el equipo lo sepa desde ahora; la confirmación de que ya quedó validado y en firme con la aseguradora se pregunta aparte, en la entrega.</p>
+          <option value="circulando">Circulando</option>
+          <option value="grua">Grúa</option>
+          <option value="permanece">Se queda todo el proceso</option>
+        </select></div>
       </div>
-      <div class="field" style="display:flex;flex-direction:column;gap:6px;justify-content:center;">
-        <label><input type="checkbox" id="fx_llaves"> Llaves entregadas</label>
-        <label><input type="checkbox" id="fx_dado"> Dado de seguridad colocado</label>
+      <div class="row-flex">
+        <div class="field">
+          <label>¿Aplica deducible?</label>
+          <select id="fx_deducible_aplica">
+            <option value="">Sin definir</option>
+            <option value="1">Sí aplica</option>
+            <option value="0">No aplica</option>
+          </select>
+          <p class="subtle" style="margin:4px 0 0;">Es solo para que el equipo lo sepa desde ahora; la confirmación de que ya quedó validado y en firme con la aseguradora se pregunta aparte, en la entrega.</p>
+        </div>
+        <div class="field" style="display:flex;flex-direction:column;gap:6px;justify-content:center;">
+          <label><input type="checkbox" id="fx_llaves"> Llaves entregadas</label>
+          <label><input type="checkbox" id="fx_dado"> Dado de seguridad colocado</label>
+        </div>
       </div>
-    </div>
-    <div class="row-flex">
-      <div class="field" id="fx_orden_admision_wrap"><label>Orden de admisión (archivo)</label><input type="file" id="fx_orden_admision_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
-      <div class="field"><label>Inventario físico/fotográfico (archivo)</label><input type="file" id="fx_inventario_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
-    </div>
-    <p class="subtle" id="fx_grua_hint" style="display:none;">Para ingreso por grúa se requiere antes de guardar: llaves entregadas, inventario y, si no es particular, orden de admisión.</p>
-    <p class="subtle">* Campos obligatorios. El resto se puede completar después conforme avance el caso.</p>
+      <div class="row-flex">
+        <div class="field" id="fx_orden_admision_wrap"><label>Orden de admisión (archivo)</label><input type="file" id="fx_orden_admision_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
+        <div class="field"><label>Inventario físico/fotográfico (archivo)</label><input type="file" id="fx_inventario_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
+      </div>
+      <p class="subtle" id="fx_grua_hint" style="display:none;">Para ingreso por grúa se requiere antes de guardar: llaves entregadas, inventario y, si no es particular, orden de admisión.</p>
+    </details>
+    <p class="subtle">* Campos obligatorios. El resto se puede completar después conforme avance el caso (aquí mismo, o más adelante desde el expediente).</p>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarExpediente()">Guardar</button></div>
   `);
 }
@@ -3684,21 +3774,43 @@ async function viewCalidad(){
 async function viewProduccion(){
   const expedientes = await api('GET','/api/reportes/bandeja-produccion');
   const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
+  // Reactivación simplificada (28-sep-2026, autorizado por Roberto): vista básica de Beto -- vehículos
+  // en piso, fecha compromiso y etapa actual, con prioridad visual clara a vencidos y próximos a vencer.
+  // Reutiliza exactamente los mismos datos que ya entrega /bandeja-produccion (ningún endpoint nuevo);
+  // el único cambio es cómo se ordena y se colorea en pantalla.
+  const hoy = new Date().toISOString().slice(0,10);
+  function urgencia(s){
+    if(!s.fecha_entrega_prevista) return 2; // sin fecha: al final
+    if(s.fecha_entrega_prevista < hoy) return 0; // vencida: primero
+    const dias = (new Date(s.fecha_entrega_prevista) - new Date(hoy)) / 86400000;
+    return dias <= 3 ? 1 : 2; // próxima a vencer (<=3 días): segundo
+  }
+  const ordenados = [...expedientes].sort((a,b)=>{
+    const ua = urgencia(a), ub = urgencia(b);
+    if(ua !== ub) return ua - ub;
+    return (a.fecha_entrega_prevista||'9999') < (b.fecha_entrega_prevista||'9999') ? -1 : 1;
+  });
   return `
   <h2>Producción</h2>
-  <p class="subtle">Expedientes autorizados en proceso de reparación (módulo de Beto). Sección 5.10 y 9 del documento maestro: prioridades, bloqueos y retrabajos.</p>
-  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Etapa de producción</th><th>Operaciones bloqueadas</th><th>Retrabajos abiertos</th><th>Complementos pendientes</th></tr></thead><tbody>
-  ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes en producción pendientes.</td></tr>':expedientes.map(s=>`
+  <p class="subtle">Vehículos en piso (módulo de Beto). Vencidos y próximos a vencer aparecen primero.</p>
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Fecha compromiso</th><th>Etapa actual</th><th></th></tr></thead><tbody>
+  ${ordenados.length===0?'<tr><td colspan="5" class="empty">Sin vehículos en piso pendientes.</td></tr>':ordenados.map(s=>{
+    const u = urgencia(s);
+    const badgeFecha = !s.fecha_entrega_prevista ? '<span class="badge gris">Sin definir</span>'
+      : u===0 ? `<span class="badge rojo">Vencida · ${esc(s.fecha_entrega_prevista)}</span>`
+      : u===1 ? `<span class="badge ambar">Próxima · ${esc(s.fecha_entrega_prevista)}</span>`
+      : `<span class="badge verde">${esc(s.fecha_entrega_prevista)}</span>`;
+    const siguiente = siguienteEtapaProduccion(s.estado_produccion);
+    return `
     <tr>
       <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
-      <td>${esc(s.aseguradora)}</td>
+      <td>${esc(s.vehiculo||'—')}</td>
+      <td>${badgeFecha}</td>
       <td>${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</td>
-      <td>${s.operaciones_bloqueadas>0?`<span class="badge rojo">${s.operaciones_bloqueadas}</span>`:'—'}</td>
-      <td>${s.retrabajos_abiertos>0?`<span class="badge ambar">${s.retrabajos_abiertos}</span>`:'—'}</td>
-      <td>${s.complementos_pendientes>0?`<span class="badge ambar">${s.complementos_pendientes}</span>`:'—'}</td>
-    </tr>`).join('')}
+      <td>${siguiente?`<button class="btn small" onclick="avanzarEtapaProduccion(${s.id},'${s.estado_produccion||''}')">→ ${esc(LABEL_PROD[siguiente])}</button>`:`<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${s.id})">Resolver</button>`}</td>
+    </tr>`;}).join('')}
   </tbody></table>
-  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) en producción. Entra a la ficha del expediente, pestaña "Producción", para la OT, operaciones, complementos y retrabajos.</p>`;
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) en producción. Entra a la ficha del expediente, pestaña "Producción", para la OT, operaciones, complementos, retrabajos y compromiso de fecha.</p>`;
 }
 
 /* ===================== VISTA: VALUACIÓN / AUTORIZACIÓN ===================== */
