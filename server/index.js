@@ -87,6 +87,8 @@ app.use('/api/whatsapp-fase-a', require('./routes/whatsappFaseA')); // solo lect
 app.use('/api/whatsapp-manual', require('./routes/whatsappBandejaManual'));
 // Ventanilla de solo lectura con clave (REPORTE_TOKEN) para que un asistente externo lea el reporte de arranque.
 app.use('/api/externo', require('./routes/reporteExterno'));
+// Actualización rápida de unidades (4-nov-2026): pegar una tabla para poner al día muchos expedientes a la vez.
+app.use('/api/actualizacion-unidades', require('./routes/actualizacionUnidades'));
 
 // ---- Frontend estático ----
 // Reporte (2-sep-2026): varios "bugs" reportados ya estaban corregidos en el código pero el navegador

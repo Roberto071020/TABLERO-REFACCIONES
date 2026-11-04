@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Actualizar unidades · Servicio Cristian</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
+<link rel="stylesheet" href="/style.css">
+<style>
+  .au-wrap{max-width:1100px;margin:0 auto;padding:16px;}
+  .au-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+  .au-head img{height:34px;}
+  .au-head h1{font-size:18px;margin:0;}
+  .au-sub{color:var(--gris-500);font-size:13px;margin:0 0 14px;}
+  textarea{width:100%;min-height:220px;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;}
+  .au-acc{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;}
+  .au-res{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;}
+  .au-chip{background:#fff;border:1px solid var(--border);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;}
+  .au-chip.err{color:var(--rojo);border-color:#fecaca;background:#fef2f2;}
+  .au-chip.ok{color:var(--verde);border-color:#bbf7d0;background:#f0fdf4;}
+  .au-tabla{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;}
+  .au-tabla th,.au-tabla td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;}
+  .au-tabla th{background:var(--gris-100);font-size:12px;color:var(--gris-700);}
+  .au-error td{background:#fef2f2;}
+  .au-e{color:var(--rojo);} .au-a{color:var(--ambar);}
+  .au-msg{padding:12px 14px;border-radius:var(--radius);margin:12px 0;font-size:14px;}
+  .au-msg.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d;}
+  .au-msg.err{background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d;}
+  .au-scroll{overflow-x:auto;}
+</style>
+</head>
+<body>
+<div class="au-wrap">
+  <div class="au-head"><img src="/img/logo.png" alt="Servicio Cristian"><h1>Actualizar unidades</h1></div>
+  <p class="au-sub">Copia la tabla de la plantilla (con la fila de títulos) desde Excel y pégala aquí. Las celdas vacías no cambian nada. Primero revisa, después confirma.</p>
+
+  <textarea id="auTexto" placeholder="SINIESTRO	ASEGURADORA	VEHICULO	PLACAS	UBICACION	AUTORIZADA	REQUIERE REFACCIONES	FECHA ENTREGA	ETAPA	CITA REINGRESO	FECHA ENTREGADA"></textarea>
+  <div class="au-acc">
+    <button class="btn" id="auValidar" type="button">1. Revisar cambios</button>
+    <button class="btn" id="auConfirmar" type="button" disabled style="background:var(--verde)">2. Confirmar y guardar</button>
+  </div>
+  <div id="auMsg"></div>
+  <div id="auResumen" class="au-res"></div>
+  <div class="au-scroll"><table class="au-tabla hidden" id="auTabla">
+    <thead><tr><th>Fila</th><th>Siniestro</th><th>Qué pasa</th><th>Cambios</th><th>Notas</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</div>
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var validado = '';
+  function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function msg(tipo, html){ $('auMsg').innerHTML = html ? '<div class="au-msg ' + tipo + '">' + html + '</div>' : ''; }
+  var ACCION = { crear:'Se crea', actualizar:'Se actualiza', sin_cambios:'Sin cambios', error:'Con error (no se guarda)' };
+
+  function pintar(d){
+    var r = d.resumen;
+    $('auResumen').innerHTML =
+      '<span class="au-chip">' + r.total + ' renglones</span>' +
+      '<span class="au-chip ok">' + r.actualizar + ' se actualizan</span>' +
+      '<span class="au-chip ok">' + r.crear + ' se crean</span>' +
+      '<span class="au-chip">' + r.sin_cambios + ' sin cambios</span>' +
+      (r.errores ? '<span class="au-chip err">' + r.errores + ' con error</span>' : '');
+    var filas = d.filas.map(function(f){
+      var cambios = f.cambios.map(function(c){ return '<div>' + esc(c.etiqueta) + ': ' + esc(c.antes) + ' → <b>' + esc(c.despues) + '</b></div>'; }).join('');
+      var notas = f.errores.map(function(e){ return '<div class="au-e">' + esc(e) + '</div>'; }).join('') +
+                  f.avisos.map(function(a){ return '<div class="au-a">' + esc(a) + '</div>'; }).join('');
+      return '<tr class="' + (f.accion === 'error' ? 'au-error' : '') + '"><td>' + f.fila + '</td><td>' + esc(f.siniestro) + '</td><td>' +
+        ACCION[f.accion] + '</td><td>' + (cambios || '—') + '</td><td>' + (notas || '') + '</td></tr>';
+    }).join('');
+    $('auTabla').querySelector('tbody').innerHTML = filas;
+    $('auTabla').classList.remove('hidden');
+  }
+
+  function enviar(url){
+    return fetch(url, { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ texto: $('auTexto').value }) })
+      .then(function(r){
+        return r.json().catch(function(){ return {}; }).then(function(d){
+          if(r.status === 401) throw new Error('Primero inicia sesión en el tablero (<a href="/">ir a iniciar sesión</a>) y regresa a esta página.');
+          if(r.status === 403) throw new Error('Solo el propietario o el jefe pueden hacer esta actualización.');
+          if(!r.ok) throw new Error(esc(d.error || ('Error ' + r.status)));
+          return d;
+        });
+      });
+  }
+
+  $('auTexto').addEventListener('input', function(){ $('auConfirmar').disabled = true; });
+  $('auValidar').addEventListener('click', function(){
+    msg('', ''); $('auConfirmar').disabled = true;
+    enviar('/api/actualizacion-unidades/validar').then(function(d){
+      pintar(d);
+      validado = $('auTexto').value;
+      var aplicables = d.resumen.actualizar + d.resumen.crear;
+      $('auConfirmar').disabled = aplicables === 0;
+      msg(d.resumen.errores ? 'err' : 'ok', d.resumen.errores
+        ? 'Revisa los renglones en rojo: esos no se van a guardar. Puedes corregirlos y volver a revisar, o confirmar solo los demás.'
+        : 'Todo se ve bien. Revisa la lista y toca "Confirmar y guardar".');
+    }).catch(function(e){ msg('err', e.message); });
+  });
+  $('auConfirmar').addEventListener('click', function(){
+    if($('auTexto').value !== validado){ msg('err', 'Cambiaste el texto: vuelve a revisar antes de guardar.'); return; }
+    $('auConfirmar').disabled = true;
+    enviar('/api/actualizacion-unidades/confirmar').then(function(d){
+      pintar(d);
+      msg('ok', 'Listo: se guardaron ' + d.aplicadas + ' unidades. Cada cambio quedó en la auditoría.');
+    }).catch(function(e){ msg('err', e.message); $('auConfirmar').disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

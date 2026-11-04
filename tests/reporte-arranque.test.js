@@ -125,3 +125,121 @@ test('REPORTE-6: si el correo falla, se reintenta en la siguiente revisión del 
   assert.equal((await reporte.intentarEnvioDiario(db, { ahora, enviar: async()=>{} })).enviado, true);
   assert.equal(intentos, 1);
 });
+
+test('REPORTE-7: sin dato de refacciones NO cuenta como "lista para iniciar"; en tránsito con piezas completas pide citar reingreso', () => {
+  crearSiniestro('RA-SINDATO', { fecha_entrega_prevista: dias(20) });                                  // requiere_refacciones = por_definir
+  crearSiniestro('RA-TRANSITO', { fecha_entrega_prevista: dias(20), requiere_refacciones:'no', ubicacion:'Tránsito' });
+  const r = reporte.calcularReporteArranque(db);
+  assert.ok(!r.listas_para_iniciar.some(u => u.numero === 'RA-SINDATO'), 'sin dato no es lista');
+  assert.ok(!r.listas_para_iniciar.some(u => u.numero === 'RA-TRANSITO'), 'en tránsito no está en el taller');
+  assert.ok(r.transito_para_citar.some(u => u.numero === 'RA-TRANSITO'));
+  assert.ok(r.sin_dato_refacciones >= 1);
+  assert.match(r.texto, /Falta capturar en el tablero/);
+  assert.match(r.texto, /citar reingreso/);
+});
+
+const actualizacion = require('../server/actualizacionUnidades');
+const TAB = '\t';
+const ENC = ['SINIESTRO','ASEGURADORA','VEHICULO','PLACAS','UBICACION','AUTORIZADA','REQUIERE REFACCIONES','FECHA ENTREGA','ETAPA','CITA REINGRESO','FECHA ENTREGADA'].join(TAB);
+const fila = (...c) => c.join(TAB);
+
+test('ACT-1: revisar muestra los cambios sin guardar nada y marca errores por renglón', () => {
+  crearSiniestro('ACT-UNO', { estado_autorizacion: null, vehiculo:'Aveo' });
+  const texto = [ENC,
+    fila('ACT-UNO','','','','TRANSITO','SI','SI','15/12/2026','Hojalatería','',''),
+    fila('ACT-MALO','','','','PISO','','','','',''),
+    fila('4.26411E+15','GNP','','','','','','','',''),
+    fila('ACT-FECHA','GNP','','','','','','31/02/2026','','','')
+  ].join('\n');
+  const r = actualizacion.analizar(db, texto);
+  const uno = r.filas.find(f => f.siniestro === 'ACT-UNO');
+  assert.equal(uno.accion, 'actualizar');
+  const campos = uno.cambios.map(c => c.campo);
+  for(const c of ['ubicacion','estado_autorizacion','requiere_refacciones','fecha_entrega_prevista','estado_produccion']) assert.ok(campos.includes(c), c);
+  assert.equal(r.filas.find(f => f.siniestro === 'ACT-MALO').accion, 'error', 'no existe y no trae aseguradora');
+  assert.match(r.filas.find(f => f.siniestro.startsWith('4.26')).errores[0], /Excel/);
+  assert.match(r.filas.find(f => f.siniestro === 'ACT-FECHA').errores[0], /fecha válida/);
+  // Nada se guardó todavía.
+  assert.notEqual(db.prepare(`SELECT ubicacion FROM siniestros WHERE numero='ACT-UNO'`).get().ubicacion, 'Tránsito');
+});
+
+test('ACT-2: confirmar guarda, crea los nuevos, registra auditoría y saca de producción a las entregadas', async () => {
+  crearSiniestro('ACT-DOS', { estado_produccion:'pintura' });
+  const texto = [ENC,
+    fila('ACT-DOS','','','','','','','','','','03/11/2026'),
+    fila('ACT-NUEVA','gnp','Jetta','xyz123','PISO','SI','NO','20/11/2026','Sin iniciar','','')
+  ].join('\n');
+  // Por HTTP, como lo usará Roberto (requiere admin/jefe).
+  cookie = '';
+  await req('POST', '/api/auth/login', { email:'daniela@serviciocristian.mx', password:'ServicioCristian2026-Reset!' });
+  assert.equal((await req('POST', '/api/actualizacion-unidades/confirmar', { texto })).status, 403, 'Daniela no puede');
+  cookie = '';
+  await req('POST', '/api/auth/login', { email:'admin@serviciocristian.mx', password:'ServicioCristian2026!' });
+  const r = await req('POST', '/api/actualizacion-unidades/confirmar', { texto });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.aplicadas, 2);
+
+  const dos = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-DOS'`).get();
+  assert.equal(dos.fecha_entrega_real, '2026-11-03');
+  assert.equal(dos.estado_produccion, 'terminado');
+  assert.equal(dos.estado_entrega, 'entregado');
+  const nueva = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-NUEVA'`).get();
+  assert.equal(nueva.aseguradora, 'GNP');
+  assert.equal(nueva.placas, 'XYZ123');
+  assert.equal(nueva.estado_autorizacion, 'autorizada');
+  assert.ok(nueva.autorizacion_fecha_respuesta && nueva.autorizador);
+  assert.equal(nueva.requiere_refacciones, 'no');
+  assert.equal(nueva.fecha_entrega_prevista, '2026-11-20');
+  assert.equal(nueva.estado_produccion, 'programado');
+  const aud = db.prepare(`SELECT COUNT(*) n FROM auditoria WHERE entidad_tipo='siniestro' AND entidad_id=? AND accion='actualizacion_masiva'`).get(dos.id).n;
+  assert.ok(aud >= 3);
+
+  // La nueva entra al panorama como lista para iniciar (en piso, no requiere refacciones).
+  const rep = reporte.calcularReporteArranque(db);
+  assert.ok(rep.listas_para_iniciar.some(u => u.numero === 'ACT-NUEVA'));
+  assert.ok(!rep.listas_para_iniciar.concat(rep.vencidas).some(u => u.numero === 'ACT-DOS'), 'entregada sale del panorama');
+
+  // Volver a pegar lo mismo no cambia nada.
+  const otra = await req('POST', '/api/actualizacion-unidades/validar', { texto });
+  assert.equal(otra.data.resumen.sin_cambios, 2);
+});
+
+test('ACT-3: GNP con 1-3 piezas a cambio queda como autosurtido; en piso cuenta como lista para iniciar sin buscar en Inpart', () => {
+  crearSiniestro('ACT-AUTO', { aseguradora:'GNP', fecha_entrega_prevista: dias(15) });
+  crearSiniestro('ACT-AUTO-TR', { aseguradora:'GNP', fecha_entrega_prevista: dias(15) });
+  crearSiniestro('ACT-GNP-5', { aseguradora:'GNP', fecha_entrega_prevista: dias(15) });
+  const enc = ['SINIESTRO','UBICACION','PIEZAS A CAMBIO'].join(TAB);
+  const texto = [enc, fila('ACT-AUTO','PISO','2'), fila('ACT-AUTO-TR','TRANSITO','3'), fila('ACT-GNP-5','PISO','5')].join('\n');
+  actualizacion.aplicar(db, texto, null);
+  const auto = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-AUTO'`).get();
+  assert.equal(auto.aseguradora_ruta_refacciones, 'autosurtido');
+  assert.equal(auto.requiere_refacciones, 'si');
+  assert.equal(auto.piezas_autorizadas_cambio, 2);
+  assert.equal(db.prepare(`SELECT aseguradora_ruta_refacciones r FROM siniestros WHERE numero='ACT-GNP-5'`).get().r, 'inpart');
+
+  const r = reporte.calcularReporteArranque(db);
+  assert.ok(r.listas_para_iniciar.some(u => u.numero === 'ACT-AUTO'), 'autosurtido en piso = piezas en taller');
+  assert.ok(!r.listas_para_iniciar.some(u => u.numero === 'ACT-AUTO-TR'), 'autosurtido en tránsito todavía no');
+  assert.ok(!r.transito_para_citar.some(u => u.numero === 'ACT-AUTO-TR'), 'en tránsito no se asume que ya tiene piezas');
+  assert.ok(!r.listas_para_iniciar.some(u => u.numero === 'ACT-GNP-5'), 'GNP 5 piezas va por Inpart y no tiene pedidos recibidos');
+  assert.match(r.texto, /\[Autosurtido\]/);
+});
+
+test('ACT-4: "AUTOSURTIDO GNP" en requiere refacciones marca la ruta sin capturar piezas y se conserva al editar la ficha', async () => {
+  crearSiniestro('ACT-AS-GNP', { aseguradora:'GNP', fecha_entrega_prevista: dias(15), autorizacion_fecha_respuesta:'2026-11-01', autorizador:'Ajustador' });
+  crearSiniestro('ACT-AS-MAP', { aseguradora:'Mapfre' });
+  const enc = ['SINIESTRO','UBICACION','REQUIERE REFACCIONES'].join(TAB);
+  const texto = [enc, fila('ACT-AS-GNP','PISO','AUTOSURTIDO GNP'), fila('ACT-AS-MAP','PISO','AUTOSURTIDO GNP')].join('\n');
+  const r = actualizacion.aplicar(db, texto, null);
+  assert.match(r.filas.find(f => f.siniestro === 'ACT-AS-MAP').errores[0], /solo aplica para GNP/);
+  const s = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-AS-GNP'`).get();
+  assert.equal(s.aseguradora_ruta_refacciones, 'autosurtido');
+  assert.equal(s.requiere_refacciones, 'si');
+  assert.ok(reporte.calcularReporteArranque(db).listas_para_iniciar.some(u => u.numero === 'ACT-AS-GNP'));
+
+  cookie = '';
+  await req('POST', '/api/auth/login', { email:'admin@serviciocristian.mx', password:'ServicioCristian2026!' });
+  const p = await req('PATCH', '/api/siniestros/' + s.id, { vehiculo:'Aveo Rojo' });
+  assert.equal(p.status, 200, JSON.stringify(p.data));
+  assert.equal(db.prepare(`SELECT aseguradora_ruta_refacciones r FROM siniestros WHERE id=?`).get(s.id).r, 'autosurtido', 'editar la ficha no la regresa a "por confirmar"');
+});

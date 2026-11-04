@@ -40,6 +40,7 @@ function etiquetaUnidad(u){
   let t = partes.join(' · ');
   if(u.ot_numero) t += ` (OT ${u.ot_numero})`;
   else if(u.numero) t += ` (${u.numero})`;
+  if(u.es_autosurtido) t += ' [Autosurtido]';
   return t;
 }
 
@@ -52,6 +53,9 @@ function calcularReporteArranque(db, ahora = new Date()){
   const reingresos = panorama.filter(u => u.reingreso_citado);
   const rapidasSinTocar = panorama.filter(u => u.prioridad === 2);
   const listasParaIniciar = panorama.filter(u => u.prioridad === 3 || u.prioridad === 3.5);
+  const transitoParaCitar = panorama.filter(u => u.en_transito && u.refacciones_completas && !u.cita_fecha);
+  const sinFechaEntrega = panorama.filter(u => !u.fecha_entrega_prevista).length;
+  const sinDatoRefacciones = panorama.filter(u => u.sin_dato_refacciones).length;
 
   // Piezas vencidas: mismo criterio que el contador "Piezas vencidas" del resumen diario de Daniela.
   const piezasVencidas = db.prepare(`
@@ -80,7 +84,8 @@ function calcularReporteArranque(db, ahora = new Date()){
     fecha_texto: fechaLarga(ahora),
     en_proceso: panorama.length,
     vencidas, vencen_pronto: vencenPronto, reingresos, rapidas_sin_tocar: rapidasSinTocar,
-    listas_para_iniciar: listasParaIniciar, piezas_vencidas: piezasVencidas,
+    listas_para_iniciar: listasParaIniciar, transito_para_citar: transitoParaCitar, piezas_vencidas: piezasVencidas,
+    sin_fecha_entrega: sinFechaEntrega, sin_dato_refacciones: sinDatoRefacciones,
     complementos_pendientes: complementosPendientes, pendientes_calidad: pendientesCalidad
   };
   datos.texto = textoWhatsApp(datos);
@@ -103,6 +108,7 @@ function textoWhatsApp(d){
   if(d.vencen_pronto.length) b.push(`*🟠 Vencen hoy o mañana (${d.vencen_pronto.length})*\n` + lista(d.vencen_pronto, u => ` – ${ddmm(u.fecha_entrega_prevista)}`));
   if(d.reingresos.length) b.push(`*🚗 Reingresos con cita (${d.reingresos.length})*\n` + lista(d.reingresos));
   if(d.listas_para_iniciar.length) b.push(`*🟢 Listas para iniciar – asignar hoy (${d.listas_para_iniciar.length})*\n` + lista(d.listas_para_iniciar));
+  if(d.transito_para_citar && d.transito_para_citar.length) b.push(`*🚙 En tránsito con piezas completas – citar reingreso (${d.transito_para_citar.length})*\n` + lista(d.transito_para_citar));
   if(d.rapidas_sin_tocar.length) b.push(`*⚡ Reparaciones rápidas sin tocar (${d.rapidas_sin_tocar.length})*\n` + lista(d.rapidas_sin_tocar));
 
   if(d.piezas_vencidas.length){
@@ -118,8 +124,14 @@ function textoWhatsApp(d){
   if(d.pendientes_calidad) otros.push(`• Terminadas esperando revisión de calidad: ${d.pendientes_calidad}`);
   if(otros.length) b.push(`*📝 Otros pendientes*\n` + otros.join('\n'));
 
+  // Datos que faltan capturar: sin ellos el reporte no puede avisar a tiempo (vencidas, listas para iniciar).
+  const faltan = [];
+  if(d.sin_fecha_entrega) faltan.push(`• Sin fecha de entrega: ${d.sin_fecha_entrega}`);
+  if(d.sin_dato_refacciones) faltan.push(`• Sin indicar si requiere refacciones: ${d.sin_dato_refacciones}`);
+  if(faltan.length) b.push(`*📋 Falta capturar en el tablero*\n` + faltan.join('\n'));
+
   const hayAlgo = d.vencidas.length || d.vencen_pronto.length || d.reingresos.length || d.listas_para_iniciar.length
-    || d.rapidas_sin_tocar.length || d.piezas_vencidas.length || otros.length;
+    || d.rapidas_sin_tocar.length || d.piezas_vencidas.length || otros.length || (d.transito_para_citar && d.transito_para_citar.length);
   if(!hayAlgo) b.push('✅ Sin vencidos ni bloqueos registrados hoy.');
 
   b.push('_Generado por SC Control_');

@@ -18,8 +18,12 @@ function calcularPanoramaBeto(db){
       otRapidaSinTocar = ops.length > 0 && ops.length <= 2 && ops.every(o => o.estado === 'programado');
     }
     const pedidos = db.prepare(`SELECT id FROM pedidos WHERE siniestro_id = ?`).all(s.id);
-    let refaccionesCompletas = s.requiere_refacciones !== 'si';
-    if(!refaccionesCompletas && pedidos.length){
+    // Ajuste 4-nov-2026 (Roberto): antes cualquier valor distinto de 'si' (incluido 'por_definir', el valor
+    // por omisión) contaba como "refacciones completas", y TODAS las unidades sin ese dato aparecían como
+    // "listas para iniciar". Ahora solo 'no' (no requiere) o 'si' con todas las piezas recibidas cuentan.
+    const sinDatoRefacciones = s.requiere_refacciones !== 'si' && s.requiere_refacciones !== 'no';
+    let refaccionesCompletas = s.requiere_refacciones === 'no';
+    if(s.requiere_refacciones === 'si' && pedidos.length){
       refaccionesCompletas = pedidos.every(p=>{
         const piezas = db.prepare(`SELECT estatus FROM piezas WHERE pedido_id = ?`).all(p.id);
         return piezas.length > 0 && piezas.every(z => z.estatus === 'Recibida físicamente');
@@ -31,13 +35,24 @@ function calcularPanoramaBeto(db){
     // expediente ya recibidas físicamente (sin llegar al 100% que ya cubre refaccionesCompletas arriba).
     const pctPiezas = s.requiere_refacciones === 'si' ? porcentajePiezasRecibidas(db, s.id) : null;
     const piezasSuficientes = !refaccionesCompletas && pctPiezas !== null && pctPiezas >= 0.8;
-    const enPiso = !s.estado_produccion || s.estado_produccion === 'programado';
+    // Ubicación Piso/Tránsito (campo ya existente, capturado en la ficha): una unidad en tránsito no está
+    // físicamente en el taller, así que no puede estar "lista para iniciar" aunque tenga piezas completas.
+    const enTransito = /^tr/i.test(String(s.ubicacion || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+    const enPiso = !enTransito && (!s.estado_produccion || s.estado_produccion === 'programado');
+    // Autosurtido GNP (1-3 piezas a cambio, ruta ya calculada por calcularRutaAseguradora): sus piezas NUNCA
+    // pasan por Inpart, así que no se buscan en pedidos. Roberto (4-nov-2026): "por lo regular ingresa ya
+    // cuando tiene sus piezas listas en taller" -> si ya está en piso (o se registró su reingreso), se
+    // considera con piezas completas; mientras siga en tránsito, no.
+    const esAutosurtido = s.aseguradora_ruta_refacciones === 'autosurtido';
+    if(esAutosurtido){
+      refaccionesCompletas = !enTransito || !!s.autosurtido_reingreso_en;
+    }
     const vencidaOProxima = s.fecha_entrega_prevista && (s.fecha_entrega_prevista <= manana);
     // Modificación 1(a): "reingreso citado con fecha de entrega" separado de "unidad en piso" -- hoy
     // Beto no distingue entre una unidad que ya está físicamente en el taller (fecha_admision capturada)
     // y una que solo tiene cita agendada para reingresar (circulando, todavía no llega).
-    const reingresoCitado = s.ingreso_tipo === 'circulando' && s.cita_fecha && !s.fecha_admision;
-    const situacion = reingresoCitado ? 'reingreso_citado' : (s.fecha_admision ? 'en_piso' : (enPiso ? 'en_piso' : 'en_proceso'));
+    const reingresoCitado = (s.ingreso_tipo === 'circulando' || enTransito) && s.cita_fecha && !s.fecha_admision;
+    const situacion = reingresoCitado ? 'reingreso_citado' : enTransito ? 'en_transito' : (s.fecha_admision ? 'en_piso' : (enPiso ? 'en_piso' : 'en_proceso'));
     const diasEnTaller = s.creado_en ? Math.floor((Date.now() - new Date(s.creado_en.replace(' ','T')+'Z').getTime()) / 86400000) : null;
 
     let prioridad = 4, motivo = 'En proceso normal, dentro de fecha.';
@@ -50,7 +65,10 @@ function calcularPanoramaBeto(db){
       fecha_entrega_prevista:s.fecha_entrega_prevista, estado_produccion:s.estado_produccion,
       entrega_compromiso_gnp: !!s.entrega_compromiso_gnp,
       ot_numero: otMasReciente ? otMasReciente.numero : null, prioridad, motivo,
-      situacion, reingreso_citado: !!reingresoCitado, dias_en_taller: diasEnTaller };
+      situacion, reingreso_citado: !!reingresoCitado, dias_en_taller: diasEnTaller,
+      en_transito: enTransito, refacciones_completas: refaccionesCompletas, sin_dato_refacciones: sinDatoRefacciones && !esAutosurtido,
+      es_autosurtido: esAutosurtido,
+      cita_fecha: s.cita_fecha || null };
   });
 
   // Modificación 1(c): orden por antigüedad/urgencia en vez de solo el orden físico en que llegan las

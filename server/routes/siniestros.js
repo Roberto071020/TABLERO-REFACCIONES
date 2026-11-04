@@ -356,8 +356,11 @@ router.patch('/:id', requireAuth, (req, res)=>{
   // Documento Maestro / Fase D: recalcular la ruta de refacciones cada vez que cambie la aseguradora
   // o el número de piezas autorizadas a cambio (regla GNP 1-3 = autosurtido obligatorio).
   const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
-  nuevo.aseguradora_ruta_refacciones = ruta.ruta;
-  nuevo.aseguradora_regla_aplicada = ruta.regla;
+  // 4-nov-2026: una unidad GNP marcada directamente como "Autosurtido GNP" (actualización masiva, sin
+  // capturar el número de piezas) conserva su ruta en vez de regresar a "pendiente de confirmar".
+  const conservarAutosurtido = ruta.ruta === 'pendiente_confirmar' && anterior.aseguradora_ruta_refacciones === 'autosurtido' && nuevo.aseguradora === 'GNP';
+  nuevo.aseguradora_ruta_refacciones = conservarAutosurtido ? 'autosurtido' : ruta.ruta;
+  nuevo.aseguradora_regla_aplicada = conservarAutosurtido ? anterior.aseguradora_regla_aplicada : ruta.regla;
 
   db.prepare(`UPDATE siniestros SET numero=?,aseguradora=?,vehiculo=?,anio_modelo=?,placas=?,vin=?,fecha_ingreso=?,ubicacion=?,responsable=?,estatus_general=?,notas=?,completo=?,
       cliente_nombre=?,cliente_telefono=?,cliente_correo=?,cliente_notas=?,orden_admision=?,canal_origen=?,etapa_actual=?,prioridad=?,
