@@ -41,7 +41,23 @@ function withCookie(opts = {}) {
   if (cookie) headers['Cookie'] = cookie;
   return { ...opts, headers };
 }
+// Fotos obligatorias por etapa (4-nov-2026): estas pruebas son anteriores a esa regla y cambian la etapa de
+// producción para probar OTRAS cosas. Para no reescribirlas una por una, antes de cada PATCH que cambie
+// estado_produccion se registra una foto de prueba de cada etapa obligatoria. La regla en sí se prueba,
+// sin este atajo, en tests/fotos.test.js.
+function fotosDePruebaSiCambiaEtapa(method, url, body){
+  const m = method === 'PATCH' && /^\/api\/siniestros\/(\d+)$/.exec(url);
+  if(!m || !body || body.estado_produccion === undefined) return;
+  const dbF = require('../server/db');
+  require('../server/fotos').asegurarEsquemaFotos(dbF);
+  for(const etapa of ['mecanica','en_laminado','preparacion','pintura','armado','terminado']){
+    const ya = dbF.prepare(`SELECT 1 FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='foto' AND etapa=?`).get(Number(m[1]), etapa);
+    if(!ya) dbF.prepare(`INSERT INTO archivos (entidad_tipo, entidad_id, tipo, etapa, nombre_original, nombre_almacenado, mime, tamano)
+      VALUES ('siniestro', ?, 'foto', ?, 'prueba.jpg', 'no-existe.jpg', 'image/jpeg', 0)`).run(Number(m[1]), etapa);
+  }
+}
 async function req(method, url, body) {
+  fotosDePruebaSiCambiaEtapa(method, url, body);
   const res = await fetch(BASE + url, withCookie({ method, body: body ? JSON.stringify(body) : undefined }));
   const setCookie = res.headers.get('set-cookie');
   if (setCookie) cookie = setCookie.split(';')[0];

@@ -1106,7 +1106,7 @@ async function viewSiniestro(id){
   const esAtencionCliente = currentUser && (currentUser.rol==='atencion_cliente' || currentUser.rol==='admin');
   const subtabs = [
     ...(esAtencionCliente ? [['cliente','Cliente']] : []),
-    ['admision','Admisión / técnica'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],['produccion','Producción'],['calidad','Calidad / entrega'],
+    ['admision','Admisión / técnica'],['fotos','📷 Fotos'],['expediente','Expediente digital'],['valuacion','Valuación / autorización'],['produccion','Producción'],['calidad','Calidad / entrega'],
     ['pedidos','Pedidos'],['piezas','Piezas'],['incidencias','Incidencias'],['comunicaciones','Comunicaciones'],['archivos','Archivos'],['timeline','Línea de tiempo']
   ];
   const ESTATUS_OPERATIVO = KANBAN_COLS;
@@ -1214,6 +1214,8 @@ async function viewSiniestro(id){
     </tbody></table>
     ${puedeAdmision?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormAdmision(${id})">Capturar / editar admisión</button> <button class="btn small secondary" onclick="abrirMensajeBienvenida(${id})">Mensaje de bienvenida (WhatsApp)</button> <button class="btn small secondary" onclick="imprimirInventarioFisico(${id})">Imprimir inventario para el cliente</button></div>`:''}
 
+    <h4 style="margin-top:14px;">📷 Fotos de recepción <span class="badge ${archivosDisp.filter(a=>a.tipo==='foto'&&a.etapa==='recepcion').length?'verde':'gris'}">${archivosDisp.filter(a=>a.tipo==='foto'&&a.etapa==='recepcion').length}</span></h4>
+    <div class="fg-botones"><button class="btn small" onclick="FotosSC.abrirSubirFotos(${id}, 'recepcion')">+ Agregar fotos de recepción</button> <button class="btn small secondary" onclick="setSubtabSiniestro('fotos')">Ver todas las fotos</button></div>
     <h4 style="margin-top:14px;">Inventario y orden de admisión cargados</h4>
     ${(()=>{ const docsAdmision = archivosDisp.filter(a=>['inventario_fisico','orden_admision'].includes(a.tipo)); return docsAdmision.length===0 ? '<div class="empty">Sin inventario ni orden de admisión cargados todavía.</div>' :
       `<table><thead><tr><th>Documento</th><th>Archivo</th><th>Subido</th></tr></thead><tbody>
@@ -1637,6 +1639,9 @@ async function viewSiniestro(id){
       <td>${!c.respuesta_texto?`<button class="btn small secondary" onclick="abrirFormRespuesta(${c.id})">Registrar respuesta</button>`:''}</td>
     </tr>`).join('')}
     </tbody></table>`;
+  } else if(state.subtabSiniestro==='fotos'){
+    // Fotos de la unidad (4-nov-2026): recepción y avance por etapa, visibles y descargables para todos -- ver public/fotos.js.
+    body = await FotosSC.renderFotosSiniestro(id);
   } else if(state.subtabSiniestro==='archivos'){
     const archivos = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id);
     const papelera = await api('GET','/api/archivos?entidad_tipo=siniestro&entidad_id='+id+'&incluir_eliminados=1');
@@ -2342,9 +2347,8 @@ async function avanzarEtapaProduccion(siniestroId, estadoActual){
   const siguiente = siguienteEtapaProduccion(estadoActual);
   if(!siguiente) return;
   try{
-    await api('PATCH','/api/siniestros/'+siniestroId, { estado_produccion: siguiente });
-    toast('Etapa actualizada.', 'success');
-    render();
+    // Fotos obligatorias por etapa (4-nov-2026): si faltan, se abre la ventana de fotos y se reintenta solo.
+    await FotosSC.cambiarEtapaConFotos(siniestroId, { estado_produccion: siguiente });
   }catch(e){}
 }
 function abrirFormEtapaProduccion(siniestroId){
@@ -2386,9 +2390,7 @@ async function guardarEtapaProduccion(siniestroId){
     if(fechaInput && !fechaInput.disabled) body.fecha_entrega_prevista = fechaInput.value;
     const compromisoInput = document.getElementById('fprod_compromiso_gnp');
     if(compromisoInput) body.entrega_compromiso_gnp = compromisoInput.checked ? 1 : 0;
-    await api('PATCH','/api/siniestros/'+siniestroId, body);
-    toast('Etapa de producción actualizada.', 'success');
-    closeModal(); render();
+    await FotosSC.cambiarEtapaConFotos(siniestroId, body);
   }catch(e){}
 }
 
@@ -3565,6 +3567,8 @@ function formNuevoExpediente(){
         <div class="field" id="fx_orden_admision_wrap"><label>Orden de admisión (archivo)</label><input type="file" id="fx_orden_admision_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
         <div class="field"><label>Inventario físico/fotográfico (archivo)</label><input type="file" id="fx_inventario_file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div>
       </div>
+      <div class="field"><label>📷 Fotos de recepción (puedes elegir varias)</label><input type="file" id="fx_fotos_recepcion" accept="image/*" multiple>
+        <p class="subtle" style="margin:4px 0 0;">Quedan visibles para todo el equipo en la pestaña Fotos de la unidad. También se pueden agregar después.</p></div>
       <p class="subtle" id="fx_grua_hint" style="display:none;">Para ingreso por grúa se requiere antes de guardar: llaves entregadas, inventario y, si no es particular, orden de admisión.</p>
     </details>
     <p class="subtle">* Campos obligatorios. El resto se puede completar después conforme avance el caso (aquí mismo, o más adelante desde el expediente).</p>
@@ -3629,6 +3633,12 @@ async function guardarExpediente(){
   }
   if(ordenFile && !particular) await subirArchivoDirecto(ordenFile, s.id, 'orden_admision');
   if(inventarioFile) await subirArchivoDirecto(inventarioFile, s.id, 'inventario_fisico');
+  const fotosRecepcion = Array.from((document.getElementById('fx_fotos_recepcion') || {}).files || []);
+  if(fotosRecepcion.length){
+    toast(`Subiendo ${fotosRecepcion.length} foto(s) de recepción…`, 'info');
+    const r = await FotosSC.subirVarias(fotosRecepcion, s.id, 'recepcion');
+    if(r.fallas) toast(`${r.fallas} foto(s) no se pudieron subir; agrégalas desde la pestaña Fotos.`, 'error', 7000);
+  }
   toast('Expediente registrado.', 'success');
   closeModal(); goSiniestro(s.id);
 }

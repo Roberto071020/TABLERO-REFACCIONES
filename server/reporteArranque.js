@@ -86,6 +86,7 @@ function calcularReporteArranque(db, ahora = new Date()){
     vencidas, vencen_pronto: vencenPronto, reingresos, rapidas_sin_tocar: rapidasSinTocar,
     listas_para_iniciar: listasParaIniciar, transito_para_citar: transitoParaCitar, piezas_vencidas: piezasVencidas,
     sin_fecha_entrega: sinFechaEntrega, sin_dato_refacciones: sinDatoRefacciones,
+    aviso_espacio: (()=>{ try{ return require('./fotos').avisoEspacio(db); }catch(e){ return []; } })(),
     complementos_pendientes: complementosPendientes, pendientes_calidad: pendientesCalidad
   };
   datos.texto = textoWhatsApp(datos);
@@ -129,6 +130,7 @@ function textoWhatsApp(d){
   if(d.sin_fecha_entrega) faltan.push(`• Sin fecha de entrega: ${d.sin_fecha_entrega}`);
   if(d.sin_dato_refacciones) faltan.push(`• Sin indicar si requiere refacciones: ${d.sin_dato_refacciones}`);
   if(faltan.length) b.push(`*📋 Falta capturar en el tablero*\n` + faltan.join('\n'));
+  if(d.aviso_espacio && d.aviso_espacio.length) b.push(`*⚠️ Espacio para fotos*\n` + d.aviso_espacio.join('\n'));
 
   const hayAlgo = d.vencidas.length || d.vencen_pronto.length || d.reingresos.length || d.listas_para_iniciar.length
     || d.rapidas_sin_tocar.length || d.piezas_vencidas.length || otros.length || (d.transito_para_citar && d.transito_para_citar.length);

@@ -312,6 +312,14 @@ router.patch('/:id', requireAuth, (req, res)=>{
   if(ESTADOS_VALUACION_CON_ENVIO.includes(nuevo.estado_valuacion) && !(nuevo.valuacion_fecha_envio && String(nuevo.valuacion_fecha_envio).trim())){
     return res.status(400).json({ error:'Indica la fecha de envío de la valuación antes de marcarla en este estado.' });
   }
+  // Fotos obligatorias por etapa (4-nov-2026, Roberto): no se puede salir de mecánica, hojalatería,
+  // preparación, pintura o armado sin al menos una foto de esa etapa, ni marcar Terminado sin foto de la
+  // unidad terminada. La pantalla abre la ventana para subirlas y vuelve a intentar sola (public/fotos.js).
+  if(nuevo.estado_produccion !== anterior.estado_produccion){
+    const faltan = require('../fotos').fotosFaltantesCambioEtapa(db, anterior.id, anterior.estado_produccion, nuevo.estado_produccion);
+    if(faltan) return res.status(409).json({ error: faltan.mensaje, codigo:'FOTOS_REQUERIDAS', etapa: faltan.etapa, etiqueta: faltan.etiqueta });
+  }
+
   // Tabla 11: "criterio de salida: alcance autorizado y restricciones conocidas." Autorizada/parcial exige
   // quién autorizó y cuándo respondió (mismos datos que pide la tabla: "fecha envío/respuesta, autorizador").
   if(['autorizada','parcial'].includes(nuevo.estado_autorizacion)){

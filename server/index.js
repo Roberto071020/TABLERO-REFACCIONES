@@ -11,6 +11,7 @@ require('./resetEmergenciaDaniela').resetEmergenciaDaniela(); // idempotente: co
 require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: respaldo diario + rotación; no-op en pruebas
 require('./whatsappScheduler').iniciarSchedulerWhatsApp(db); // punto 1 (quinta revisión, 3-sep-2026): barrido independiente, no-op en pruebas
 require('./reporteArranque').iniciarReporteArranque(db); // 4-nov-2026: correo diario 7:30 con el reporte de arranque; inerte sin REPORTE_ARRANQUE_CORREO + Gmail, no-op en pruebas
+require('./fotos').iniciarLimpiezaFotos(db); // 4-nov-2026: borra fotos de unidades entregadas hace +12 meses, o las más antiguas si el disco pasa de 85%; no-op en pruebas
 if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendientesExistentes(db); } // hallazgo de Daniela 26-ago-2026: limpieza unica de correos automaticos duplicados ya acumulados
 if(!process.env.TEST_DB_PATH){ require('./utils').corregirBorradoresAutomaticosExistentes(db); } // hallazgo de Daniela 27-ago-2026: corrige destinatario/copia/cuerpo de los borradores automaticos ya existentes
 if(!process.env.TEST_DB_PATH){ require('./utils').normalizarFechasCreacionPedidosExistentes(db); } // hallazgo real 27-ago-2026: normaliza fecha_creacion de pedidos importados en DD/MM/AAAA a ISO (la ventana operativa del 1-jun-2026 los ocultaba por error de formato)
@@ -89,6 +90,8 @@ app.use('/api/whatsapp-manual', require('./routes/whatsappBandejaManual'));
 app.use('/api/externo', require('./routes/reporteExterno'));
 // Actualización rápida de unidades (4-nov-2026): pegar una tabla para poner al día muchos expedientes a la vez.
 app.use('/api/actualizacion-unidades', require('./routes/actualizacionUnidades'));
+// Fotos de la unidad (4-nov-2026): recepción y avance por etapa, visibles y descargables para todos.
+app.use('/api/fotos', require('./routes/fotos'));
 
 // ---- Frontend estático ----
 // Reporte (2-sep-2026): varios "bugs" reportados ya estaban corregidos en el código pero el navegador
