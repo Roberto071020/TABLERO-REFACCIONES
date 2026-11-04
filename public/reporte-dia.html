@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reporte del día · Servicio Cristian</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/img/favicon-180.png">
+<link rel="stylesheet" href="/style.css">
+<style>
+  .rd-wrap{max-width:640px;margin:0 auto;padding:16px;}
+  .rd-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+  .rd-head img{height:34px;}
+  .rd-head h1{font-size:17px;margin:0;}
+  .rd-head small{display:block;color:var(--gris-500);font-weight:500;font-size:12px;}
+  .rd-acciones{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+  .rd-acciones .btn{flex:1 1 auto;font-size:15px;padding:13px 16px;text-align:center;text-decoration:none;}
+  .rd-wa{background:#16a34a !important;}
+  .rd-gris{background:#fff !important;color:var(--gris-900) !important;border:1px solid var(--border) !important;}
+  .rd-texto{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:16px;white-space:pre-wrap;
+    font-size:14px;line-height:1.5;box-shadow:var(--shadow-sm);word-wrap:break-word;}
+  .rd-aviso{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:14px;}
+  .rd-nota{color:var(--gris-500);font-size:12px;margin-top:10px;}
+</style>
+</head>
+<body>
+<div class="rd-wrap">
+  <div class="rd-head">
+    <img src="/img/logo.png" alt="Servicio Cristian">
+    <div><h1>Reporte de arranque del día</h1><small id="rdFecha">Cargando…</small></div>
+  </div>
+
+  <div id="rdAcciones" class="rd-acciones hidden">
+    <a id="rdWa" class="btn rd-wa" href="#" target="_blank" rel="noopener">Compartir por WhatsApp</a>
+    <button id="rdCopiar" class="btn rd-gris" type="button">Copiar texto</button>
+    <button id="rdRecargar" class="btn rd-gris" type="button">Actualizar</button>
+  </div>
+
+  <div id="rdTexto" class="rd-texto hidden"></div>
+  <div id="rdAviso" class="rd-aviso hidden"></div>
+  <p class="rd-nota">Al tocar "Compartir por WhatsApp" se abre WhatsApp con el texto ya escrito; solo elige el grupo y envía.</p>
+</div>
+
+<script>
+(function(){
+  var texto = '';
+  var $ = function(id){ return document.getElementById(id); };
+
+  function mostrarAviso(html){
+    $('rdAviso').innerHTML = html;
+    $('rdAviso').classList.remove('hidden');
+    $('rdTexto').classList.add('hidden');
+    $('rdAcciones').classList.add('hidden');
+  }
+
+  function cargar(){
+    $('rdFecha').textContent = 'Cargando…';
+    fetch('/api/reportes/arranque-dia', { credentials: 'same-origin' })
+      .then(function(r){
+        if(r.status === 401){ throw { login: true }; }
+        if(!r.ok){ throw new Error('HTTP ' + r.status); }
+        return r.json();
+      })
+      .then(function(d){
+        texto = d.texto || '';
+        $('rdFecha').textContent = d.fecha_texto || d.fecha || '';
+        $('rdTexto').textContent = texto;
+        $('rdTexto').classList.remove('hidden');
+        $('rdAviso').classList.add('hidden');
+        $('rdAcciones').classList.remove('hidden');
+        $('rdWa').href = 'https://wa.me/?text=' + encodeURIComponent(texto);
+      })
+      .catch(function(e){
+        $('rdFecha').textContent = '';
+        if(e && e.login){
+          mostrarAviso('Primero inicia sesión en el tablero. <a href="/">Ir a iniciar sesión</a> y luego regresa a esta página.');
+        } else {
+          mostrarAviso('No se pudo cargar el reporte. Revisa tu conexión y toca "Actualizar".');
+          $('rdAcciones').classList.remove('hidden');
+        }
+      });
+  }
+
+  $('rdCopiar').addEventListener('click', function(){
+    var listo = function(){ $('rdCopiar').textContent = '¡Copiado!'; setTimeout(function(){ $('rdCopiar').textContent = 'Copiar texto'; }, 1800); };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(texto).then(listo, function(){ seleccionar(); });
+    } else { seleccionar(); }
+  });
+  function seleccionar(){
+    var rango = document.createRange(); rango.selectNodeContents($('rdTexto'));
+    var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(rango);
+  }
+  $('rdRecargar').addEventListener('click', cargar);
+  cargar();
+})();
+</script>
+</body>
+</html>
