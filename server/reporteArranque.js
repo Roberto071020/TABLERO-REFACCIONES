@@ -44,9 +44,53 @@ function etiquetaUnidad(u){
   return t;
 }
 
+// Panorama general del taller (5-nov-2026, Roberto): cuántas unidades hay en patio y circulando, en qué
+// estado, y cómo van las fechas promesa. "Activa" = no archivada, sin entrega registrada y no cerrada.
+const ETIQUETA_ETAPA = { mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura',
+  armado:'Armado', pulido:'Pulido', lavado:'Lavado' };
+function calcularPanoramaTaller(db, hoy){
+  const activas = db.prepare(`SELECT id, ubicacion, estado_autorizacion, estado_produccion, requiere_refacciones,
+      aseguradora_ruta_refacciones, cita_fecha, fecha_entrega_prevista
+    FROM siniestros WHERE archivado = 0 AND (fecha_entrega_real IS NULL OR fecha_entrega_real = '')
+      AND COALESCE(estatus_general,'') != 'Cerrado'`).all();
+  const enTransito = u => /^tr/i.test(String(u.ubicacion || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+  const autorizada = u => ['autorizada','parcial'].includes(u.estado_autorizacion);
+  const piezasCompletas = u => {
+    if(u.requiere_refacciones === 'no') return true;
+    if(u.requiere_refacciones !== 'si' || u.aseguradora_ruta_refacciones === 'autosurtido') return false;
+    const f = db.prepare(`SELECT COUNT(*) total, SUM(CASE WHEN z.estatus = 'Recibida físicamente' THEN 1 ELSE 0 END) rec
+      FROM piezas z JOIN pedidos p ON p.id = z.pedido_id WHERE p.siniestro_id = ? AND z.estatus != 'Cancelada'`).get(u.id);
+    return f.total > 0 && f.rec === f.total;
+  };
+  const patio = activas.filter(u => !enTransito(u));
+  const circulando = activas.filter(enTransito);
+  const etapas = {};
+  const enReparacion = patio.filter(u => autorizada(u) && ETIQUETA_ETAPA[u.estado_produccion]);
+  enReparacion.forEach(u => { etapas[u.estado_produccion] = (etapas[u.estado_produccion] || 0) + 1; });
+  const conFecha = activas.filter(u => u.fecha_entrega_prevista && u.estado_produccion !== 'terminado');
+  const en3 = new Date(Date.parse(hoy + 'T12:00:00Z') + 3 * 86400000).toISOString().slice(0, 10);
+  const circCompletas = circulando.filter(u => !u.cita_fecha && piezasCompletas(u));
+  return {
+    patio: patio.length,
+    por_autorizar: patio.filter(u => !autorizada(u)).length,
+    sin_iniciar: patio.filter(u => autorizada(u) && (!u.estado_produccion || u.estado_produccion === 'programado')).length,
+    en_reparacion: enReparacion.length,
+    por_etapa: Object.keys(ETIQUETA_ETAPA).filter(e => etapas[e]).map(e => `${ETIQUETA_ETAPA[e]} ${etapas[e]}`),
+    detenidas: patio.filter(u => u.estado_produccion === 'detenido').length,
+    terminadas: patio.filter(u => u.estado_produccion === 'terminado').length,
+    circulando: circulando.length,
+    con_cita: circulando.filter(u => u.cita_fecha).length,
+    piezas_completas_sin_cita: circCompletas.length,
+    esperando_piezas: circulando.filter(u => !u.cita_fecha).length - circCompletas.length,
+    vencidas: conFecha.filter(u => u.fecha_entrega_prevista < hoy).length,
+    vencen_3_dias: conFecha.filter(u => u.fecha_entrega_prevista >= hoy && u.fecha_entrega_prevista <= en3).length
+  };
+}
+
 function calcularReporteArranque(db, ahora = new Date()){
   const hoy = fechaMexico(ahora);
   const panorama = calcularPanoramaBeto(db);
+  const taller = calcularPanoramaTaller(db, hoy);
 
   const vencidas = panorama.filter(u => u.fecha_entrega_prevista && u.fecha_entrega_prevista < hoy);
   const vencenPronto = panorama.filter(u => u.prioridad === 1 && !(u.fecha_entrega_prevista < hoy));
@@ -54,7 +98,11 @@ function calcularReporteArranque(db, ahora = new Date()){
   const rapidasSinTocar = panorama.filter(u => u.prioridad === 2);
   const listasParaIniciar = panorama.filter(u => u.prioridad === 3 || u.prioridad === 3.5);
   const transitoParaCitar = panorama.filter(u => u.en_transito && u.refacciones_completas && !u.cita_fecha);
-  const sinFechaEntrega = panorama.filter(u => !u.fecha_entrega_prevista).length;
+  // Fecha de entrega obligatoria (Roberto, 5-nov-2026): solo para unidades en piso, autorizadas y con piezas
+  // listas (sin refacciones, autosurtido en piso, completas o 60%+ surtidas). Circulando o esperando
+  // refacciones todavía no la necesitan. La captura Beto (o Alejandra/Daniela).
+  const faltaFechaEntrega = panorama.filter(u => !u.fecha_entrega_prevista && !u.en_transito && !u.reingreso_citado
+    && (u.refacciones_completas || u.piezas_suficientes));
   const sinDatoRefacciones = panorama.filter(u => u.sin_dato_refacciones).length;
 
   // Piezas vencidas: mismo criterio que el contador "Piezas vencidas" del resumen diario de Daniela.
@@ -85,7 +133,8 @@ function calcularReporteArranque(db, ahora = new Date()){
     en_proceso: panorama.length,
     vencidas, vencen_pronto: vencenPronto, reingresos, rapidas_sin_tocar: rapidasSinTocar,
     listas_para_iniciar: listasParaIniciar, transito_para_citar: transitoParaCitar, piezas_vencidas: piezasVencidas,
-    sin_fecha_entrega: sinFechaEntrega, sin_dato_refacciones: sinDatoRefacciones,
+    taller,
+    falta_fecha_entrega: faltaFechaEntrega, sin_dato_refacciones: sinDatoRefacciones,
     aviso_espacio: (()=>{ try{ return require('./fotos').avisoEspacio(db); }catch(e){ return []; } })(),
     complementos_pendientes: complementosPendientes, pendientes_calidad: pendientesCalidad
   };
@@ -103,13 +152,30 @@ function lista(unidades, detalle){
 function textoWhatsApp(d){
   const b = [];
   b.push(`*🔧 ARRANQUE DEL DÍA – ${d.fecha_texto}*`);
-  b.push(`Unidades autorizadas en proceso: *${d.en_proceso}*`);
+  if(d.taller){
+    const t = d.taller;
+    const patio = [`🅿️ *En patio: ${t.patio}*`];
+    if(t.por_autorizar) patio.push(`• Por autorizar: ${t.por_autorizar}`);
+    if(t.sin_iniciar) patio.push(`• Autorizadas sin iniciar: ${t.sin_iniciar}`);
+    if(t.en_reparacion) patio.push(`• En reparación: ${t.en_reparacion}${t.por_etapa.length ? ' (' + t.por_etapa.join(' · ') + ')' : ''}`);
+    if(t.detenidas) patio.push(`• Detenidas: ${t.detenidas}`);
+    if(t.terminadas) patio.push(`• Terminadas por entregar: ${t.terminadas}`);
+    const circ = [`🚗 *Circulando: ${t.circulando}*`];
+    if(t.esperando_piezas) circ.push(`• Esperando piezas: ${t.esperando_piezas}`);
+    if(t.piezas_completas_sin_cita) circ.push(`• Piezas completas, falta citar: ${t.piezas_completas_sin_cita}`);
+    if(t.con_cita) circ.push(`• Con cita de reingreso: ${t.con_cita}`);
+    const fechas = `⏰ *Fechas promesa:* ${t.vencidas} vencida${t.vencidas === 1 ? '' : 's'} · ${t.vencen_3_dias} vence${t.vencen_3_dias === 1 ? '' : 'n'} en los próximos 3 días`;
+    b.push(`*📊 PANORAMA DEL TALLER*\n` + patio.join('\n') + '\n\n' + circ.join('\n') + '\n\n' + fechas);
+  } else {
+    b.push(`Unidades autorizadas en proceso: *${d.en_proceso}*`);
+  }
 
   if(d.vencidas.length) b.push(`*🔴 Vencidas (${d.vencidas.length})*\n` + lista(d.vencidas, u => ` – venció ${ddmm(u.fecha_entrega_prevista)}`));
   if(d.vencen_pronto.length) b.push(`*🟠 Vencen hoy o mañana (${d.vencen_pronto.length})*\n` + lista(d.vencen_pronto, u => ` – ${ddmm(u.fecha_entrega_prevista)}`));
   if(d.reingresos.length) b.push(`*🚗 Reingresos con cita (${d.reingresos.length})*\n` + lista(d.reingresos));
   if(d.listas_para_iniciar.length) b.push(`*🟢 Listas para iniciar – asignar hoy (${d.listas_para_iniciar.length})*\n` + lista(d.listas_para_iniciar));
   if(d.transito_para_citar && d.transito_para_citar.length) b.push(`*🚙 En tránsito con piezas completas – citar reingreso (${d.transito_para_citar.length})*\n` + lista(d.transito_para_citar));
+  if(d.falta_fecha_entrega && d.falta_fecha_entrega.length) b.push(`*📅 Falta fecha de entrega – Beto (${d.falta_fecha_entrega.length})*\n` + lista(d.falta_fecha_entrega));
   if(d.rapidas_sin_tocar.length) b.push(`*⚡ Reparaciones rápidas sin tocar (${d.rapidas_sin_tocar.length})*\n` + lista(d.rapidas_sin_tocar));
 
   if(d.piezas_vencidas.length){
@@ -127,7 +193,6 @@ function textoWhatsApp(d){
 
   // Datos que faltan capturar: sin ellos el reporte no puede avisar a tiempo (vencidas, listas para iniciar).
   const faltan = [];
-  if(d.sin_fecha_entrega) faltan.push(`• Sin fecha de entrega: ${d.sin_fecha_entrega}`);
   if(d.sin_dato_refacciones) faltan.push(`• Sin indicar si requiere refacciones: ${d.sin_dato_refacciones}`);
   if(faltan.length) b.push(`*📋 Falta capturar en el tablero*\n` + faltan.join('\n'));
   if(d.aviso_espacio && d.aviso_espacio.length) b.push(`*⚠️ Espacio para fotos*\n` + d.aviso_espacio.join('\n'));

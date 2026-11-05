@@ -1683,6 +1683,9 @@ async function viewSiniestro(id){
         <p class="subtle">${esc(s.vehiculo||'')} ${esc(s.anio_modelo||'')} · Placas ${esc(s.placas||'')} · Ingreso: ${esc(s.fecha_ingreso||'')} · Responsable: ${esc(s.responsable||'')}</p>
         ${s.cliente_nombre?`<p class="subtle">Cliente: ${esc(s.cliente_nombre)}${s.cliente_telefono?' · '+esc(s.cliente_telefono):''}${s.etapa_actual?' · Etapa: '+esc(s.etapa_actual):''}</p>`:''}
         <p class="subtle">Entrega de unidad: ${s.fecha_entrega_real?esc(s.fecha_entrega_real):'<span class="badge ambar">Sin registrar</span>'}</p>
+        <p class="subtle">Fecha de entrega prometida: ${s.fecha_entrega_prevista?`<b>${esc(s.fecha_entrega_prevista)}</b>`:'<span class="badge ambar">Sin capturar</span>'}
+          ${!s.fecha_entrega_real && currentUser && (s.fecha_entrega_prevista ? ['operativo','admin','jefe'] : ['beto','atencion_cliente','operativo','orlando','admin','jefe']).includes(currentUser.rol)
+            ? `<button class="btn small secondary no-print" onclick="abrirFormFechaEntrega(${s.id})">${s.fecha_entrega_prevista?'Cambiar fecha':'Capturar fecha'}</button>`:''}</p>
         <p class="subtle" style="margin-top:4px;">${renderSemaforo(s.semaforo)}</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
@@ -2359,7 +2362,10 @@ function abrirFormEtapaProduccion(siniestroId){
     const yaComprometida = s.entrega_compromiso_gnp === 1;
     const sugerirGnpPiso = s.aseguradora === 'GNP' && !!s.fecha_admision;
     const esRoberto = currentUser && ['admin','jefe'].includes(currentUser.rol);
-    const fechaBloqueada = yaComprometida && !esRoberto;
+    // 5-nov-2026 (Roberto): la fecha la captura Beto (o Alejandra/Daniela); ya capturada, solo Daniela o Roberto la cambian.
+    const tieneFecha = !!s.fecha_entrega_prevista;
+    const puedeCambiarFecha = currentUser && ['operativo','admin','jefe'].includes(currentUser.rol);
+    const fechaBloqueada = (yaComprometida && !esRoberto) || (tieneFecha && !puedeCambiarFecha);
     showModal(`
       <h3>Actualizar etapa de producción</h3>
       <div class="field"><label>Etapa</label><select id="fprod_estado">
@@ -2377,17 +2383,50 @@ function abrirFormEtapaProduccion(siniestroId){
       </select></div>
       <p class="subtle" style="margin-top:4px;">Orden confirmado por Roberto: mecánica → hojalatería → pintura → armado → pulido → lavado → entrega.</p>
       <div class="field" style="margin-top:12px;"><label>Fecha de entrega prevista</label><input id="fprod_fecha_entrega" type="date" value="${esc(s.fecha_entrega_prevista||'')}" ${fechaBloqueada?'disabled':''}></div>
-      ${fechaBloqueada?`<p class="subtle" style="color:#b91c1c;">Compromiso obligatorio de GNP establecido el ${esc((s.entrega_compromiso_establecido_en||'').slice(0,10))}. Solo Roberto puede moverla.</p>`:`
+      ${tieneFecha && !fechaBloqueada?`<div class="field"><label>Motivo del cambio (solo si cambias la fecha)</label><input id="fprod_motivo_fecha" placeholder="Ej. llegó tarde una pieza, complemento autorizado…"></div>`:''}
+      ${fechaBloqueada && !(yaComprometida && !esRoberto)?`<p class="subtle">La fecha ya está capturada. Solo Daniela o Roberto pueden cambiarla.</p>`:''}
+      ${(yaComprometida && !esRoberto)?`<p class="subtle" style="color:#b91c1c;">Compromiso obligatorio de GNP establecido el ${esc((s.entrega_compromiso_establecido_en||'').slice(0,10))}. Solo Roberto puede moverla.</p>`:`
       <label style="display:flex;align-items:center;gap:6px;margin-top:6px;"><input type="checkbox" id="fprod_compromiso_gnp" ${(yaComprometida||sugerirGnpPiso)?'checked':''}> Compromiso obligatorio de GNP (fecha fijada por el supervisor, no se debe mover)</label>`}
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEtapaProduccion(${siniestroId})">Guardar</button></div>
     `);
   });
 }
+// Captura / cambio de la fecha de entrega prometida (5-nov-2026). Beto, Alejandra o Daniela la capturan;
+// ya capturada, solo Daniela o Roberto la cambian y deben anotar el motivo (queda en la línea de tiempo).
+function abrirFormFechaEntrega(siniestroId){
+  api('GET','/api/siniestros/'+siniestroId).then(s=>{
+    const esCambio = !!s.fecha_entrega_prevista;
+    showModal(`
+      <h3>${esCambio?'Cambiar':'Capturar'} fecha de entrega</h3>
+      ${esCambio?`<p class="subtle">Fecha actual: <b>${esc(s.fecha_entrega_prevista)}</b></p>`:''}
+      <div class="field"><label>Nueva fecha de entrega</label><input id="ffe_fecha" type="date" value="${esc(s.fecha_entrega_prevista||'')}"></div>
+      ${esCambio?`<div class="field"><label>Motivo del cambio</label><input id="ffe_motivo" placeholder="Ej. llegó tarde una pieza, complemento autorizado…"></div>`:''}
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarFechaEntrega(${siniestroId}, ${esCambio})">Guardar</button></div>`);
+  });
+}
+async function guardarFechaEntrega(siniestroId, esCambio){
+  const fecha = document.getElementById('ffe_fecha').value;
+  if(!fecha){ toast('Elige la fecha.', 'error'); return; }
+  const body = { fecha_entrega_prevista: fecha };
+  if(esCambio){
+    const m = document.getElementById('ffe_motivo').value.trim();
+    if(!m){ toast('Escribe el motivo del cambio de fecha.', 'error'); return; }
+    body.motivo_cambio_fecha = m;
+  }
+  try{ await api('PATCH','/api/siniestros/'+siniestroId, body); toast('Fecha de entrega guardada.', 'success'); closeModal(); render(); }catch(e){}
+}
 async function guardarEtapaProduccion(siniestroId){
   try{
     const body = { estado_produccion: document.getElementById('fprod_estado').value };
     const fechaInput = document.getElementById('fprod_fecha_entrega');
-    if(fechaInput && !fechaInput.disabled) body.fecha_entrega_prevista = fechaInput.value;
+    if(fechaInput && !fechaInput.disabled && fechaInput.value !== (fechaInput.defaultValue || '')){
+      body.fecha_entrega_prevista = fechaInput.value;
+      const motivo = document.getElementById('fprod_motivo_fecha');
+      if(motivo){
+        if(!motivo.value.trim()){ toast('Escribe el motivo del cambio de fecha.', 'error'); return; }
+        body.motivo_cambio_fecha = motivo.value.trim();
+      }
+    }
     const compromisoInput = document.getElementById('fprod_compromiso_gnp');
     if(compromisoInput) body.entrega_compromiso_gnp = compromisoInput.checked ? 1 : 0;
     await FotosSC.cambiarEtapaConFotos(siniestroId, body);

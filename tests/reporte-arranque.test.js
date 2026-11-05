@@ -243,3 +243,61 @@ test('ACT-4: "AUTOSURTIDO GNP" en requiere refacciones marca la ruta sin captura
   assert.equal(p.status, 200, JSON.stringify(p.data));
   assert.equal(db.prepare(`SELECT aseguradora_ruta_refacciones r FROM siniestros WHERE id=?`).get(s.id).r, 'autosurtido', 'editar la ficha no la regresa a "por confirmar"');
 });
+
+test('REPORTE-8: panorama del taller cuenta patio, circulando y fechas promesa', () => {
+  const antes = reporte.calcularReporteArranque(db).taller;
+  crearSiniestro('PAN-PISO-LAM', { ubicacion:'Piso', estado_produccion:'en_laminado', fecha_entrega_prevista: dias(2) });
+  crearSiniestro('PAN-PISO-NOAUT', { ubicacion:'Piso', estado_autorizacion:null });
+  crearSiniestro('PAN-PISO-TERM', { ubicacion:'Piso', estado_produccion:'terminado' });
+  crearSiniestro('PAN-TR-ESPERA', { ubicacion:'Tránsito', requiere_refacciones:'si' });
+  crearSiniestro('PAN-TR-LISTA', { ubicacion:'Tránsito', requiere_refacciones:'no' });
+  crearSiniestro('PAN-TR-CITA', { ubicacion:'Tránsito', cita_fecha: dias(3) });
+  crearSiniestro('PAN-ENTREGADA', { ubicacion:'Piso', fecha_entrega_real: dias(-1) });
+  const r = reporte.calcularReporteArranque(db);
+  const t = r.taller;
+  assert.equal(t.patio - antes.patio, 3, 'la entregada no cuenta');
+  assert.equal(t.por_autorizar - antes.por_autorizar, 1);
+  assert.equal(t.en_reparacion - antes.en_reparacion, 1);
+  assert.equal(t.terminadas - antes.terminadas, 1);
+  assert.equal(t.circulando - antes.circulando, 3);
+  assert.equal(t.esperando_piezas - antes.esperando_piezas, 1);
+  assert.equal(t.piezas_completas_sin_cita - antes.piezas_completas_sin_cita, 1);
+  assert.equal(t.con_cita - antes.con_cita, 1);
+  assert.equal(t.vencen_3_dias - antes.vencen_3_dias, 1);
+  assert.match(r.texto, /PANORAMA DEL TALLER/);
+  assert.match(r.texto, /🅿️ \*En patio: \d+\*/);
+  assert.match(r.texto, /🚗 \*Circulando: \d+\*/);
+  assert.match(r.texto, /Hojalatería \d+/);
+});
+
+test('FECHA-1: Beto/Alejandra capturan la fecha; cambiarla solo Daniela o Roberto, con motivo en la línea de tiempo', async () => {
+  const id = crearSiniestro('FECHA-001', { autorizacion_fecha_respuesta:'2026-11-01', autorizador:'A' });
+  db.prepare(`INSERT OR IGNORE INTO usuarios (nombre,email,password_hash,rol) VALUES ('Beto prueba','beto.prueba@x.mx',?,'beto')`).run(require('bcryptjs').hashSync('Clave123!', 4));
+  cookie = ''; assert.equal((await req('POST','/api/auth/login',{ email:'beto.prueba@x.mx', password:'Clave123!' })).status, 200);
+  assert.equal((await req('PATCH','/api/siniestros/'+id,{ fecha_entrega_prevista: dias(10) })).status, 200, 'Beto la captura');
+  const r = await req('PATCH','/api/siniestros/'+id,{ fecha_entrega_prevista: dias(12) });
+  assert.equal(r.status, 403, 'Beto ya no la puede cambiar');
+  assert.match(r.data.error, /Daniela o Roberto/);
+  cookie = ''; await req('POST','/api/auth/login',{ email:'daniela@serviciocristian.mx', password:'ServicioCristian2026-Reset!' });
+  assert.equal((await req('PATCH','/api/siniestros/'+id,{ fecha_entrega_prevista: dias(12), motivo_cambio_fecha:'Llegó tarde la facia' })).status, 200, 'Daniela sí');
+  const aud = db.prepare(`SELECT valor_nuevo FROM auditoria WHERE entidad_id=? AND accion='cambio_fecha_entrega'`).get(id);
+  assert.match(aud.valor_nuevo, /Llegó tarde la facia/);
+});
+
+test('FECHA-2: el reporte pide fecha solo a unidades en piso con piezas listas (60%+), no a las que circulan o esperan piezas', () => {
+  const lista = crearSiniestro('FECHA-LISTA', { ubicacion:'Piso', requiere_refacciones:'no' });
+  const circula = crearSiniestro('FECHA-CIRCULA', { ubicacion:'Tránsito', requiere_refacciones:'no' });
+  const espera = crearSiniestro('FECHA-ESPERA', { ubicacion:'Piso', requiere_refacciones:'si' });
+  const sesenta = crearSiniestro('FECHA-60', { ubicacion:'Piso', requiere_refacciones:'si' });
+  const ped = Number(db.prepare(`INSERT INTO pedidos (numero, siniestro_id, fecha_creacion) VALUES ('FECHA-60-P', ?, ?)`).run(sesenta, dias(-5)).lastInsertRowid);
+  ['Recibida físicamente','Recibida físicamente','Recibida físicamente','Confirmada','Confirmada'].forEach((e,i)=>
+    db.prepare(`INSERT INTO piezas (pedido_id, descripcion, estatus) VALUES (?, ?, ?)`).run(ped, 'P'+i, e));
+  const r = reporte.calcularReporteArranque(db);
+  const nums = r.falta_fecha_entrega.map(u => u.numero);
+  assert.ok(nums.includes('FECHA-LISTA'));
+  assert.ok(nums.includes('FECHA-60'), '3 de 5 piezas = 60%');
+  assert.ok(!nums.includes('FECHA-CIRCULA'));
+  assert.ok(!nums.includes('FECHA-ESPERA'));
+  assert.ok(r.listas_para_iniciar.some(u => u.numero === 'FECHA-60'), 'con 60% ya aparece para iniciar');
+  assert.match(r.texto, /Falta fecha de entrega – Beto/);
+});

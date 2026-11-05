@@ -278,6 +278,21 @@ router.patch('/:id', requireAuth, (req, res)=>{
   } else {
     nuevo.entrega_compromiso_establecido_en = anterior.entrega_compromiso_establecido_en;
   }
+  // Fecha de entrega (Roberto, 5-nov-2026): la captura Beto (principal), Alejandra o Daniela; una vez
+  // capturada, CAMBIARLA solo pueden Daniela o Roberto (admin/jefe), con el motivo en la auditoría.
+  if(req.body.fecha_entrega_prevista !== undefined
+      && String(req.body.fecha_entrega_prevista || '') !== String(anterior.fecha_entrega_prevista || '')){
+    const rol = req.session.user.rol;
+    const esCambio = !!(anterior.fecha_entrega_prevista && String(anterior.fecha_entrega_prevista).trim());
+    const pueden = esCambio ? ['operativo','admin','jefe'] : ['beto','atencion_cliente','operativo','orlando','admin','jefe'];
+    if(!pueden.includes(rol)){
+      return res.status(403).json({ error: esCambio
+        ? 'La fecha de entrega ya está capturada; solo Daniela o Roberto pueden cambiarla.'
+        : 'No tienes permiso para capturar la fecha de entrega.' });
+    }
+    if(esCambio) req._cambioFechaEntrega = { anterior: anterior.fecha_entrega_prevista, nueva: req.body.fecha_entrega_prevista || '(sin fecha)',
+      motivo: req.body.motivo_cambio_fecha ? String(req.body.motivo_cambio_fecha).slice(0,300) : '' };
+  }
   if(anterior.entrega_compromiso_gnp === 1 && req.body.fecha_entrega_prevista !== undefined
       && String(req.body.fecha_entrega_prevista) !== String(anterior.fecha_entrega_prevista || '')
       && !['admin','jefe'].includes(req.session.user.rol)){
@@ -405,6 +420,11 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.archivado, nuevo.archivado_en,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  if(req._cambioFechaEntrega){
+    const c = req._cambioFechaEntrega;
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:anterior.id, accion:'cambio_fecha_entrega', campo:'motivo',
+      valor_anterior: c.anterior, valor_nuevo: `${c.nueva}${c.motivo ? ' — Motivo: ' + c.motivo : ''}`, usuario:req.session.user });
+  }
   whatsappFaseA.procesarTransicionSiniestro(db, { anterior, nuevo }); // solo registro interno, no envía nada
 
   // Reactivación simplificada (28-sep-2026, autorizado por Roberto): "un movimiento dentro de SC Control

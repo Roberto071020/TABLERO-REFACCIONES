@@ -31,10 +31,11 @@ function calcularPanoramaBeto(db){
     }
     // Modificación 1 (Modificaciones_Tablero_SC_Control.docx): aviso de "listo para iniciar" en cuanto
     // haya piezas SUFICIENTES, aunque el expediente no esté 100% completo. No existe un catálogo de qué
-    // pieza es "crítica" para arrancar, así que se usa una señal objetiva: 80%+ de las piezas del
+    // pieza es "crítica" para arrancar, así que se usa una señal objetiva: 60%+ de las piezas del
+    // (Roberto, 5-nov-2026: el umbral baja de 80% a 60% para iniciar antes la reparación en piso)
     // expediente ya recibidas físicamente (sin llegar al 100% que ya cubre refaccionesCompletas arriba).
     const pctPiezas = s.requiere_refacciones === 'si' ? porcentajePiezasRecibidas(db, s.id) : null;
-    const piezasSuficientes = !refaccionesCompletas && pctPiezas !== null && pctPiezas >= 0.8;
+    const piezasSuficientes = !refaccionesCompletas && pctPiezas !== null && pctPiezas >= 0.6;
     // Ubicación Piso/Tránsito (campo ya existente, capturado en la ficha): una unidad en tránsito no está
     // físicamente en el taller, así que no puede estar "lista para iniciar" aunque tenga piezas completas.
     const enTransito = /^tr/i.test(String(s.ubicacion || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
@@ -68,6 +69,7 @@ function calcularPanoramaBeto(db){
       situacion, reingreso_citado: !!reingresoCitado, dias_en_taller: diasEnTaller,
       en_transito: enTransito, refacciones_completas: refaccionesCompletas, sin_dato_refacciones: sinDatoRefacciones && !esAutosurtido,
       es_autosurtido: esAutosurtido,
+      piezas_suficientes: !!piezasSuficientes,
       ot_archivo_id: (db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='Orden de trabajo' AND eliminado=0 ORDER BY id DESC LIMIT 1`).get(s.id) || {}).id || null,
       cita_fecha: s.cita_fecha || null };
   });
