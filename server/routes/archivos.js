@@ -75,6 +75,11 @@ router.get('/:id/descargar', requireAuth, (req, res)=>{
   if(!a) return res.status(404).json({ error:'Archivo no encontrado.' });
   const filePath = path.join(UPLOAD_DIR, a.nombre_almacenado);
   if(!fs.existsSync(filePath)) return res.status(404).json({ error:'El archivo ya no está disponible en disco.' });
+  // ?ver=1 (5-nov-2026): abrir el PDF/foto dentro del celular en vez de descargarlo (OT para Beto).
+  if(req.query.ver){
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(a.nombre_original)}`);
+    return res.type(a.mime || 'application/octet-stream').sendFile(filePath);
+  }
   res.download(filePath, a.nombre_original);
 });
 

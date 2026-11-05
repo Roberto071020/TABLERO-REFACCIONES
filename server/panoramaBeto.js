@@ -68,6 +68,7 @@ function calcularPanoramaBeto(db){
       situacion, reingreso_citado: !!reingresoCitado, dias_en_taller: diasEnTaller,
       en_transito: enTransito, refacciones_completas: refaccionesCompletas, sin_dato_refacciones: sinDatoRefacciones && !esAutosurtido,
       es_autosurtido: esAutosurtido,
+      ot_archivo_id: (db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='Orden de trabajo' AND eliminado=0 ORDER BY id DESC LIMIT 1`).get(s.id) || {}).id || null,
       cita_fecha: s.cita_fecha || null };
   });
 

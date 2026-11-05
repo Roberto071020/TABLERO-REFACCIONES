@@ -88,6 +88,8 @@ app.use('/api/whatsapp-fase-a', require('./routes/whatsappFaseA')); // solo lect
 app.use('/api/whatsapp-manual', require('./routes/whatsappBandejaManual'));
 // Ventanilla de solo lectura con clave (REPORTE_TOKEN) para que un asistente externo lea el reporte de arranque.
 app.use('/api/externo', require('./routes/reporteExterno'));
+// Carga de órdenes de trabajo por Claude (5-nov-2026): ventanilla con clave CARGA_OT_TOKEN, solo sube OT a expedientes existentes.
+app.use('/api/externo', require('./routes/cargaOt'));
 // Actualización rápida de unidades (4-nov-2026): pegar una tabla para poner al día muchos expedientes a la vez.
 app.use('/api/actualizacion-unidades', require('./routes/actualizacionUnidades'));
 // Fotos de la unidad (4-nov-2026): recepción y avance por etapa, visibles y descargables para todos.

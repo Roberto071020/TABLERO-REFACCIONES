@@ -562,7 +562,10 @@ router.get('/bandeja-produccion', requireAuth, (req, res)=>{
       JOIN ordenes_trabajo ot ON ot.id = op.ot_id WHERE ot.siniestro_id = ? AND op.estado = 'detenido'`).get(s.id).n;
     const retrabajosAbiertos = db.prepare(`SELECT COUNT(*) n FROM retrabajos WHERE siniestro_id = ? AND estado != 'cerrado'`).get(s.id).n;
     const complementosPendientes = db.prepare(`SELECT COUNT(*) n FROM complementos WHERE siniestro_id = ? AND decision = 'pendiente'`).get(s.id).n;
-    return { ...s, operaciones_bloqueadas: bloqueadas, retrabajos_abiertos: retrabajosAbiertos, complementos_pendientes: complementosPendientes };
+    // 5-nov-2026: la orden de trabajo más reciente (PDF/foto), para que Beto la abra desde su lista.
+    const ot = db.prepare(`SELECT id, nombre_original, mime FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='Orden de trabajo' AND eliminado=0 ORDER BY id DESC LIMIT 1`).get(s.id) || null;
+    return { ...s, operaciones_bloqueadas: bloqueadas, retrabajos_abiertos: retrabajosAbiertos, complementos_pendientes: complementosPendientes,
+      ot_archivo_id: ot ? ot.id : null };
   });
   res.json(out);
 });

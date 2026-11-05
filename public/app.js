@@ -439,7 +439,7 @@ async function viewInicio(){
       <td><span class="link" onclick="goSiniestro(${x.id})">${esc(x.numero)}</span></td>
       <td>${esc(x.vehiculo||'—')} ${esc(x.placas?('· '+x.placas):'')}</td>
       <td>${x.reingreso_citado?'<span class="badge ambar">Reingreso citado</span>':x.situacion==='en_piso'?'<span class="badge verde">En piso</span>':'<span class="badge gris">En proceso</span>'}</td>
-      <td>${esc(x.ot_numero||'—')}</td>
+      <td>${x.ot_archivo_id?`<a class="link" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 ${esc(x.ot_numero||'Ver OT')}</a>`:esc(x.ot_numero||'—')}</td>
       <td>${esc(x.fecha_entrega_prevista||'—')} ${x.entrega_compromiso_gnp?'<span class="badge rojo">GNP</span>':''}</td>
       <td class="subtle">${x.dias_en_taller!=null?x.dias_en_taller+' día(s)':'—'}</td>
       <td class="subtle">${esc(x.motivo)}</td>
@@ -1427,7 +1427,7 @@ async function viewSiniestro(id){
     <h4>Documentos de OT adjuntos</h4>
     ${documentosOt.length===0?'<div class="empty">Sin documentos de OT adjuntos. Daniela o Alejandra pueden subir la foto o el PDF desde la pestaña "Archivos" con tipo "Orden de trabajo".</div>':`
     <table><thead><tr><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
-    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar" target="_blank">Ver / descargar</a></td></tr>`).join('')}
+    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar?ver=1" target="_blank">Ver</a> · <a class="link" href="/api/archivos/${a.id}/descargar">Descargar</a></td></tr>`).join('')}
     </tbody></table>`}
     <table class="kv" style="margin-top:12px;"><tbody>
       <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
@@ -3803,8 +3803,8 @@ async function viewProduccion(){
   return `
   <h2>Producción</h2>
   <p class="subtle">Vehículos en piso (módulo de Beto). Vencidos y próximos a vencer aparecen primero.</p>
-  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Fecha compromiso</th><th>Etapa actual</th><th></th></tr></thead><tbody>
-  ${ordenados.length===0?'<tr><td colspan="5" class="empty">Sin vehículos en piso pendientes.</td></tr>':ordenados.map(s=>{
+  <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Fecha compromiso</th><th>Etapa actual</th><th>OT</th><th></th></tr></thead><tbody>
+  ${ordenados.length===0?'<tr><td colspan="6" class="empty">Sin vehículos en piso pendientes.</td></tr>':ordenados.map(s=>{
     const u = urgencia(s);
     const badgeFecha = !s.fecha_entrega_prevista ? '<span class="badge gris">Sin definir</span>'
       : u===0 ? `<span class="badge rojo">Vencida · ${esc(s.fecha_entrega_prevista)}</span>`
@@ -3817,6 +3817,7 @@ async function viewProduccion(){
       <td>${esc(s.vehiculo||'—')}</td>
       <td>${badgeFecha}</td>
       <td>${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</td>
+      <td>${s.ot_archivo_id?`<a class="btn small secondary" href="/api/archivos/${s.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a>`:'<span class="badge gris">Sin OT</span>'}</td>
       <td>${siguiente?`<button class="btn small" onclick="avanzarEtapaProduccion(${s.id},'${s.estado_produccion||''}')">→ ${esc(LABEL_PROD[siguiente])}</button>`:`<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${s.id})">Resolver</button>`}</td>
     </tr>`;}).join('')}
   </tbody></table>
