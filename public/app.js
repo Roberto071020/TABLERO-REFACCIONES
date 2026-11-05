@@ -346,8 +346,58 @@ async function render(){
   actualizarBadgeWhatsapp(); // en segundo plano, no bloquea el render ya mostrado.
 }
 
+/* ===================== VISTA: INICIO DE BETO (5-nov-2026) =====================
+   Roberto: "todo lo de Beto, lo más sencillo posible". Al entrar ve UNA sola pantalla pensada para el
+   celular: 4 números grandes y sus unidades como tarjetas, en el orden sugerido de trabajo, cada una con
+   el motivo y los botones que usa (Ver OT, WhatsApp, siguiente etapa, capturar fecha). Sin tablas anchas
+   ni textos técnicos. Usa exactamente los mismos cálculos que el reporte de la mañana (panorama-beto). */
+async function viewInicioBeto(){
+  const cola = await api('GET','/api/reportes/panorama-beto');
+  const hoy = new Date().toISOString().slice(0,10);
+  const LABEL = { programado:'Sin iniciar', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
+  const vencidas = cola.filter(x => x.fecha_entrega_prevista && x.fecha_entrega_prevista < hoy).length;
+  const porVencer = cola.filter(x => x.prioridad === 1 && !(x.fecha_entrega_prevista < hoy)).length;
+  const listas = cola.filter(x => x.prioridad === 3 || x.prioridad === 3.5).length;
+  const reingresos = cola.filter(x => x.reingreso_citado).length;
+  const tarjeta = (n, texto, color) => `<div class="card ${color}" style="cursor:default;"><div class="num">${n}</div><div class="label">${texto}</div></div>`;
+  const fechaBadge = x => !x.fecha_entrega_prevista ? '<span class="badge gris">Sin fecha</span>'
+    : x.fecha_entrega_prevista < hoy ? `<span class="badge rojo">Vencida · ${esc(x.fecha_entrega_prevista)}</span>`
+    : x.prioridad === 1 ? `<span class="badge ambar">Entrega ${esc(x.fecha_entrega_prevista)}</span>`
+    : `<span class="badge verde">Entrega ${esc(x.fecha_entrega_prevista)}</span>`;
+  const colorMotivo = x => x.prioridad === 1 ? 'rojo' : x.prioridad === 2 ? 'ambar' : (x.prioridad === 3 || x.prioridad === 3.5) ? 'verde' : 'gris';
+  const unidades = cola.map(x => {
+    const sig = siguienteEtapaProduccion(x.estado_produccion);
+    const motivo = x.reingreso_citado ? 'Reingreso citado: todavía no llega' : x.en_transito ? 'Circulando'
+      : x.prioridad === 3 ? 'Lista para iniciar' : x.prioridad === 3.5 ? 'Lista para iniciar (piezas suficientes)'
+      : x.prioridad === 2 ? 'Reparación rápida sin tocar' : x.prioridad === 4 ? 'En tiempo' : String(x.motivo || '').replace(/\.$/, '');
+    const sinIniciar = !x.estado_produccion || x.estado_produccion === 'programado';
+    return `<div class="section" style="margin:10px 0;padding:14px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+        <span class="link" style="font-weight:700;font-size:16px;" onclick="goSiniestro(${x.id})">${esc(x.vehiculo || x.numero)}</span>${fechaBadge(x)}
+      </div>
+      <div class="subtle" style="margin:2px 0 6px;">${esc(x.placas || '')}${x.placas ? ' · ' : ''}${esc(x.numero)} · ${esc(x.aseguradora || '')}${x.es_autosurtido ? ' · Autosurtido' : ''}</div>
+      <div style="margin-bottom:10px;"><span class="badge ${colorMotivo(x)}">${esc(motivo)}</span> <b style="margin-left:4px;">${esc(LABEL[x.estado_produccion] || 'Sin iniciar')}</b></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${x.ot_archivo_id ? `<a class="btn small secondary" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a><button class="btn small secondary" onclick="FotosSC.compartirOt(${x.ot_archivo_id}, '${esc(x.numero)}')">📤 WhatsApp</button>` : '<span class="badge gris">Sin OT</span>'}
+        ${!x.fecha_entrega_prevista && !x.en_transito ? `<button class="btn small secondary" onclick="abrirFormFechaEntrega(${x.id})">📅 Poner fecha</button>` : ''}
+        ${x.en_transito || x.reingreso_citado ? '' : sinIniciar ? `<button class="btn small" onclick="abrirFormEtapaProduccion(${x.id})">▶ Iniciar reparación</button>` : sig ? `<button class="btn small" onclick="avanzarEtapaProduccion(${x.id},'${x.estado_produccion || ''}')">→ ${esc(LABEL[sig])}</button>` : `<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${x.id})">Resolver</button>`}
+      </div></div>`;
+  }).join('');
+  return `
+  <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Beto')} 👋</h2>
+  <p class="subtle" style="margin-top:0;">Tus unidades en el orden en que conviene trabajarlas.</p>
+  <div class="grid-cards">
+    ${tarjeta(vencidas, 'Vencidas', vencidas ? 'rojo' : 'verde')}
+    ${tarjeta(porVencer, 'Vencen hoy o mañana', porVencer ? 'ambar' : 'verde')}
+    ${tarjeta(listas, 'Listas para iniciar', 'verde')}
+    ${tarjeta(reingresos, 'Reingresos por llegar', 'azul')}
+  </div>
+  ${cola.length ? unidades : '<div class="empty" style="margin-top:12px;">No hay unidades autorizadas pendientes.</div>'}`;
+}
+
 /* ===================== VISTA: INICIO ===================== */
 async function viewInicio(){
+  if(currentUser && currentUser.rol === 'beto') return viewInicioBeto();
   const r = await api('GET','/api/reportes/resumen');
   const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
