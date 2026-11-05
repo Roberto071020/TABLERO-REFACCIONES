@@ -439,7 +439,7 @@ async function viewInicio(){
       <td><span class="link" onclick="goSiniestro(${x.id})">${esc(x.numero)}</span></td>
       <td>${esc(x.vehiculo||'—')} ${esc(x.placas?('· '+x.placas):'')}</td>
       <td>${x.reingreso_citado?'<span class="badge ambar">Reingreso citado</span>':x.situacion==='en_piso'?'<span class="badge verde">En piso</span>':'<span class="badge gris">En proceso</span>'}</td>
-      <td>${x.ot_archivo_id?`<a class="link" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 ${esc(x.ot_numero||'Ver OT')}</a>`:esc(x.ot_numero||'—')}</td>
+      <td>${x.ot_archivo_id?`<a class="link" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 ${esc(x.ot_numero||'Ver OT')}</a> <button class="btn small secondary" title="Compartir por WhatsApp" onclick="FotosSC.compartirOt(${x.ot_archivo_id}, '${esc(x.numero)}')">📤</button>`:esc(x.ot_numero||'—')}</td>
       <td>${esc(x.fecha_entrega_prevista||'—')} ${x.entrega_compromiso_gnp?'<span class="badge rojo">GNP</span>':''}</td>
       <td class="subtle">${x.dias_en_taller!=null?x.dias_en_taller+' día(s)':'—'}</td>
       <td class="subtle">${esc(x.motivo)}</td>
@@ -1427,7 +1427,7 @@ async function viewSiniestro(id){
     <h4>Documentos de OT adjuntos</h4>
     ${documentosOt.length===0?'<div class="empty">Sin documentos de OT adjuntos. Daniela o Alejandra pueden subir la foto o el PDF desde la pestaña "Archivos" con tipo "Orden de trabajo".</div>':`
     <table><thead><tr><th>Nombre</th><th>Fecha</th><th></th></tr></thead><tbody>
-    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar?ver=1" target="_blank">Ver</a> · <a class="link" href="/api/archivos/${a.id}/descargar">Descargar</a></td></tr>`).join('')}
+    ${documentosOt.map(a=>`<tr><td>${esc(a.nombre_original)}</td><td>${fmtFechaHora(a.creado_en)}</td><td><a class="link" href="/api/archivos/${a.id}/descargar?ver=1" target="_blank">Ver</a> · <a class="link" href="/api/archivos/${a.id}/descargar">Descargar</a> · <button class="btn small" onclick="FotosSC.compartirOt(${a.id}, '${esc(s.numero)}')">📤 WhatsApp</button></td></tr>`).join('')}
     </tbody></table>`}
     <table class="kv" style="margin-top:12px;"><tbody>
       <tr><td>Etapa de producción</td><td><span class="badge ${s.estado_produccion==='terminado'?'verde':s.estado_produccion==='detenido'?'rojo':'ambar'}">${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</span></td></tr>
@@ -3800,6 +3800,30 @@ async function viewProduccion(){
     if(ua !== ub) return ua - ub;
     return (a.fecha_entrega_prevista||'9999') < (b.fecha_entrega_prevista||'9999') ? -1 : 1;
   });
+  // 5-nov-2026: en celular la tabla se cortaba y Beto no veía la OT ni el botón de avanzar etapa. En
+  // pantallas angostas se muestra como tarjetas, con los botones siempre visibles.
+  if(window.innerWidth < 760){
+    return `
+  <h2>Producción</h2>
+  <p class="subtle">Vencidos y próximos a vencer aparecen primero.</p>
+  ${ordenados.length===0?'<div class="empty">Sin vehículos en piso pendientes.</div>':ordenados.map(s=>{
+    const u = urgencia(s);
+    const badgeFecha = !s.fecha_entrega_prevista ? '<span class="badge gris">Sin fecha</span>'
+      : u===0 ? `<span class="badge rojo">Vencida · ${esc(s.fecha_entrega_prevista)}</span>`
+      : u===1 ? `<span class="badge ambar">Próxima · ${esc(s.fecha_entrega_prevista)}</span>`
+      : `<span class="badge verde">${esc(s.fecha_entrega_prevista)}</span>`;
+    const siguiente = siguienteEtapaProduccion(s.estado_produccion);
+    return `<div class="section" style="margin:10px 0;padding:14px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+        <span class="link" style="font-weight:700;" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span>${badgeFecha}
+      </div>
+      <div style="margin:4px 0 10px;">${esc(s.vehiculo||'—')} · <b>${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</b></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${s.ot_archivo_id?`<a class="btn small secondary" href="/api/archivos/${s.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a><button class="btn small secondary" onclick="FotosSC.compartirOt(${s.ot_archivo_id}, '${esc(s.numero)}')">📤 WhatsApp</button>`:'<span class="badge gris">Sin OT</span>'}
+        ${siguiente?`<button class="btn small" onclick="avanzarEtapaProduccion(${s.id},'${s.estado_produccion||''}')">→ ${esc(LABEL_PROD[siguiente])}</button>`:`<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${s.id})">Resolver</button>`}
+      </div></div>`;}).join('')}
+  <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) en producción.</p>`;
+  }
   return `
   <h2>Producción</h2>
   <p class="subtle">Vehículos en piso (módulo de Beto). Vencidos y próximos a vencer aparecen primero.</p>
@@ -3817,7 +3841,7 @@ async function viewProduccion(){
       <td>${esc(s.vehiculo||'—')}</td>
       <td>${badgeFecha}</td>
       <td>${esc(LABEL_PROD[s.estado_produccion]||'Sin iniciar')}</td>
-      <td>${s.ot_archivo_id?`<a class="btn small secondary" href="/api/archivos/${s.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a>`:'<span class="badge gris">Sin OT</span>'}</td>
+      <td>${s.ot_archivo_id?`<a class="btn small secondary" href="/api/archivos/${s.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a> <button class="btn small" onclick="FotosSC.compartirOt(${s.ot_archivo_id}, '${esc(s.numero)}')">📤 WhatsApp</button>`:'<span class="badge gris">Sin OT</span>'}</td>
       <td>${siguiente?`<button class="btn small" onclick="avanzarEtapaProduccion(${s.id},'${s.estado_produccion||''}')">→ ${esc(LABEL_PROD[siguiente])}</button>`:`<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${s.id})">Resolver</button>`}</td>
     </tr>`;}).join('')}
   </tbody></table>

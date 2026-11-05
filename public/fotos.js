@@ -176,7 +176,8 @@
         <h4>${esc(e.etiqueta)} <span class="badge ${fotos.length ? 'verde' : 'gris'}">${fotos.length}</span>
           ${e.obligatoria ? '<span class="subtle" style="font-weight:500;">obligatoria para avanzar</span>' : ''}
           ${e.etapa !== 'otra' ? `<button class="btn small secondary" onclick="FotosSC.abrirSubirFotos(${siniestroId}, '${e.etapa}')">+ Agregar</button>` : ''}
-          ${fotos.length ? `<a class="link" style="font-size:12px;" href="/api/fotos/zip?siniestro_id=${siniestroId}&etapa=${e.etapa}">Descargar estas</a>` : ''}
+          ${fotos.length ? `<button class="btn small secondary" onclick="FotosSC.compartirFotos([${fotos.map(f => f.id).join(',')}], 'Fotos de ${esc(e.etiqueta)}')">📤 Compartir</button>
+            <a class="link" style="font-size:12px;" href="/api/fotos/zip?siniestro_id=${siniestroId}&etapa=${e.etapa}">Descargar estas</a>` : ''}
         </h4>
         ${fotos.length ? `<div class="fg-grid">${fotos.map(f => `<button type="button" onclick="FotosSC.verFoto(${f.id})" title="${esc(f.subido_por_nombre || '')} · ${esc(f.creado_en)}">
           <img loading="lazy" alt="Foto de ${esc(e.etiqueta)}" src="/api/fotos/${f.id}/imagen?mini=1"></button>`).join('')}</div>`
@@ -200,7 +201,8 @@
       <div class="fg-nav">
         <button class="btn small secondary" ${ant ? `onclick="FotosSC.verFoto(${ant.id})"` : 'disabled'}>← Anterior</button>
         <div class="fg-botones">
-          <a class="btn small" href="/api/fotos/${f.id}/descargar">⬇ Descargar</a>
+          <button class="btn small" onclick="FotosSC.compartirFotos([${f.id}], 'Foto de ${esc(ETIQUETAS[f.etapa] || '')}')">📤 Compartir</button>
+          <a class="btn small secondary" href="/api/fotos/${f.id}/descargar">⬇ Descargar</a>
           ${f.puede_borrar && f.tipo === 'foto' ? `<button class="btn small danger" onclick="FotosSC.quitarFoto(${f.id})">Quitar</button>` : ''}
           <button class="btn small secondary" onclick="closeModal()">Cerrar</button>
         </div>
@@ -214,5 +216,59 @@
     try{ await api('DELETE', '/api/fotos/' + id); toast('Foto quitada.', 'success'); closeModal(); render(); }catch(e){}
   }
 
-  window.FotosSC = { abrirSubirFotos, subirVarias, cambiarEtapaConFotos, renderFotosSiniestro, verFoto, quitarFoto, ETIQUETAS };
+  /* ---------- Compartir por WhatsApp (5-nov-2026) ----------
+     Abre el menú de compartir del celular con el archivo ya adjunto (PDF de la OT o fotos); ahí se elige
+     WhatsApp y el contacto/grupo. Si el navegador no permite compartir archivos (p. ej. en computadora),
+     se descarga para mandarlo a mano. */
+  async function cargarArchivo(url, nombre){
+    const r = await fetch(url, { credentials:'same-origin' });
+    if(!r.ok) throw new Error('No se pudo obtener el archivo.');
+    const b = await r.blob();
+    return new File([b], nombre, { type: b.type || 'application/octet-stream' });
+  }
+  function descargarComo(file){
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  async function compartirArchivos(files, titulo){
+    if(!(navigator.canShare && navigator.canShare({ files }))){
+      files.forEach(descargarComo);
+      toast('Este equipo no permite compartir directo. Se descargó: ábrelo y compártelo por WhatsApp.', 'info', 7000);
+      return;
+    }
+    try{ await navigator.share({ files, title: titulo }); }
+    catch(e){
+      if(e && e.name === 'AbortError') return; // la persona cerró el menú
+      // Si tardó en cargar, el navegador pide un toque nuevo para abrir el menú de compartir.
+      showModal(`<h3>${esc(titulo)}</h3><p>${files.length === 1 ? 'El archivo está listo.' : files.length + ' archivos listos.'}</p>
+        <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" id="fgCompartirYa">📤 Compartir ahora</button></div>`);
+      document.getElementById('fgCompartirYa').addEventListener('click', async () => {
+        closeModal();
+        try{ await navigator.share({ files, title: titulo }); }catch(err){ if(!err || err.name !== 'AbortError') toast('No se pudo compartir: ' + (err && err.message || ''), 'error'); }
+      });
+    }
+  }
+  // OT (o cualquier archivo del expediente) por id.
+  async function compartirOt(archivoId, numero){
+    try{
+      toast('Preparando la OT…', 'info', 2000);
+      const f = await cargarArchivo(`/api/archivos/${archivoId}/descargar`, `OT_${numero || archivoId}.pdf`);
+      const ext = f.type.includes('pdf') ? '.pdf' : f.type.includes('png') ? '.png' : f.type.includes('image') ? '.jpg' : '';
+      const final = ext && !f.name.endsWith(ext) ? new File([f], f.name.replace(/\.[^.]+$/, '') + ext, { type: f.type }) : f;
+      await compartirArchivos([final], 'Orden de trabajo ' + (numero || ''));
+    }catch(e){ toast(e.message, 'error'); }
+  }
+  // Fotos por id (máximo 10 a la vez para no saturar WhatsApp).
+  async function compartirFotos(ids, titulo){
+    try{
+      const lista = ids.slice(0, 10);
+      if(ids.length > 10) toast('Se comparten las primeras 10 fotos. Para todas, usa "Descargar todas".', 'info', 6000);
+      else toast('Preparando fotos…', 'info', 2000);
+      const files = [];
+      for(let i = 0; i < lista.length; i++) files.push(await cargarArchivo(`/api/fotos/${lista[i]}/imagen`, `foto_${i + 1}.jpg`));
+      await compartirArchivos(files, titulo || 'Fotos');
+    }catch(e){ toast(e.message, 'error'); }
+  }
+
+  window.FotosSC = { compartirOt, compartirFotos, abrirSubirFotos, subirVarias, cambiarEtapaConFotos, renderFotosSiniestro, verFoto, quitarFoto, ETIQUETAS };
 })();
