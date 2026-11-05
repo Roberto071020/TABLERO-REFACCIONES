@@ -52,7 +52,13 @@ function calcularPanoramaBeto(db){
     // Modificación 1(a): "reingreso citado con fecha de entrega" separado de "unidad en piso" -- hoy
     // Beto no distingue entre una unidad que ya está físicamente en el taller (fecha_admision capturada)
     // y una que solo tiene cita agendada para reingresar (circulando, todavía no llega).
-    const reingresoCitado = (s.ingreso_tipo === 'circulando' || enTransito) && s.cita_fecha && !s.fecha_admision;
+    // Inicio de Alejandra (5-nov-2026): una unidad que circula puede tener fecha_admision de su PRIMERA
+    // llegada y una cita POSTERIOR de reingreso. Ya llegó a esa cita si se admitió ese día o después, o si
+    // Alejandra registró el reingreso (reingreso_recibido_en) con "Recibir unidad".
+    const citaDia = s.cita_fecha ? String(s.cita_fecha).slice(0,10) : '';
+    const llegoACita = !!citaDia && ((s.fecha_admision && String(s.fecha_admision).slice(0,10) >= citaDia)
+      || (s.reingreso_recibido_en && String(s.reingreso_recibido_en).slice(0,10) >= citaDia));
+    const reingresoCitado = (s.ingreso_tipo === 'circulando' || enTransito) && !!citaDia && !llegoACita;
     const situacion = reingresoCitado ? 'reingreso_citado' : enTransito ? 'en_transito' : (s.fecha_admision ? 'en_piso' : (enPiso ? 'en_piso' : 'en_proceso'));
     const diasEnTaller = s.creado_en ? Math.floor((Date.now() - new Date(s.creado_en.replace(' ','T')+'Z').getTime()) / 86400000) : null;
 

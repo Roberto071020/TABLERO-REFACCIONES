@@ -5,6 +5,7 @@ const { csvCell, csvTextForced, toLocal, verificarCorreosPendientes, archivarSin
 const { calcularPanoramaBeto } = require('../panoramaBeto');
 const { calcularReporteArranque } = require('../reporteArranque');
 const whatsappScheduler = require('../whatsappScheduler'); // punto 1 (quinta revisión): barrido programado independiente (whatsappFaseA.js ya no se llama directo aquí)
+const { calcularInicioAlejandra } = require('../inicioAlejandra');
 const router = express.Router();
 
 const CERRADAS = ['Recibida físicamente','Cancelada'];
@@ -152,6 +153,10 @@ router.get('/resumen', requireAuth, (req, res)=>{
   const tareasVencidas = db.prepare(`SELECT COUNT(*) n FROM tareas WHERE estado IN ('pendiente','en_proceso') AND fecha_limite != '' AND fecha_limite < ?`).get(hoy).n;
   const mensajesIaPendientes = db.prepare(`SELECT COUNT(*) n FROM mensajes_ia WHERE estado = 'generado'`).get().n;
   const hitosListosSinEnviar = db.prepare(`SELECT COUNT(*) n FROM siniestro_hitos WHERE estado = 'generado'`).get().n;
+  // Inicio de Alejandra (5-nov-2026): "Clientes pendientes de informar" del panorama de Roberto usa ahora el
+  // MISMO cálculo que la pantalla de Alejandra (avisos + seguimientos de +3 días), para que ambos números cuadren.
+  let clientesPorInformar = 0;
+  try{ const na = calcularInicioAlejandra(db).numeros; clientesPorInformar = na.avisos + na.seguimiento; }catch(e){}
   // Reactivación simplificada (28-sep-2026, autorizado por Roberto): panel general -- mismo criterio
   // exacto que ya usa GET /bandeja-calidad (Beto/Orlando), solo como número para el panorama de Roberto.
   const unidadesPendientesCalidad = db.prepare(`SELECT COUNT(*) n FROM siniestros WHERE archivado = 0 AND estado_produccion = 'terminado'
@@ -250,7 +255,7 @@ router.get('/resumen', requireAuth, (req, res)=>{
   `).get().prom;
 
   res.json({ pedidosNuevos, piezasVencidas, pedidosSinPiezas, recibidosParciales, correosPendientes, cierresHoy, incidenciasAbiertas, pendientesCompletar, expedientesEnSeguimiento, porAseguradora,
-    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, unidadesPendientesCalidad, expedientesSinActualizar,
+    tareasPendientes, tareasVencidas, mensajesIaPendientes, hitosListosSinEnviar, clientesPorInformar, unidadesPendientesCalidad, expedientesSinActualizar,
     ovPendientesRevision, ovEnRevision, ovEsperandoDesarme, ovComplementosPendientes, ovBorradoresPorCapturar, ovFotosPorCompletar, ovListosParaEnviar,
     betoReingresosSinRecibir, betoPorVencer, betoListasParaIniciar, betoOtRapidasSinAsignar, betoEnProcesoDesglose, betoVencidas,
     piezasPorConfirmar, piezasMalSurtidas, piezasEnDevolucion,
@@ -379,6 +384,8 @@ const DETALLE_TARJETAS = {
   hitosListosSinEnviar: (db) => db.prepare(`SELECT s.id, s.numero, ch.titulo detalle
     FROM siniestro_hitos sh JOIN siniestros s ON s.id=sh.siniestro_id JOIN catalogo_hitos ch ON ch.id=sh.hito_id
     WHERE sh.estado='generado' ORDER BY sh.actualizado_en DESC`).all(),
+  clientesPorInformar: (db) => calcularInicioAlejandra(db).tarjetas.filter(t => t.tipo === 'aviso' || t.tipo === 'seguimiento')
+    .map(t => ({ id: t.id, numero: t.numero, detalle: (t.vehiculo ? t.vehiculo + ' — ' : '') + t.motivo })),
   mensajesIaPendientes: (db) => db.prepare(`SELECT s.id, s.numero, ('Borrador generado ' || m.generado_en) detalle
     FROM mensajes_ia m JOIN siniestros s ON s.id=m.siniestro_id WHERE m.estado='generado' ORDER BY m.generado_en DESC`).all(),
 };

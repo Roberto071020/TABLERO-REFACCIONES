@@ -161,7 +161,7 @@ async function hacerLogin(){
     document.getElementById('loginRoot').innerHTML = '';
     document.getElementById('topHeader').classList.remove('hidden');
     document.getElementById('footerNote').classList.remove('hidden');
-    document.getElementById('userChip').textContent = currentUser.nombre + ' · ' + currentUser.rol;
+    document.getElementById('userChip').textContent = currentUser.nombre;
     goTo('inicio');
   }catch(e){
     document.getElementById('loginError').textContent = e.message;
@@ -395,9 +395,360 @@ async function viewInicioBeto(){
   ${cola.length ? unidades : '<div class="empty" style="margin-top:12px;">No hay unidades autorizadas pendientes.</div>'}`;
 }
 
+/* ===================== VISTA: INICIO DE ALEJANDRA (5-nov-2026) =====================
+   Proceso confirmado por Roberto: la pantalla le dice a Alejandra QUÉ hacer hoy, EN QUÉ ORDEN y CON QUÉ
+   BOTÓN -- 1) Entregar, 2) Recibir unidades, 3) Agendar reingresos, 4) Avisar al cliente, 5) Dar
+   seguimiento (+3 días sin aviso). Una tarjeta por unidad con un solo botón principal; cada botón la
+   guía paso a paso. Los cálculos viven en server/inicioAlejandra.js (GET /api/inicio-alejandra). */
+let ALE = { tarjetas: [], verTodo: {} };
+const ALE_SECCIONES = [
+  { k:'entregar', titulo:'1. Entregar', ayuda:'El cliente viene por su unidad, o se le prometió para hoy.', tipos:['entrega','retraso'] },
+  { k:'recibir', titulo:'2. Recibir unidades', ayuda:'Citas de hoy que todavía no se registran.', tipos:['cita'] },
+  { k:'reingreso', titulo:'3. Agendar reingresos', ayuda:'Ya llegó el 90% de las piezas: dale fecha al cliente.', tipos:['reingreso'] },
+  { k:'avisar', titulo:'4. Avisar al cliente', ayuda:'Su unidad avanzó: mándale el mensaje por WhatsApp.', tipos:['aviso'] },
+  { k:'seguimiento', titulo:'5. Dar seguimiento', ayuda:'Más de 3 días sin saber nada: mándale el mensaje de seguimiento.', tipos:['seguimiento'] },
+];
+const ALE_MAX_POR_SECCION = 10;
+// Fecha del día en el celular (hora de Veracruz). todayISO() usa UTC y después de las 6 pm ya marca mañana.
+function hoyLocalISO(){ const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+
+// En celular abre la app de WhatsApp (wa.me); en computadora, WhatsApp Web (decisión de Roberto, 5-nov-2026).
+function esCelular(){ return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || ''); }
+function linkWhatsapp(telefono10, texto){
+  const t = texto ? encodeURIComponent(texto) : '';
+  return esCelular() ? `https://wa.me/52${telefono10}${t ? '?text=' + t : ''}`
+    : `https://web.whatsapp.com/send?phone=52${telefono10}${t ? '&text=' + t : ''}`;
+}
+// Mismo criterio para la bandeja de WhatsApp (sus enlaces vienen armados del servidor para WhatsApp Web).
+function linkWhatsappSegunDispositivo(link){
+  if(!link || !esCelular()) return link;
+  const m = String(link).match(/^https:\/\/web\.whatsapp\.com\/send\?phone=(\d+)(?:&text=(.*))?$/);
+  return m ? `https://wa.me/${m[1]}${m[2] ? '?text=' + m[2] : ''}` : link;
+}
+
+async function viewInicioAlejandra(){
+  const d = await api('GET', '/api/inicio-alejandra');
+  ALE.tarjetas = d.tarjetas;
+  const n = d.numeros;
+  const tarjetaNum = (num, texto, color, sec) => `<div class="card ${color}" onclick="aleIrA('${sec}')"><div class="num">${num}</div><div class="label">${texto}</div></div>`;
+  const secciones = ALE_SECCIONES.map(sec => {
+    const items = ALE.tarjetas.map((t, i) => ({ t, i })).filter(x => sec.tipos.includes(x.t.tipo));
+    if(!items.length) return '';
+    const visibles = ALE.verTodo[sec.k] ? items : items.slice(0, ALE_MAX_POR_SECCION);
+    return `<div id="ale-${sec.k}" style="margin-top:18px;">
+      <h3 style="margin:0 0 2px;">${sec.titulo} <span class="badge gris">${items.length}</span></h3>
+      <p class="subtle" style="margin:0 0 6px;">${sec.ayuda}</p>
+      ${visibles.map(x => aleTarjetaHtml(x.t, x.i)).join('')}
+      ${items.length > visibles.length ? `<button class="btn secondary" style="width:100%;" onclick="ALE.verTodo['${sec.k}']=true;render();">Ver ${items.length - visibles.length} más</button>` : ''}
+    </div>`;
+  }).join('');
+  return `
+  <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Alejandra')} 👋</h2>
+  <p class="subtle" style="margin-top:0;">Esto es lo que tienes que hacer hoy, en este orden. Toca el botón de cada unidad y sigue los pasos.</p>
+  <div class="grid-cards">
+    ${tarjetaNum(n.entregas, 'Entregas de hoy', n.entregas ? 'rojo' : 'verde', 'entregar')}
+    ${tarjetaNum(n.citas, 'Citas de hoy', 'azul', 'recibir')}
+    ${tarjetaNum(n.avisos, 'Clientes por avisar', n.avisos ? 'ambar' : 'verde', 'avisar')}
+    ${tarjetaNum(n.seguimiento, 'Sin aviso +3 días', n.seguimiento ? 'rojo' : 'verde', 'seguimiento')}
+  </div>
+  ${secciones || '<div class="empty" style="margin-top:12px;">🎉 Terminaste todo lo de hoy.</div>'}`;
+}
+function aleIrA(sec){
+  const el = document.getElementById('ale-' + sec);
+  if(el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+  else toast('No hay pendientes de este tipo.', 'success');
+}
+
+function aleTarjetaHtml(t, i){
+  const titulo = esc(t.vehiculo || ('Siniestro ' + t.numero));
+  const sub = [t.placas, t.cliente_nombre, t.aseguradora].filter(Boolean).map(esc).join(' · ');
+  let boton = '', extra = '';
+  const faltaTel = `<span class="badge rojo">Falta el teléfono del cliente</span> <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${t.id})">Capturar teléfono</button>`;
+  if(t.tipo === 'aviso' || t.tipo === 'seguimiento'){
+    if(t.falta_vehiculo) boton = `<span class="badge rojo">Falta capturar el vehículo</span> <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${t.id})">Capturar vehículo</button>`;
+    else if(!t.telefono) boton = faltaTel;
+    else boton = `<button class="btn" onclick="aleEnviarWhatsapp(${i})">📲 Enviar WhatsApp</button>`;
+    extra = `<button class="btn small ghost" onclick="aleYaAvisado(${i})">${t.tipo === 'aviso' ? 'Ya se lo había avisado' : 'Ya le escribí hoy'}</button>`;
+  } else if(t.tipo === 'retraso'){
+    boton = t.telefono ? `<button class="btn" onclick="aleAvisarRetraso(${i})">📲 Escribir al cliente</button>` : faltaTel;
+  } else if(t.tipo === 'entrega'){
+    boton = `<button class="btn" onclick="aleEntregar(${t.id})">✅ Entregar unidad</button>`;
+  } else if(t.tipo === 'cita'){
+    boton = `<button class="btn" onclick="aleRecibir(${t.id})">🚗 Recibir unidad</button>`;
+    extra = `<button class="btn small ghost" onclick="aleCambiarCita(${t.id}, '${esc(t.cita_fecha || '')}')">Cambiar cita</button>`;
+  } else if(t.tipo === 'reingreso'){
+    boton = `<button class="btn" onclick="aleAgendarReingreso(${i})">📅 Agendar reingreso</button>`;
+  }
+  return `<div class="section" style="margin:8px 0;padding:14px;">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+      <span style="font-weight:700;font-size:16px;">${titulo}</span>
+      <span class="link" style="font-size:13px;white-space:nowrap;" onclick="goSiniestro(${t.id})">Ver expediente</span>
+    </div>
+    ${sub ? `<div class="subtle" style="margin:2px 0 6px;">${sub}</div>` : ''}
+    <div style="margin-bottom:10px;"><span class="badge ${t.color || 'gris'}" style="white-space:normal;">${esc(t.motivo || '')}</span></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${boton} ${extra}</div>
+  </div>`;
+}
+
+/* ---------- Avisar al cliente / seguimiento ---------- */
+function aleEnviarWhatsapp(i){
+  const t = ALE.tarjetas[i]; if(!t) return;
+  window.open(linkWhatsapp(t.telefono, t.texto), '_blank'); // en el mismo toque, para que el celular no lo bloquee
+  showModal(`
+    <h3>¿Le enviaste el mensaje?</h3>
+    <p class="subtle">${esc(t.vehiculo || t.numero)} · ${esc(t.cliente_nombre || '')}</p>
+    <p>Se abrió WhatsApp con el mensaje ya escrito. Solo toca <b>Enviar</b> en WhatsApp y regresa aquí.</p>
+    <details style="margin:8px 0;"><summary class="subtle" style="cursor:pointer;">Ver el mensaje</summary><p style="white-space:pre-wrap;">${esc(t.texto || '')}</p></details>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">No lo envié</button>
+      <button class="btn" onclick="aleConfirmarAviso(${i}, 'whatsapp')">Sí, ya lo envié</button>
+    </div>`);
+}
+function aleYaAvisado(i){
+  const t = ALE.tarjetas[i]; if(!t) return;
+  showModal(`
+    <h3>¿Ya le habías avisado?</h3>
+    <p>Úsalo solo si <b>ya le diste este aviso</b> por otro medio (llamada, en persona o WhatsApp). La unidad sale de tu lista.</p>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" onclick="aleConfirmarAviso(${i}, 'ya_avisado')">Sí, ya le avisé</button>
+    </div>`);
+}
+async function aleConfirmarAviso(i, modo){
+  const t = ALE.tarjetas[i]; if(!t) return;
+  try{
+    await api('POST', `/api/inicio-alejandra/${t.id}/aviso`, { codigo: t.codigo, tipo: t.tipo, modo });
+    toast('Listo, quedó registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function aleAvisarRetraso(i){
+  const t = ALE.tarjetas[i]; if(!t) return;
+  window.open(linkWhatsapp(t.telefono, ''), '_blank');
+  showModal(`
+    <h3>Avisa que todavía no está lista</h3>
+    <p>Se abrió el chat del cliente. Explícale que su unidad aún no está lista y dale la nueva fecha que te confirme Beto.</p>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Todavía no</button>
+      <button class="btn" onclick="aleConfirmarRetraso(${i})">Ya le avisé</button>
+    </div>`);
+}
+async function aleConfirmarRetraso(i){
+  const t = ALE.tarjetas[i]; if(!t) return;
+  try{
+    await api('POST', `/api/inicio-alejandra/${t.id}/aviso`, { codigo:'retraso', modo:'whatsapp' });
+    toast('Listo, quedó registrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+/* ---------- Cambiar cita / agendar reingreso ---------- */
+function aleCambiarCita(id, actual){
+  showModal(`
+    <h3>Cambiar cita</h3>
+    <div class="field"><label>Nueva fecha de cita</label><input id="ale_cita" type="date" min="${hoyLocalISO()}" value="${esc(actual && actual >= hoyLocalISO() ? actual : '')}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleGuardarCita(${id}, null)">Guardar</button></div>`);
+}
+function aleAgendarReingreso(i){
+  const t = ALE.tarjetas[i]; if(!t) return;
+  showModal(`
+    <h3>Agendar reingreso</h3>
+    <p class="subtle">${esc(t.vehiculo || t.numero)} · ${esc(t.cliente_nombre || '')}</p>
+    <p><b>Paso 1.</b> Escríbele al cliente y pónganse de acuerdo en el día.</p>
+    ${t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Abrir chat del cliente</button>` : `<span class="badge rojo">Falta el teléfono del cliente</span>`}
+    <p style="margin-top:14px;"><b>Paso 2.</b> Anota la fecha que acordaron.</p>
+    <div class="field"><label>Fecha de la cita</label><input id="ale_cita" type="date" min="${hoyLocalISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleGuardarCita(${t.id}, ${t.tarea_id || 'null'})">Guardar cita</button></div>`);
+}
+async function aleGuardarCita(id, tareaId){
+  const fecha = document.getElementById('ale_cita').value;
+  if(!fecha){ toast('Elige la fecha de la cita.', 'error'); return; }
+  try{
+    await api('PATCH', '/api/siniestros/' + id, { cita_fecha: fecha });
+    if(tareaId) await api('PATCH', '/api/tareas/' + tareaId, { estado:'completada' });
+    toast('Cita guardada. Beto la verá como reingreso por llegar.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+
+/* ---------- Recibir unidad (paso a paso) ---------- */
+let ALE_REC = null;
+const ALE_GASOLINA = ['Reserva', '1/4', '1/2', '3/4', 'Lleno'];
+async function aleRecibir(id){
+  try{
+    const s = await api('GET', '/api/siniestros/' + id);
+    ALE_REC = { id, s, esReingreso: !!(s.fecha_admision && String(s.fecha_admision).trim()),
+      datos: { ingreso_tipo: s.ingreso_tipo || '', kilometraje: '', combustible_nivel: '', llaves_entregadas: '', pertenencias: '' } };
+    aleRecibirPaso1();
+  }catch(e){}
+}
+function aleRecPaso(n){ return `<p class="subtle" style="margin:0 0 8px;">Paso ${n} de 3</p>`; }
+function aleRecibirPaso1(){
+  const r = ALE_REC, d = r.datos;
+  const opc = (campo, valor, texto) => `<button type="button" class="btn ${d[campo] === valor ? '' : 'secondary'}" onclick="aleRecSet('${campo}','${valor}')">${texto}</button>`;
+  showModal(`
+    <h3>Recibir unidad${r.esReingreso ? ' (reingreso)' : ''}</h3>
+    <p class="subtle" style="margin-top:0;">${esc(r.s.vehiculo || '')} · ${esc(r.s.placas || '')} · ${esc(r.s.cliente_nombre || '')}</p>
+    ${aleRecPaso(1)}<h4 style="margin:0 0 8px;">Datos de llegada</h4>
+    ${r.esReingreso ? '' : `<div class="field"><label>¿Cómo llegó?</label><div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${opc('ingreso_tipo','circulando','Manejando')} ${opc('ingreso_tipo','grua','En grúa')} ${opc('ingreso_tipo','permanece','Se queda todo el proceso')}</div></div>`}
+    <div class="field"><label>Kilometraje</label><input id="ale_km" inputmode="numeric" value="${esc(d.kilometraje)}" placeholder="Ej. 45230"></div>
+    <div class="field"><label>Gasolina</label><div style="display:flex;gap:6px;flex-wrap:wrap;">${ALE_GASOLINA.map(g => opc('combustible_nivel', g, g)).join(' ')}</div></div>
+    <div class="field"><label>¿Dejó las llaves?</label><div style="display:flex;gap:6px;">${opc('llaves_entregadas','1','Sí')} ${opc('llaves_entregadas','0','No')}</div></div>
+    <div class="field"><label>Pertenencias dentro de la unidad</label><textarea id="ale_pert" placeholder="Ej. silla de bebé, gato hidráulico. Si no hay, escribe: ninguna">${esc(d.pertenencias)}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleRecibirIrPaso2()">Siguiente →</button></div>`);
+}
+function aleRecGuardarCampos(){
+  const km = document.getElementById('ale_km'), pert = document.getElementById('ale_pert');
+  if(km) ALE_REC.datos.kilometraje = km.value.trim();
+  if(pert) ALE_REC.datos.pertenencias = pert.value.trim();
+}
+function aleRecSet(campo, valor){ aleRecGuardarCampos(); ALE_REC.datos[campo] = valor; aleRecibirPaso1(); }
+function aleRecibirIrPaso2(){
+  aleRecGuardarCampos();
+  const r = ALE_REC, d = r.datos, faltan = [];
+  if(!r.esReingreso && !d.ingreso_tipo) faltan.push('cómo llegó');
+  if(!d.kilometraje) faltan.push('kilometraje');
+  if(!d.combustible_nivel) faltan.push('gasolina');
+  if(d.llaves_entregadas === '') faltan.push('si dejó las llaves');
+  if(!d.pertenencias) faltan.push('pertenencias (o "ninguna")');
+  if(faltan.length){ toast('Falta: ' + faltan.join(', ') + '.', 'error'); return; }
+  aleRecibirPaso2();
+}
+async function aleRecibirPaso2(){
+  const r = ALE_REC;
+  let c = { fotos: 0, minimo: 4 };
+  try{ c = await api('GET', `/api/inicio-alejandra/${r.id}/fotos-recepcion`); }catch(e){}
+  const listas = c.fotos >= c.minimo;
+  showModal(`
+    <h3>Recibir unidad</h3>
+    ${aleRecPaso(2)}<h4 style="margin:0 0 8px;">Fotos de recepción</h4>
+    <p>Toma mínimo <b>${c.minimo} fotos</b>: frente, atrás, lado izquierdo y lado derecho. Agrega también cualquier golpe o detalle que veas.</p>
+    <p style="font-size:18px;"><span class="badge ${listas ? 'verde' : 'ambar'}" style="font-size:14px;">Llevas ${c.fotos} de ${c.minimo}</span></p>
+    <button class="btn ${listas ? 'secondary' : ''}" onclick="FotosSC.abrirSubirFotos(${r.id}, 'recepcion', { titulo:'Fotos de recepción', alTerminar: () => aleRecibirPaso2() })">📷 ${c.fotos ? 'Agregar más fotos' : 'Tomar fotos'}</button>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="aleRecibirPaso1()">← Atrás</button>
+      <button class="btn" ${listas ? '' : 'disabled'} onclick="aleRecibirGuardar()">Siguiente →</button>
+    </div>`);
+}
+async function aleRecibirGuardar(){
+  const r = ALE_REC, d = r.datos, s = r.s;
+  const hoy = hoyLocalISO();
+  try{
+    await api('POST', `/api/inicio-alejandra/${r.id}/llego`, {});
+    const cambios = { kilometraje: d.kilometraje, combustible_nivel: d.combustible_nivel, llaves_entregadas: Number(d.llaves_entregadas),
+      pertenencias: d.pertenencias, ubicacion: 'Piso' };
+    if(!r.esReingreso){ cambios.fecha_admision = hoy; cambios.ingreso_tipo = d.ingreso_tipo; }
+    if(!s.estado_admision) cambios.estado_admision = 'admitido';
+    if(s.tipo_reparacion === 'AUTO_SURTIDO' && !s.autosurtido_reingreso_en && r.esReingreso) cambios.autosurtido_reingreso_en = hoy;
+    await api('PATCH', '/api/siniestros/' + r.id, cambios);
+  }catch(e){ if(e.data && e.data.codigo === 'FOTOS_RECEPCION') aleRecibirPaso2(); return; }
+  // Paso 3: lo que sigue (inventario y bienvenida). Se pide el inicio de nuevo para tener listo el mensaje
+  // de bienvenida; el botón de WhatsApp se toca directamente (el celular bloquea ventanas abiertas solas).
+  let i = -1, faltantes = [];
+  try{
+    const d2 = await api('GET', '/api/inicio-alejandra');
+    ALE.tarjetas = d2.tarjetas;
+    i = ALE.tarjetas.findIndex(t => t.id === r.id && t.tipo === 'aviso' && t.codigo === '5.1');
+    const s2 = await api('GET', '/api/siniestros/' + r.id);
+    faltantes = (s2.admision_faltantes || []).filter(f => f !== 'Llaves entregadas');
+  }catch(e){}
+  const bienvenida = ALE.tarjetas[i];
+  showModal(`
+    <h3>✅ Unidad recibida</h3>
+    ${aleRecPaso(3)}
+    <p>Beto ya la ve en el taller. Termina con estos pasos:</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn secondary" onclick="imprimirInventarioFisico(${r.id})">🖨️ Imprimir inventario para que lo firme el cliente</button>
+      ${faltantes.includes('Inventario físico/fotográfico') ? `<label class="btn secondary" style="text-align:center;">📷 Foto del inventario firmado<input type="file" accept="image/*,.pdf" hidden onchange="aleSubirDoc(this, ${r.id}, 'inventario_fisico')"></label>` : ''}
+      ${faltantes.includes('Orden de admisión') ? `<label class="btn secondary" style="text-align:center;">📷 Foto de la orden de admisión<input type="file" accept="image/*,.pdf" hidden onchange="aleSubirDoc(this, ${r.id}, 'orden_admision')"></label>` : ''}
+      ${bienvenida ? (bienvenida.telefono ? `<button class="btn" onclick="aleEnviarWhatsapp(${i})">📲 Enviar bienvenida por WhatsApp</button>` : `<span class="badge rojo">Falta el teléfono del cliente para mandarle la bienvenida</span>`) : ''}
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal(); render();">Terminar</button></div>`);
+}
+async function aleSubirDoc(input, id, tipo){
+  const file = input.files && input.files[0]; if(!file) return;
+  const fd = new FormData();
+  fd.append('archivo', file); fd.append('entidad_tipo', 'siniestro'); fd.append('entidad_id', id); fd.append('tipo', tipo);
+  const res = await fetch('/api/archivos', { method:'POST', body: fd });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ toast(data.error || 'No se pudo subir.', 'error'); return; }
+  toast('Documento guardado.', 'success');
+  const label = input.closest('label'); if(label){ label.classList.add('hidden'); }
+}
+
+/* ---------- Entregar unidad (paso a paso) ---------- */
+let ALE_ENT = null;
+async function aleEntregar(id){
+  try{
+    const s = await api('GET', '/api/siniestros/' + id);
+    ALE_ENT = { id, s, d: { receptor: s.cliente_nombre || '', ine: '', deducible: s.deducible_aplica ? '' : 'no_aplica', km: '', gasolina: '', llaves: '', finiquito: '', encuesta: '' } };
+    aleEntregarPaso();
+  }catch(e){}
+}
+function aleEntregarPaso(){
+  const { s, d } = ALE_ENT;
+  const opc = (campo, valor, texto) => `<button type="button" class="btn ${d[campo] === valor ? '' : 'secondary'}" onclick="aleEntSet('${campo}','${valor}')">${texto}</button>`;
+  const fila = (n, titulo, cuerpo) => `<div class="field"><label><b>${n}.</b> ${titulo}</label>${cuerpo}</div>`;
+  const esGnp = String(s.aseguradora || '').toUpperCase() === 'GNP';
+  showModal(`
+    <h3>Entregar unidad</h3>
+    <p class="subtle" style="margin-top:0;">${esc(s.vehiculo || '')} · ${esc(s.placas || '')} · ${esc(s.aseguradora || '')}</p>
+    <p>Revisa cada punto con el cliente, en este orden:</p>
+    ${fila(1, '¿Quién recibe la unidad?', `<input id="ale_ent_receptor" value="${esc(d.receptor)}">`)}
+    ${fila(2, '¿Mostró su INE?', `<div style="display:flex;gap:6px;">${opc('ine','si','Sí')} ${opc('ine','no','No')}</div>`)}
+    ${s.deducible_aplica ? fila(3, 'Deducible: ¿ya lo pagó? (pide el comprobante)', `<div style="display:flex;gap:6px;">${opc('deducible','pagado','Sí, ya pagó')} ${opc('deducible','pendiente','No ha pagado')}</div>`) : ''}
+    ${fila(s.deducible_aplica ? 4 : 3, 'Kilometraje al entregar', `<input id="ale_ent_km" inputmode="numeric" value="${esc(d.km)}">`)}
+    ${fila(s.deducible_aplica ? 5 : 4, 'Gasolina al entregar', `<div style="display:flex;gap:6px;flex-wrap:wrap;">${ALE_GASOLINA.map(g => opc('gasolina', g, g)).join(' ')}</div>`)}
+    ${fila(s.deducible_aplica ? 6 : 5, '¿Se le entregaron las llaves?', `<div style="display:flex;gap:6px;">${opc('llaves','1','Sí')} ${opc('llaves','0','No')}</div>`)}
+    ${fila(s.deducible_aplica ? 7 : 6, '¿Firmó el finiquito?', `<div style="display:flex;gap:6px;flex-wrap:wrap;">${opc('finiquito','firmado','Sí, firmó')} ${opc('finiquito','inconformidad_abierta','No, tiene una inconformidad')}</div>`)}
+    ${esGnp ? fila(s.deducible_aplica ? 8 : 7, 'Pídele que conteste la encuesta de GNP ahí mismo. ¿La contestó?', `<div style="display:flex;gap:6px;">${opc('encuesta','respondida','Sí')} ${opc('encuesta','enviada','No')}</div>`) : ''}
+    <div class="field" id="ale_ent_obs_wrap" style="display:${d.finiquito === 'inconformidad_abierta' ? 'block' : 'none'}"><label>¿Cuál es la inconformidad?</label><textarea id="ale_ent_obs">${esc(d.obs || '')}</textarea></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleEntregarGuardar()">✅ Unidad entregada</button></div>`, true);
+}
+function aleEntGuardarCampos(){
+  const g = id => document.getElementById(id);
+  if(g('ale_ent_receptor')) ALE_ENT.d.receptor = g('ale_ent_receptor').value.trim();
+  if(g('ale_ent_km')) ALE_ENT.d.km = g('ale_ent_km').value.trim();
+  if(g('ale_ent_obs')) ALE_ENT.d.obs = g('ale_ent_obs').value.trim();
+}
+function aleEntSet(campo, valor){ aleEntGuardarCampos(); ALE_ENT.d[campo] = valor; aleEntregarPaso(); }
+async function aleEntregarGuardar(){
+  aleEntGuardarCampos();
+  const { id, s, d } = ALE_ENT, faltan = [];
+  const esGnp = String(s.aseguradora || '').toUpperCase() === 'GNP';
+  if(!d.receptor) faltan.push('quién recibe');
+  if(!d.ine) faltan.push('INE');
+  if(!d.deducible) faltan.push('deducible');
+  if(!d.km) faltan.push('kilometraje');
+  if(!d.gasolina) faltan.push('gasolina');
+  if(d.llaves === '') faltan.push('llaves');
+  if(!d.finiquito) faltan.push('finiquito');
+  if(esGnp && !d.encuesta) faltan.push('encuesta');
+  if(faltan.length){ toast('Falta: ' + faltan.join(', ') + '.', 'error'); return; }
+  if(d.ine !== 'si'){ toast('Sin INE no se entrega la unidad. Pídele su identificación.', 'error'); return; }
+  if(d.deducible === 'pendiente'){ toast('El deducible no está pagado: no se entrega la unidad hasta que lo pague.', 'error'); return; }
+  if(d.finiquito === 'inconformidad_abierta' && !d.obs){ toast('Escribe cuál es la inconformidad.', 'error'); return; }
+  const hoy = hoyLocalISO();
+  try{
+    await api('PATCH', '/api/siniestros/' + id, {
+      entrega_receptor: d.receptor, entrega_identificacion: 'INE', entrega_kilometraje: d.km, entrega_combustible: d.gasolina,
+      entrega_llaves_entregadas: Number(d.llaves), estado_entrega: d.finiquito === 'firmado' ? 'entregado' : 'entregado_con_observacion',
+      ...(d.deducible === 'pagado' ? { deducible_pagado_confirmado_en: hoy } : {}),
+      ...(esGnp ? { entrega_encuesta_gnp_solicitada: 1, encuesta_estado: d.encuesta } : {})
+    });
+    await api('PATCH', `/api/siniestros/${id}/entrega`, { fecha_entrega_real: hoy });
+    // El finiquito firmado exige la entrega ya registrada, por eso va al final.
+    await api('PATCH', '/api/siniestros/' + id, { finiquito_estado: d.finiquito, finiquito_fecha: hoy, ...(d.obs ? { finiquito_observacion: d.obs } : {}) });
+    toast('Unidad entregada. Pasa el expediente completo a Angélica.', 'success', 6000);
+    closeModal(); render();
+  }catch(e){}
+}
+
 /* ===================== VISTA: INICIO ===================== */
 async function viewInicio(){
   if(currentUser && currentUser.rol === 'beto') return viewInicioBeto();
+  if(currentUser && currentUser.rol === 'atencion_cliente') return viewInicioAlejandra();
   const r = await api('GET','/api/reportes/resumen');
   const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
@@ -419,7 +770,7 @@ async function viewInicio(){
       <div class="card verde" onclick="goTo('produccion')"><div class="num">${r.betoListasParaIniciar}</div><div class="label">Vehículos en piso</div></div>
       <div class="card rojo" onclick="goTo('produccion')"><div class="num">${r.betoVencidas}</div><div class="label">Entregas vencidas</div></div>
       <div class="card ambar" onclick="goTo('produccion')"><div class="num">${r.betoPorVencer}</div><div class="label">Por vencer (1-2 días)</div></div>
-      <div class="card azul" onclick="abrirDetalleTarjeta('hitosListosSinEnviar','Hitos listos, sin avisar al cliente')"><div class="num">${r.hitosListosSinEnviar}</div><div class="label">Clientes pendientes de informar</div></div>
+      <div class="card azul" onclick="abrirDetalleTarjeta('clientesPorInformar','Clientes pendientes de informar')"><div class="num">${r.clientesPorInformar}</div><div class="label">Clientes pendientes de informar</div></div>
       <div class="card ${r.unidadesPendientesCalidad>0?'ambar':'verde'}" onclick="goTo('calidad')"><div class="num">${r.unidadesPendientesCalidad}</div><div class="label">Unidades pendientes de calidad</div></div>
       <div class="card ${r.incidenciasAbiertas>0?'morado':'verde'}" style="${r.incidenciasAbiertas>0?'border-left:4px solid #7c3aed':''}" onclick="abrirDetalleTarjeta('incidenciasAbiertas','Incidencias abiertas')"><div class="num">${r.incidenciasAbiertas}</div><div class="label">Incidencias abiertas</div></div>
     </div>
@@ -4515,8 +4866,9 @@ async function reclamarYAbrirEnPestana(tab, solicitud){
 }
 function abrirWhatsappYConfirmar(envio, tab){
   if(envio.link){
-    if(tab && !tab.closed) tab.location.href = envio.link;
-    else window.open(envio.link, '_blank'); // reabrir el enlace guardado (p. ej. tras navegar de pantalla) sin pestaña previa.
+    const link = linkWhatsappSegunDispositivo(envio.link); // en celular abre la app de WhatsApp (5-nov-2026)
+    if(tab && !tab.closed) tab.location.href = link;
+    else window.open(link, '_blank'); // reabrir el enlace guardado (p. ej. tras navegar de pantalla) sin pestaña previa.
   } else if(tab && !tab.closed){
     tab.close();
   }
@@ -4579,7 +4931,7 @@ async function crearRespaldoAhora(){
     currentUser = r.user;
     document.getElementById('topHeader').classList.remove('hidden');
     document.getElementById('footerNote').classList.remove('hidden');
-    document.getElementById('userChip').textContent = currentUser.nombre + ' · ' + currentUser.rol;
+    document.getElementById('userChip').textContent = currentUser.nombre;
     render();
   }catch(e){
     renderLogin();

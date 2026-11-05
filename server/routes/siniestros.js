@@ -324,7 +324,12 @@ router.patch('/:id', requireAuth, (req, res)=>{
 
   // Documento Maestro / Fase D, tabla 10: "criterio de salida: valuación enviada y resolución registrada."
   const ESTADOS_VALUACION_CON_ENVIO = ['enviada','observada','ajustada','autorizada_parcial','autorizada_total','rechazada'];
-  if(ESTADOS_VALUACION_CON_ENVIO.includes(nuevo.estado_valuacion) && !(nuevo.valuacion_fecha_envio && String(nuevo.valuacion_fecha_envio).trim())){
+  // Inicio de Alejandra (5-nov-2026): estas dos reglas solo se exigen cuando el PATCH toca esa parte del
+  // expediente. Antes se revisaban en CUALQUIER cambio, así que un dato viejo incompleto de valuación o
+  // autorización bloqueaba acciones ajenas (p. ej. Alejandra agendando una cita o recibiendo la unidad)
+  // con un mensaje que ella no puede resolver.
+  const tocaCampos = (...cs) => cs.some(c => req.body[c] !== undefined && String(req.body[c] ?? '') !== String(anterior[c] ?? ''));
+  if(tocaCampos('estado_valuacion','valuacion_fecha_envio') && ESTADOS_VALUACION_CON_ENVIO.includes(nuevo.estado_valuacion) && !(nuevo.valuacion_fecha_envio && String(nuevo.valuacion_fecha_envio).trim())){
     return res.status(400).json({ error:'Indica la fecha de envío de la valuación antes de marcarla en este estado.' });
   }
   // Fotos obligatorias por etapa (4-nov-2026, Roberto): no se puede salir de mecánica, hojalatería,
@@ -337,7 +342,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
 
   // Tabla 11: "criterio de salida: alcance autorizado y restricciones conocidas." Autorizada/parcial exige
   // quién autorizó y cuándo respondió (mismos datos que pide la tabla: "fecha envío/respuesta, autorizador").
-  if(['autorizada','parcial'].includes(nuevo.estado_autorizacion)){
+  if(tocaCampos('estado_autorizacion','autorizacion_fecha_respuesta','autorizador') && ['autorizada','parcial'].includes(nuevo.estado_autorizacion)){
     if(!(nuevo.autorizacion_fecha_respuesta && String(nuevo.autorizacion_fecha_respuesta).trim())){
       return res.status(400).json({ error:'Indica la fecha de respuesta de la autorización.' });
     }

@@ -1406,6 +1406,12 @@ if(!tieneColumna('siniestros', 'drive_carpeta_vinculada_en')){
 if(!tieneColumna('siniestros', 'drive_carpeta_vinculada_por')){
   db.exec(`ALTER TABLE siniestros ADD COLUMN drive_carpeta_vinculada_por INTEGER REFERENCES usuarios(id);`);
 }
+// Inicio de Alejandra (5-nov-2026): fecha en que una unidad que circula REGRESÓ al taller en su cita de
+// reingreso (su fecha_admision es la de la primera llegada). Con esto la cita deja de aparecerle a
+// Alejandra como pendiente y Beto la ve en piso. La escribe solo "Recibir unidad" (server/inicioAlejandra.js).
+if(!tieneColumna('siniestros', 'reingreso_recibido_en')){
+  db.exec(`ALTER TABLE siniestros ADD COLUMN reingreso_recibido_en TEXT;`);
+}
 
 // Un solo registro por usuario que autorizó el conector (en la práctica, solo Orlando). access_token y
 // expiry_en son de corta duración y se refrescan solos con refresh_token en cada llamada real a la API
