@@ -301,3 +301,28 @@ test('FECHA-2: el reporte pide fecha solo a unidades en piso con piezas listas (
   assert.ok(r.listas_para_iniciar.some(u => u.numero === 'FECHA-60'), 'con 60% ya aparece para iniciar');
   assert.match(r.texto, /Falta fecha de entrega – Beto/);
 });
+
+test('ACT-5: "esta lista es todo lo que está en proceso" archiva lo que no viene, reactiva lo que sí y se puede deshacer', async () => {
+  const fuera = crearSiniestro('ARCH-FUERA', { ubicacion:'Piso' });
+  const archivada = crearSiniestro('ARCH-VUELVE', { archivado:1 });
+  const enLista = ['ARCH-A','ARCH-B','ARCH-C','ARCH-D'].map(n => crearSiniestro(n));
+  const entregada = crearSiniestro('ARCH-ENTREGADA', { fecha_entrega_real: dias(-5) });
+  const enc = ['SINIESTRO','UBICACION'].join(TAB);
+  const texto = [enc, ...['ARCH-A','ARCH-B','ARCH-C','ARCH-D','ARCH-VUELVE'].map(n => fila(n,'PISO'))].join('\n');
+  // Con menos de 5 válidas se niega a archivar.
+  assert.match(actualizacion.analizar(db, [enc, fila('ARCH-A','PISO')].join('\n'), { archivarFaltantes:true }).error, /menos de 5/);
+  const prev = actualizacion.analizar(db, texto, { archivarFaltantes:true });
+  assert.ok(prev.archivar.some(s => s.numero === 'ARCH-FUERA'));
+  assert.ok(!prev.archivar.some(s => s.numero === 'ARCH-ENTREGADA'), 'las entregadas no se tocan');
+  assert.equal(db.prepare('SELECT archivado FROM siniestros WHERE id=?').get(fuera).archivado, 0, 'revisar no guarda nada');
+  const r = actualizacion.aplicar(db, texto, null, { archivarFaltantes:true });
+  assert.ok(r.lote && r.archivadas >= 1);
+  assert.equal(db.prepare('SELECT archivado FROM siniestros WHERE id=?').get(fuera).archivado, 1);
+  assert.equal(db.prepare('SELECT archivado FROM siniestros WHERE id=?').get(archivada).archivado, 0, 'la que viene en la lista se reactiva');
+  enLista.forEach(id => assert.equal(db.prepare('SELECT archivado FROM siniestros WHERE id=?').get(id).archivado, 0));
+  const panorama = reporte.calcularReporteArranque(db).taller;
+  const d = actualizacion.revertirArchivado(db, r.lote, null);
+  assert.equal(d.reactivadas, r.archivadas);
+  assert.equal(db.prepare('SELECT archivado FROM siniestros WHERE id=?').get(fuera).archivado, 0, 'deshacer la reactiva');
+  assert.ok(panorama.patio >= 5);
+});

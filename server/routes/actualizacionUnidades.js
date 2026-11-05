@@ -3,19 +3,25 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
-const { analizar, aplicar, limpiarSalida } = require('../actualizacionUnidades');
+const { analizar, aplicar, limpiarSalida, revertirArchivado } = require('../actualizacionUnidades');
 const router = express.Router();
 
 router.post('/validar', requireAuth, requireRole('admin','jefe'), (req, res)=>{
-  const r = analizar(db, req.body && req.body.texto);
+  const r = analizar(db, req.body && req.body.texto, { archivarFaltantes: !!(req.body && req.body.archivar_faltantes) });
   if(r.error) return res.status(400).json({ error: r.error });
   res.json(limpiarSalida(r));
 });
 
 router.post('/confirmar', requireAuth, requireRole('admin','jefe'), (req, res)=>{
-  const r = aplicar(db, req.body && req.body.texto, req.session.user);
+  const r = aplicar(db, req.body && req.body.texto, req.session.user, { archivarFaltantes: !!(req.body && req.body.archivar_faltantes) });
   if(r.error) return res.status(400).json({ error: r.error });
   res.json(limpiarSalida(r));
+});
+
+router.post('/revertir-archivado', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  const lote = String((req.body && req.body.lote) || '');
+  if(!lote) return res.status(400).json({ error:'Falta el lote.' });
+  res.json(revertirArchivado(db, lote, req.session.user));
 });
 
 module.exports = router;

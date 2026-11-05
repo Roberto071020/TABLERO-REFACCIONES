@@ -35,12 +35,20 @@
   <p class="au-sub">Copia la tabla de la plantilla (con la fila de títulos) desde Excel y pégala aquí. Las celdas vacías no cambian nada. Primero revisa, después confirma.</p>
 
   <textarea id="auTexto" placeholder="SINIESTRO	ASEGURADORA	VEHICULO	PLACAS	UBICACION	AUTORIZADA	REQUIERE REFACCIONES	FECHA ENTREGA	ETAPA	CITA REINGRESO	FECHA ENTREGADA"></textarea>
+  <label style="display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:14px;background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;">
+    <input type="checkbox" id="auArchivar" style="margin-top:3px;">
+    <span><b>Esta lista es TODO lo que está en proceso.</b> Archivar las unidades del tablero que no vengan en ella (no se borran: se pueden reactivar con "Deshacer" o desde la ficha).</span>
+  </label>
   <div class="au-acc">
     <button class="btn" id="auValidar" type="button">1. Revisar cambios</button>
     <button class="btn" id="auConfirmar" type="button" disabled style="background:var(--verde)">2. Confirmar y guardar</button>
   </div>
   <div id="auMsg"></div>
   <div id="auResumen" class="au-res"></div>
+  <details id="auArchivarDet" class="hidden" style="margin:10px 0;background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;">
+    <summary style="cursor:pointer;font-weight:600;" id="auArchivarResumen"></summary>
+    <div class="au-scroll" style="margin-top:8px;"><table class="au-tabla"><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Vehículo</th><th>Placas</th><th>Ubicación</th></tr></thead><tbody id="auArchivarLista"></tbody></table></div>
+  </details>
   <div class="au-scroll"><table class="au-tabla hidden" id="auTabla">
     <thead><tr><th>Fila</th><th>Siniestro</th><th>Qué pasa</th><th>Cambios</th><th>Notas</th></tr></thead>
     <tbody></tbody>
@@ -61,7 +69,14 @@
       '<span class="au-chip ok">' + r.actualizar + ' se actualizan</span>' +
       '<span class="au-chip ok">' + r.crear + ' se crean</span>' +
       '<span class="au-chip">' + r.sin_cambios + ' sin cambios</span>' +
-      (r.errores ? '<span class="au-chip err">' + r.errores + ' con error</span>' : '');
+      (r.errores ? '<span class="au-chip err">' + r.errores + ' con error</span>' : '') +
+      (r.archivar ? '<span class="au-chip err">' + r.archivar + ' se archivan</span>' : '');
+    var det = $('auArchivarDet');
+    if(d.archivar && d.archivar.length){
+      det.classList.remove('hidden');
+      $('auArchivarResumen').textContent = 'Ver las ' + d.archivar.length + ' unidades que se van a archivar (no vienen en tu lista)';
+      $('auArchivarLista').innerHTML = d.archivar.map(function(s){ return '<tr><td>' + esc(s.numero) + '</td><td>' + esc(s.aseguradora) + '</td><td>' + esc(s.vehiculo) + '</td><td>' + esc(s.placas) + '</td><td>' + esc(s.ubicacion) + '</td></tr>'; }).join('');
+    } else { det.classList.add('hidden'); }
     var filas = d.filas.map(function(f){
       var cambios = f.cambios.map(function(c){ return '<div>' + esc(c.etiqueta) + ': ' + esc(c.antes) + ' → <b>' + esc(c.despues) + '</b></div>'; }).join('');
       var notas = f.errores.map(function(e){ return '<div class="au-e">' + esc(e) + '</div>'; }).join('') +
@@ -75,7 +90,7 @@
 
   function enviar(url){
     return fetch(url, { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' },
-      body: JSON.stringify({ texto: $('auTexto').value }) })
+      body: JSON.stringify({ texto: $('auTexto').value, archivar_faltantes: $('auArchivar').checked }) })
       .then(function(r){
         return r.json().catch(function(){ return {}; }).then(function(d){
           if(r.status === 401) throw new Error('Primero inicia sesión en el tablero (<a href="/">ir a iniciar sesión</a>) y regresa a esta página.');
@@ -87,12 +102,13 @@
   }
 
   $('auTexto').addEventListener('input', function(){ $('auConfirmar').disabled = true; });
+  $('auArchivar').addEventListener('change', function(){ $('auConfirmar').disabled = true; });
   $('auValidar').addEventListener('click', function(){
     msg('', ''); $('auConfirmar').disabled = true;
     enviar('/api/actualizacion-unidades/validar').then(function(d){
       pintar(d);
       validado = $('auTexto').value;
-      var aplicables = d.resumen.actualizar + d.resumen.crear;
+      var aplicables = d.resumen.actualizar + d.resumen.crear + (d.resumen.archivar || 0);
       $('auConfirmar').disabled = aplicables === 0;
       msg(d.resumen.errores ? 'err' : 'ok', d.resumen.errores
         ? 'Revisa los renglones en rojo: esos no se van a guardar. Puedes corregirlos y volver a revisar, o confirmar solo los demás.'
@@ -104,7 +120,14 @@
     $('auConfirmar').disabled = true;
     enviar('/api/actualizacion-unidades/confirmar').then(function(d){
       pintar(d);
-      msg('ok', 'Listo: se guardaron ' + d.aplicadas + ' unidades. Cada cambio quedó en la auditoría.');
+      msg('ok', 'Listo: se guardaron ' + d.aplicadas + ' unidades' + (d.archivadas ? ' y se archivaron ' + d.archivadas + ' que no venían en la lista' : '') +
+        '. Cada cambio quedó en la auditoría.' + (d.lote ? ' <button class="btn small" id="auDeshacer" type="button" style="margin-left:8px;">Deshacer archivado</button>' : ''));
+      if(d.lote){
+        $('auDeshacer').addEventListener('click', function(){
+          fetch('/api/actualizacion-unidades/revertir-archivado', { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ lote: d.lote }) })
+            .then(function(r){ return r.json(); }).then(function(x){ msg('ok', 'Se reactivaron ' + x.reactivadas + ' unidades.'); });
+        });
+      }
     }).catch(function(e){ msg('err', e.message); $('auConfirmar').disabled = false; });
   });
 })();

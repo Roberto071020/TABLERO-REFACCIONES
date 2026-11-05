@@ -40,7 +40,7 @@ const ETIQUETA_ETAPA = { programado:'Sin iniciar', mecanica:'Mecánica', en_lami
 const ETIQUETA_CAMPO = { aseguradora:'Aseguradora', vehiculo:'Vehículo', placas:'Placas', ubicacion:'Ubicación',
   estado_autorizacion:'Autorización', autorizacion_fecha_respuesta:'Fecha de autorización', autorizador:'Autorizó',
   requiere_refacciones:'Requiere refacciones', piezas_autorizadas_cambio:'Piezas a cambio', aseguradora_ruta_refacciones:'Esquema de surtido',
-  aseguradora_regla_aplicada:'Regla aplicada', fecha_entrega_prevista:'Fecha de entrega', estado_produccion:'Etapa',
+  aseguradora_regla_aplicada:'Regla aplicada', archivado:'Archivada', archivado_en:'Archivada el', fecha_entrega_prevista:'Fecha de entrega', estado_produccion:'Etapa',
   cita_fecha:'Cita de reingreso', fecha_entrega_real:'Fecha entregada', estado_entrega:'Estado de entrega' };
 
 function limpiar(t){
@@ -100,7 +100,7 @@ function parsearTabla(texto){
   return { filas, columnas: encabezado.filter(Boolean) };
 }
 
-function analizar(db, texto){
+function analizar(db, texto, { archivarFaltantes = false } = {}){
   const p = parsearTabla(texto);
   if(p.error) return { error: p.error };
   const hoy = hoyMexico();
@@ -195,6 +195,8 @@ function analizar(db, texto){
       r.avisos.push('La fecha de entrega ya pasó: va a aparecer como vencida.');
     }
 
+    // Si la unidad viene en la lista pero estaba archivada, se reactiva (sigue en proceso).
+    if(actual && actual.archivado){ nuevo.archivado = 0; nuevo.archivado_en = null; r.avisos.push('Estaba archivada: se reactiva.'); }
     if(r.errores.length){ r.accion = 'error'; return r; }
     for(const [campo, valor] of Object.entries(nuevo)){
       const antes = actual ? actual[campo] : null;
@@ -213,21 +215,37 @@ function analizar(db, texto){
     sin_cambios: resultado.filter(r => r.accion === 'sin_cambios').length,
     errores: resultado.filter(r => r.accion === 'error').length
   };
-  return { resumen, filas: resultado, columnas: p.columnas };
+  // "Esta lista es TODO lo que está en proceso" (Roberto, 5-nov-2026): las unidades activas del tablero que
+  // NO vienen en la lista se archivan (no se borran; se pueden reactivar con "Deshacer" o desde la ficha).
+  let archivar = [];
+  if(archivarFaltantes){
+    const enLista = new Set(resultado.filter(r => r.siniestro).map(r => r.siniestro));
+    archivar = db.prepare(`SELECT id, numero, aseguradora, vehiculo, placas, ubicacion, estado_produccion FROM siniestros
+      WHERE archivado = 0 AND (fecha_entrega_real IS NULL OR fecha_entrega_real = '') AND COALESCE(estatus_general,'') != 'Cerrado'
+      ORDER BY numero`).all().filter(s => !enLista.has(s.numero));
+    resumen.archivar = archivar.length;
+    const validas = resumen.crear + resumen.actualizar + resumen.sin_cambios;
+    if(validas < 5){
+      return { error: 'La lista tiene menos de 5 unidades válidas. Para archivar el resto, pega la lista COMPLETA de unidades en proceso.' };
+    }
+  }
+  return { resumen, filas: resultado, columnas: p.columnas, archivar };
 }
 
 function mostrar(campo, v){
   if(v == null || v === '') return '—';
   if(campo === 'estado_produccion') return ETIQUETA_ETAPA[v] || v;
+  if(campo === 'archivado') return Number(v) ? 'Sí' : 'No (activa)';
   if(campo === 'requiere_refacciones') return v === 'si' ? 'Sí' : v === 'no' ? 'No' : 'Sin definir';
   if(campo === 'aseguradora_ruta_refacciones') return ({ autosurtido:'Autosurtido GNP', inpart:'Inpart', pago_danos:'Pago de daños', pendiente_confirmar:'Por confirmar' })[v] || v;
   return String(v);
 }
 
-function aplicar(db, texto, usuario){
-  const a = analizar(db, texto);
+function aplicar(db, texto, usuario, { archivarFaltantes = false } = {}){
+  const a = analizar(db, texto, { archivarFaltantes });
   if(a.error) return a;
   const aplicables = a.filas.filter(r => r.accion === 'crear' || r.accion === 'actualizar');
+  let lote = null;
   db.exec('BEGIN');
   try{
     for(const r of aplicables){
@@ -248,12 +266,45 @@ function aplicar(db, texto, usuario){
         }
       }
     }
+    if(archivarFaltantes && a.archivar.length){
+      lote = 'L' + Date.now().toString(36).toUpperCase();
+      asegurarTablaArchivado(db);
+      for(const s of a.archivar){
+        db.prepare(`UPDATE siniestros SET archivado = 1, archivado_en = datetime('now') WHERE id = ?`).run(s.id);
+        db.prepare(`INSERT INTO archivado_masivo (lote, siniestro_id) VALUES (?, ?)`).run(lote, s.id);
+        registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:s.id, accion:'archivado_por_actualizacion',
+          valor_nuevo:`No venía en la lista de unidades en proceso (lote ${lote})`, usuario });
+      }
+    }
     db.exec('COMMIT');
   }catch(e){
     db.exec('ROLLBACK');
     throw e;
   }
-  return { ...a, aplicadas: aplicables.length };
+  return { ...a, aplicadas: aplicables.length, archivadas: lote ? a.archivar.length : 0, lote };
+}
+
+function asegurarTablaArchivado(db){
+  db.exec(`CREATE TABLE IF NOT EXISTS archivado_masivo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, lote TEXT NOT NULL, siniestro_id INTEGER NOT NULL REFERENCES siniestros(id),
+    creado_en TEXT NOT NULL DEFAULT (datetime('now')), revertido_en TEXT);`);
+}
+
+// Deshace un archivado masivo: reactiva las unidades de ese lote que sigan archivadas.
+function revertirArchivado(db, lote, usuario){
+  asegurarTablaArchivado(db);
+  const filas = db.prepare(`SELECT a.id, a.siniestro_id FROM archivado_masivo a JOIN siniestros s ON s.id = a.siniestro_id
+    WHERE a.lote = ? AND a.revertido_en IS NULL AND s.archivado = 1`).all(lote);
+  db.exec('BEGIN');
+  try{
+    for(const f of filas){
+      db.prepare(`UPDATE siniestros SET archivado = 0, archivado_en = NULL WHERE id = ?`).run(f.siniestro_id);
+      db.prepare(`UPDATE archivado_masivo SET revertido_en = datetime('now') WHERE id = ?`).run(f.id);
+      registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:f.siniestro_id, accion:'archivado_revertido', valor_nuevo:`Lote ${lote}`, usuario });
+    }
+    db.exec('COMMIT');
+  }catch(e){ db.exec('ROLLBACK'); throw e; }
+  return { reactivadas: filas.length };
 }
 
 function limpiarSalida(a){
@@ -261,4 +312,4 @@ function limpiarSalida(a){
   return { ...a, filas: a.filas.map(({ _actualId, ...r }) => ({ ...r, cambios: r.cambios.map(({ valor, ...c }) => c) })) };
 }
 
-module.exports = { analizar, aplicar, parsearTabla, limpiarSalida };
+module.exports = { analizar, aplicar, parsearTabla, limpiarSalida, revertirArchivado };
