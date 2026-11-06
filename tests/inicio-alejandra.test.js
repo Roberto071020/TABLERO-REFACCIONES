@@ -265,3 +265,16 @@ test('ALE-16: línea base -- lo pendiente de avisar se da por avisado y solo apa
   const { aplicarLineaBaseSiToca } = require('../server/inicioAlejandra');
   assert.equal(aplicarLineaBaseSiToca(db), null, 'con fecha futura no corre');
 });
+
+test('REAUT-1: Roberto ve las reautorizaciones en curso con número y vehículo, sin abrir el expediente', async () => {
+  const id = crear('ALE-RA1', { estado_autorizacion:'autorizada', vehiculo:'Jetta 2019' });
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const r = await req('POST', '/api/complementos', { siniestro_id:id, tipo:'no_autorizado_inicial', pieza_operacion:'Faro derecho', causa:'No autorizado' });
+  assert.equal(r.status, 201);
+  const lista = (await req('GET', '/api/complementos?tipo=no_autorizado_inicial&pendientes=1')).data;
+  const c = lista.find(x => x.siniestro_id === id);
+  assert.ok(c); assert.equal(c.siniestro_numero, 'ALE-RA1'); assert.equal(c.vehiculo, 'Jetta 2019'); assert.ok(c.fecha_limite);
+  await req('PATCH', '/api/complementos/' + c.id, { decision:'autorizado' });
+  assert.ok(!(await req('GET', '/api/complementos?tipo=no_autorizado_inicial&pendientes=1')).data.some(x => x.id === c.id), 'resuelta ya no aparece');
+  await login(...ALEJANDRA);
+});

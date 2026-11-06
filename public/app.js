@@ -3072,9 +3072,33 @@ async function guardarEdicionOperacion(operacionId){
 
 // Proceso_Completo_Servicio_Cristian.docx (sección 7): solicitud de reautorización por piezas no
 // autorizadas -- exclusiva de admin/jefe (Roberto), plazo de 24h calculado por el backend.
-async function abrirFormNuevaReautorizacion(siniestroId){
+// 6-nov-2026: buscar el expediente por número de siniestro o placas sin salir de Valuación (las unidades ya
+// autorizadas no están en la bandeja, y es justo cuando aparecen las piezas no autorizadas).
+function abrirBuscarReautorizacion(){
   showModal(`
     <h3>Solicitar reautorización</h3>
+    <div class="field"><label>Siniestro o placas</label><input id="freaut_q" placeholder="Ej. 04-1234 o YKC789" oninput="buscarParaReautorizacion()"></div>
+    <div id="freaut_res" class="subtle">Escribe al menos 3 caracteres.</div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>`);
+  setTimeout(() => { const el = document.getElementById('freaut_q'); if(el) el.focus(); }, 50);
+}
+let buscarReautTimer = null;
+function buscarParaReautorizacion(){
+  clearTimeout(buscarReautTimer);
+  buscarReautTimer = setTimeout(async () => {
+    const q = (document.getElementById('freaut_q') || {}).value || '';
+    const cont = document.getElementById('freaut_res'); if(!cont) return;
+    if(q.trim().length < 3){ cont.innerHTML = 'Escribe al menos 3 caracteres.'; return; }
+    const lista = await api('GET', '/api/siniestros?q=' + encodeURIComponent(q.trim()), null, { silent:true }).catch(() => []);
+    cont.innerHTML = lista.length === 0 ? 'Sin coincidencias.' : lista.slice(0, 8).map(s => `<div class="result-item" style="cursor:pointer;padding:8px 0;border-bottom:1px solid var(--border);" onclick="abrirFormNuevaReautorizacion(${s.id})">
+      <b>${esc(s.numero)}</b> · ${esc(s.vehiculo || '')} · ${esc(s.placas || '')} · ${esc(s.aseguradora || '')}</div>`).join('');
+  }, 250);
+}
+async function abrirFormNuevaReautorizacion(siniestroId){
+  const sx = await api('GET', '/api/siniestros/' + siniestroId).catch(() => null);
+  showModal(`
+    <h3>Solicitar reautorización</h3>
+    ${sx ? `<p style="margin-top:0;"><b>${esc(sx.numero)}</b> · ${esc(sx.vehiculo || '')} · ${esc(sx.placas || '')}</p>` : ''}
     <p class="subtle">Piezas que la evaluación no autorizó. Se crea un aviso automático para Orlando con el plazo de 24h para mandar fotos editadas.</p>
     <div class="field"><label>Piezas no autorizadas</label><textarea id="freaut_piezas" placeholder="Ej. defensa delantera, faro derecho"></textarea></div>
     <div class="field"><label>Detalle / mano de obra requerida</label><textarea id="freaut_causa" placeholder="Qué se le pide al valuador que reconsidere"></textarea></div>
@@ -4323,10 +4347,28 @@ async function viewValuacion(){
   const LABEL_VAL = { borrador:'Borrador', enviada:'Enviada', observada:'Observada', ajustada:'Ajustada', autorizada_parcial:'Autorizada parcial', autorizada_total:'Autorizada total', rechazada:'Rechazada' };
   const LABEL_AUT = { en_autorizacion:'En autorización', autorizada:'Autorizada', parcial:'Parcial', rechazada:'Rechazada', por_aclarar:'Por aclarar' };
   const BADGE_AUT = { autorizada:'verde', parcial:'ambar', rechazada:'rojo', por_aclarar:'ambar', en_autorizacion:'gris' };
+  // 6-nov-2026 (Roberto: "más fácil"): solicitar la reautorización desde aquí, sin abrir el expediente, y
+  // ver de un vistazo las que siguen esperando fotos editadas de Orlando (plazo de 24h).
+  const puedeReaut = currentUser && ['admin','jefe'].includes(currentUser.rol);
+  const reauts = puedeReaut ? await api('GET','/api/complementos?tipo=no_autorizado_inicial&pendientes=1').catch(()=>[]) : [];
+  const horasRestantes = c => c.fecha_limite ? Math.round((Date.parse(c.fecha_limite) - Date.now()) / 3600000) : null;
   return `
-  <h2>Valuación y autorización</h2>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+    <h2 style="margin:0;">Valuación y autorización</h2>
+    ${puedeReaut ? `<button class="btn" onclick="abrirBuscarReautorizacion()">+ Solicitar reautorización</button>` : ''}
+  </div>
+  ${puedeReaut && reauts.length ? `<div class="section" style="margin-top:12px;">
+    <h3 style="margin-top:0;">Reautorizaciones esperando fotos de Orlando (${reauts.length})</h3>
+    <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Piezas no autorizadas</th><th>Plazo</th></tr></thead><tbody>
+    ${reauts.map(c => { const h = horasRestantes(c); return `<tr>
+      <td><span class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero || '')}</span></td>
+      <td>${esc(c.vehiculo || '')} ${esc(c.placas || '')}</td>
+      <td>${esc(c.pieza_operacion || c.causa || '')}</td>
+      <td>${h == null ? '—' : h < 0 ? `<span class="badge rojo">Vencida hace ${-h} h</span>` : `<span class="badge ${h <= 6 ? 'ambar' : 'verde'}">Quedan ${h} h</span>`}</td>
+    </tr>`; }).join('')}
+    </tbody></table></div>` : ''}
   <p class="subtle">Expedientes con checklist documental listo, pendientes de resolver su valuación y autorización. La ruta de refacciones (Inpart/autosurtido/pago de daños) se recalcula sola según la aseguradora y las piezas autorizadas.</p>
-  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Sistema</th><th>Valuación</th><th>Autorización</th><th>Ruta refacciones</th></tr></thead><tbody>
+  <table><thead><tr><th>Siniestro</th><th>Aseguradora</th><th>Sistema</th><th>Valuación</th><th>Autorización</th><th>Ruta refacciones</th>${puedeReaut ? '<th></th>' : ''}</tr></thead><tbody>
   ${expedientes.length===0?'<tr><td colspan="6" class="empty">Sin expedientes pendientes de valuación/autorización.</td></tr>':expedientes.map(s=>`
     <tr>
       <td><span class="link" onclick="goSiniestro(${s.id})">${esc(s.numero)}</span></td>
@@ -4335,6 +4377,7 @@ async function viewValuacion(){
       <td>${esc(LABEL_VAL[s.estado_valuacion]||'Sin iniciar')}</td>
       <td><span class="badge ${BADGE_AUT[s.estado_autorizacion]||'gris'}">${LABEL_AUT[s.estado_autorizacion]||'Sin iniciar'}</span> ${s.autorizacion_vencida?'<span class="badge rojo">Sin respuesta (3+ días hábiles)</span>':''}</td>
       <td>${esc(s.aseguradora_ruta_refacciones||'—')}</td>
+      ${puedeReaut ? `<td><button class="btn small secondary" onclick="abrirFormNuevaReautorizacion(${s.id})">Reautorización</button></td>` : ''}
     </tr>`).join('')}
   </tbody></table>
   <p class="subtle" style="margin-top:8px;">${expedientes.length} expediente(s) pendientes. Entra a la ficha del expediente, pestaña "Valuación / autorización".</p>`;

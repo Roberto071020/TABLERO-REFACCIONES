@@ -22,9 +22,13 @@ function marcarVencido(c){
 }
 
 router.get('/', requireAuth, (req, res)=>{
-  const { siniestro_id, tipo } = req.query;
-  let sql = `SELECT c.*, u.nombre as autor_nombre FROM complementos c LEFT JOIN usuarios u ON u.id = c.autor_id WHERE 1=1`;
+  const { siniestro_id, tipo, pendientes } = req.query;
+  // 6-nov-2026: también trae número, vehículo y placas del expediente, para listar las reautorizaciones en
+  // curso en la pantalla de Valuación sin abrir cada expediente.
+  let sql = `SELECT c.*, u.nombre as autor_nombre, s.numero as siniestro_numero, s.vehiculo, s.placas
+    FROM complementos c LEFT JOIN usuarios u ON u.id = c.autor_id LEFT JOIN siniestros s ON s.id = c.siniestro_id WHERE 1=1`;
   const params = [];
+  if(pendientes === '1'){ sql += " AND c.decision = 'pendiente'"; }
   if(siniestro_id){ sql += ' AND c.siniestro_id = ?'; params.push(siniestro_id); }
   if(tipo){ sql += ' AND c.tipo = ?'; params.push(tipo); }
   sql += ' ORDER BY c.creado_en DESC';
