@@ -406,7 +406,10 @@ const ALE_SECCIONES = [
   { k:'recibir', titulo:'2. Recibir unidades', ayuda:'Citas de hoy que todavía no se registran.', tipos:['cita'] },
   { k:'reingreso', titulo:'3. Agendar reingresos', ayuda:'Ya llegó el 90% de las piezas: dale fecha al cliente.', tipos:['reingreso'] },
   { k:'avisar', titulo:'4. Avisar al cliente', ayuda:'Su unidad avanzó: mándale el mensaje por WhatsApp.', tipos:['aviso'] },
-  { k:'seguimiento', titulo:'5. Dar seguimiento', ayuda:'Más de 3 días sin saber nada: mándale el mensaje de seguimiento.', tipos:['seguimiento'] },
+  { k:'seguimiento', titulo:'5. Dar seguimiento', ayuda:'Más de 3 días sin saber nada: mándale el mensaje de seguimiento (máximo 10 al día).', tipos:['seguimiento'] },
+  // Ajustes 6-nov-2026: lo que no se puede hacer hoy con un botón queda al final, aparte y sin contar.
+  { k:'confirmar', titulo:'Revisa: citas viejas', ayuda:'Tenían cita hace más de una semana y nunca se registró su llegada. Pregúntale al cliente si todavía viene.', tipos:['cita_vieja'] },
+  { k:'datos', titulo:'Completa estos datos', ayuda:'No se les puede avisar porque falta el teléfono (o el vehículo). Captúralo y la unidad pasa sola a "Avisar al cliente".', tipos:['sin_datos'] },
 ];
 const ALE_MAX_POR_SECCION = 10;
 // Fecha del día en el celular (hora de Veracruz). todayISO() usa UTC y después de las 6 pm ya marca mañana.
@@ -449,8 +452,9 @@ async function viewInicioAlejandra(){
     ${tarjetaNum(n.entregas, 'Entregas de hoy', n.entregas ? 'rojo' : 'verde', 'entregar')}
     ${tarjetaNum(n.citas, 'Citas de hoy', 'azul', 'recibir')}
     ${tarjetaNum(n.avisos, 'Clientes por avisar', n.avisos ? 'ambar' : 'verde', 'avisar')}
-    ${tarjetaNum(n.seguimiento, 'Sin aviso +3 días', n.seguimiento ? 'rojo' : 'verde', 'seguimiento')}
+    ${tarjetaNum(n.seguimiento, 'Seguimientos de hoy', n.seguimiento ? 'rojo' : 'verde', 'seguimiento')}
   </div>
+  ${n.seguimiento === 0 && n.seguimientos_hechos_hoy >= d.max_seguimientos_dia ? `<p class="subtle" style="margin-top:-8px;">✅ Ya hiciste los ${d.max_seguimientos_dia} seguimientos de hoy. Mañana te salen los siguientes.</p>` : ''}
   ${secciones || '<div class="empty" style="margin-top:12px;">🎉 Terminaste todo lo de hoy.</div>'}`;
 }
 function aleIrA(sec){
@@ -478,6 +482,15 @@ function aleTarjetaHtml(t, i){
     extra = `<button class="btn small ghost" onclick="aleCambiarCita(${t.id}, '${esc(t.cita_fecha || '')}')">Cambiar cita</button>`;
   } else if(t.tipo === 'reingreso'){
     boton = `<button class="btn" onclick="aleAgendarReingreso(${i})">📅 Agendar reingreso</button>`;
+  } else if(t.tipo === 'cita_vieja'){
+    boton = (t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Escribirle</button>` : '')
+      + ` <button class="btn small secondary" onclick="aleCambiarCita(${t.id}, '')">Sí viene: nueva cita</button>`
+      + ` <button class="btn small secondary" onclick="aleRecibir(${t.id})">Ya está aquí</button>`
+      + ` <button class="btn small ghost" onclick="aleQuitarCita(${t.id})">Ya no viene</button>`;
+  } else if(t.tipo === 'sin_datos'){
+    boton = t.falta === 'vehiculo'
+      ? `<button class="btn secondary" onclick="abrirFormEditarSiniestro(${t.id})">✏️ Capturar vehículo</button>`
+      : `<button class="btn secondary" onclick="abrirFormEditarSiniestro(${t.id})">✏️ Capturar teléfono</button>`;
   }
   return `<div class="section" style="margin:8px 0;padding:14px;">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
@@ -548,6 +561,22 @@ function aleCambiarCita(id, actual){
     <h3>Cambiar cita</h3>
     <div class="field"><label>Nueva fecha de cita</label><input id="ale_cita" type="date" min="${hoyLocalISO()}" value="${esc(actual && actual >= hoyLocalISO() ? actual : '')}"></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleGuardarCita(${id}, null)">Guardar</button></div>`);
+}
+function aleQuitarCita(id){
+  showModal(`
+    <h3>¿El cliente ya no viene?</h3>
+    <p>Se quita la cita y la unidad sale de tu lista. Úsalo solo si ya lo confirmaste con el cliente.</p>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" onclick="aleGuardarQuitarCita(${id})">Sí, quitar la cita</button>
+    </div>`);
+}
+async function aleGuardarQuitarCita(id){
+  try{
+    await api('PATCH', '/api/siniestros/' + id, { cita_fecha: '' });
+    toast('Cita quitada.', 'success');
+    closeModal(); render();
+  }catch(e){}
 }
 function aleAgendarReingreso(i){
   const t = ALE.tarjetas[i]; if(!t) return;

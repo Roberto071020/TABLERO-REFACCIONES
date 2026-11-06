@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const TEST_DB = path.join(__dirname, '..', 'data', 'test-inicio-alejandra.db');
 for(const f of [TEST_DB, TEST_DB + '-wal', TEST_DB + '-shm']) if(fs.existsSync(f)) fs.unlinkSync(f);
 process.env.TEST_DB_PATH = TEST_DB;
+// La línea base automática (lunes 9-nov-2026) se apaga en estas pruebas; se prueba aparte, llamándola directo.
+process.env.LINEA_BASE_ALEJANDRA = '9999-12-31';
 
 const app = require('../server/index');
 const db = require('../server/db');
@@ -153,8 +155,10 @@ test('ALE-7: más de 3 días sin aviso -> Dar seguimiento con la plantilla de co
 
 test('ALE-8: "Ya se lo había avisado" registra sin abrir WhatsApp; sin teléfono la tarjeta lo pide', async () => {
   const id = crear('ALE-0008', { estado_autorizacion:'autorizada', ingreso_tipo:'grua', fecha_admision: dia(-2), cliente_telefono:'' });
-  const t = de(await inicio(), id)[0];
-  assert.equal(t.tipo, 'aviso'); assert.equal(t.telefono, null);
+  const d = await inicio();
+  const t = de(d, id)[0];
+  assert.equal(t.tipo, 'sin_datos', 'sin teléfono va a "Completa estos datos"'); assert.equal(t.falta, 'telefono'); assert.equal(t.telefono, null);
+  assert.ok(!d.tarjetas.some(x => x.tipo === 'aviso' && !x.telefono), 'ningún aviso sin teléfono cuenta en "Clientes por avisar"');
   const r = await req('POST', `/api/inicio-alejandra/${id}/aviso`, { codigo: t.codigo, tipo:'aviso', modo:'ya_avisado' });
   assert.equal(r.status, 201);
   assert.equal(db.prepare(`SELECT resultado FROM eventos_cliente WHERE id=?`).get(r.data.id).resultado, 'ya_avisado');
@@ -203,4 +207,61 @@ test('ALE-13: la regla de autorización completa se sigue exigiendo cuando sí s
   const r = await req('PATCH', '/api/siniestros/' + id, { estado_autorizacion:'autorizada' });
   assert.equal(r.status, 400);
   await login(...ALEJANDRA);
+});
+
+
+test('ALE-14: cita con más de 7 días de atraso va a "Revisa: citas viejas", no a "Citas de hoy"', async () => {
+  const id = crear('ALE-0014', { cita_fecha: dia(-60) });
+  const d = await inicio();
+  const t = de(d, id)[0];
+  assert.equal(t.tipo, 'cita_vieja'); assert.equal(t.dias_atraso, 60);
+  assert.ok(!d.tarjetas.some(x => x.tipo === 'cita' && x.id === id));
+  assert.equal((await req('PATCH', '/api/siniestros/' + id, { cita_fecha: '' })).status, 200);
+  assert.ok(!de(await inicio(), id).length, '"Ya no viene" la quita de la lista');
+  const reciente = crear('ALE-0015', { cita_fecha: dia(-3) });
+  assert.equal(de(await inicio(), reciente)[0].tipo, 'cita', 'con pocos días de atraso sigue en Recibir unidades');
+});
+
+test('ALE-15: seguimiento máximo 10 al día, primero las que llevan más días sin aviso', async () => {
+  for(let i = 0; i < 13; i++){
+    const id = crear('ALE-S' + String(100 + i), { estado_autorizacion:'autorizada', ingreso_tipo:'grua', fecha_admision: dia(-30), estado_produccion:'en_laminado' });
+    db.prepare(`INSERT INTO eventos_cliente (siniestro_id,direccion,canal,tipo_evento,mensaje,creado_en) VALUES (?,'saliente','whatsapp','aviso:5.8','x',datetime('now', ?))`).run(id, `-${5 + i} days`);
+  }
+  let d = await inicio();
+  const seg = d.tarjetas.filter(t => t.tipo === 'seguimiento');
+  const cupo = 10 - d.numeros.seguimientos_hechos_hoy; // ALE-7 ya hizo uno hoy
+  assert.equal(seg.length, cupo); assert.equal(d.numeros.seguimiento, cupo);
+  assert.ok(d.numeros.seguimientos_pendientes >= 13);
+  for(let i = 1; i < seg.length; i++) assert.ok(seg[i - 1].dias_sin_aviso >= seg[i].dias_sin_aviso, 'ordenados de más a menos días');
+  // Hace 10 seguimientos hoy: ya no le salen más hasta mañana.
+  const yaHechos = d.numeros.seguimientos_hechos_hoy;
+  for(const t of seg.slice(0, 10 - yaHechos)) await req('POST', `/api/inicio-alejandra/${t.id}/aviso`, { codigo: t.codigo, tipo:'seguimiento', modo:'whatsapp' });
+  d = await inicio();
+  assert.equal(d.numeros.seguimiento, 0);
+  assert.ok(d.numeros.seguimientos_hechos_hoy >= 10);
+});
+
+test('ALE-16: línea base -- lo pendiente de avisar se da por avisado y solo aparecen avances nuevos', async () => {
+  const a = crear('ALE-LB1', { estado_autorizacion:'autorizada', ingreso_tipo:'grua', fecha_admision: dia(-6) });
+  const b = crear('ALE-LB2', { estado_autorizacion:'autorizada', estado_produccion:'terminado', estado_calidad:'liberado', ingreso_tipo:'grua', fecha_admision: dia(-6) });
+  assert.equal(de(await inicio(), a)[0].tipo, 'aviso');
+  // Solo Roberto puede adelantarla.
+  assert.equal((await req('POST', '/api/inicio-alejandra/linea-base')).status, 403);
+  await login('admin@serviciocristian.mx', 'ServicioCristian2026!');
+  const r = await req('POST', '/api/inicio-alejandra/linea-base');
+  assert.equal(r.status, 200); assert.ok(r.data.marcados >= 2);
+  await login(...ALEJANDRA);
+  let d = await inicio();
+  assert.equal(d.numeros.avisos, 0, 'después de la línea base no queda nada por avisar');
+  assert.ok(!de(d, a).length);
+  assert.equal(de(d, b)[0].tipo, 'entrega', 'la lista sigue apareciendo para entregar');
+  // La línea base NO cuenta como aviso real para el seguimiento.
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM eventos_cliente WHERE siniestro_id=? AND resultado='linea_base'`).get(a).n, 1);
+  // Un avance nuevo después de la línea base sí aparece.
+  db.prepare(`UPDATE siniestros SET estado_produccion='en_laminado' WHERE id=?`).run(a);
+  d = await inicio();
+  assert.equal(de(d, a)[0].codigo, '5.8');
+  // La automática corre una sola vez, a partir de la fecha configurada.
+  const { aplicarLineaBaseSiToca } = require('../server/inicioAlejandra');
+  assert.equal(aplicarLineaBaseSiToca(db), null, 'con fecha futura no corre');
 });

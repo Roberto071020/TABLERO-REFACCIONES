@@ -15,6 +15,17 @@ const whatsappFaseA = require('./whatsappFaseA');
 const bandeja = require('./whatsappBandejaManual');
 
 const DIAS_SEGUIMIENTO = 3;
+// Ajustes del 6-nov-2026 (Roberto, tras ver la pantalla con datos reales: 168 por avisar y 109 seguimientos):
+//  - Línea base: el primer día de uso (lunes 9-nov-2026) todo lo que ya estaba por avisar se da por avisado;
+//    desde ahí solo aparecen las unidades que avancen de etapa. Se puede adelantar/repetir con la ruta
+//    POST /api/inicio-alejandra/linea-base (solo admin). La fecha se puede cambiar con LINEA_BASE_ALEJANDRA.
+//  - Seguimiento: máximo 10 al día, primero las que llevan más tiempo sin aviso.
+//  - Sin teléfono (o sin vehículo): no cuentan en los números; van en su propia sección al final.
+//  - Citas con más de 7 días de atraso: sección aparte para confirmar si el cliente todavía viene.
+const LINEA_BASE_DESDE = process.env.LINEA_BASE_ALEJANDRA || '2026-11-09';
+const MARCADOR_LINEA_BASE = 'linea_base_avisos_alejandra';
+const MAX_SEGUIMIENTOS_DIA = 10;
+const DIAS_CITA_VIEJA = 7;
 const LIMITE_POSTVENTA_DIAS = 7; // 5.12 solo para entregas recientes (no reconstruye entregas viejas).
 
 // Fecha local del taller (Veracruz, America/Mexico_City, UTC-6 sin horario de verano desde 2022).
@@ -59,7 +70,8 @@ function yaSeAviso(db, siniestroId, codigo){
 
 // Último momento (UTC, 'YYYY-MM-DD HH:MM:SS') en que se le escribió al cliente, por cualquier vía registrada.
 function ultimoAvisoUTC(db, s){
-  const a = db.prepare(`SELECT MAX(creado_en) m FROM eventos_cliente WHERE siniestro_id=? AND direccion='saliente'`).get(s.id).m;
+  // La línea base no cuenta como aviso real: no se le escribió al cliente.
+  const a = db.prepare(`SELECT MAX(creado_en) m FROM eventos_cliente WHERE siniestro_id=? AND direccion='saliente' AND COALESCE(resultado,'') != 'linea_base'`).get(s.id).m;
   const b = db.prepare(`SELECT MAX(confirmado_en) m FROM whatsapp_envios_manuales WHERE siniestro_id=? AND estado='enviado'`).get(s.id).m;
   const candidatos = [a, b].filter(Boolean).map(String).sort();
   return candidatos.length ? candidatos[candidatos.length - 1] : null;
@@ -120,6 +132,13 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
     const llegoReingreso = !vacio(s.reingreso_recibido_en) && fecha10(s.reingreso_recibido_en) >= cita;
     if(!llegoPrimera && !llegoReingreso){
       const esReingreso = !vacio(s.fecha_admision);
+      const diasAtraso = Math.floor((Date.parse(hoy) - Date.parse(cita)) / 86400000);
+      if(diasAtraso > DIAS_CITA_VIEJA){
+        const tel = whatsappFaseA.normalizarTelefonoMX(s.cliente_telefono);
+        return { ...base, tipo:'cita_vieja', orden:6, color:'gris', es_reingreso: esReingreso, cita_fecha: cita, dias_atraso: diasAtraso,
+          telefono: tel.valido ? tel.local : null,
+          motivo: `${esReingreso ? 'Reingreso' : 'Primera llegada'}: tenía cita el ${cita} (hace ${diasAtraso} días) y nunca se registró` };
+      }
       return { ...base, tipo:'cita', orden:2, color: cita < hoy ? 'ambar' : 'azul', es_reingreso: esReingreso, cita_fecha: cita,
         ingreso_tipo: s.ingreso_tipo || '',
         motivo: (esReingreso ? 'Reingreso' : 'Primera llegada') + (cita < hoy ? ` — tenía cita el ${cita} y no se ha registrado` : ' — cita hoy') };
@@ -157,7 +176,34 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
   return null;
 }
 
+// Da por avisado todo lo que HOY está pendiente de avisar (sin escribirle al cliente). Regresa cuántos marcó.
+function aplicarLineaBase(db, { usuario = null } = {}){
+  const hoy = hoyMX();
+  const activos = db.prepare(`SELECT * FROM siniestros WHERE archivado=0 AND estatus_general != 'Cerrado' AND (fecha_entrega_real IS NULL OR fecha_entrega_real = '')`).all();
+  let marcados = 0;
+  const insertar = db.prepare(`INSERT INTO eventos_cliente (siniestro_id,direccion,canal,tipo_evento,autor_id,mensaje,resultado) VALUES (?,?,?,?,?,?,?)`);
+  for(const s of activos){
+    try{
+      const codigo = s.estado_calidad === 'liberado' ? '5.11' : codigoAvisoActual(db, s, hoy);
+      if(!codigo || (codigo === '5.1' && vacio(s.fecha_admision)) || yaSeAviso(db, s.id, codigo)) continue;
+      insertar.run(s.id, 'saliente', 'sistema', 'aviso:' + codigo, usuario ? usuario.id : null,
+        'Línea base de arranque: la unidad ya estaba en esta etapa al empezar a usar el inicio de Alejandra (se da por avisado).', 'linea_base');
+      marcados++;
+    }catch(e){ /* una unidad con datos raros no detiene la línea base */ }
+  }
+  const { registrarAuditoria } = require('./utils');
+  registrarAuditoria(db, { entidad_tipo:'sistema', entidad_id:0, accion: MARCADOR_LINEA_BASE, valor_nuevo: `${marcados} aviso(s) dados por avisados`, usuario });
+  return { marcados };
+}
+function aplicarLineaBaseSiToca(db){
+  if(hoyMX() < LINEA_BASE_DESDE) return null;
+  const ya = db.prepare(`SELECT 1 FROM auditoria WHERE accion=? LIMIT 1`).get(MARCADOR_LINEA_BASE);
+  if(ya) return null;
+  return aplicarLineaBase(db);
+}
+
 function calcularInicioAlejandra(db){
+  try{ aplicarLineaBaseSiToca(db); }catch(e){ /* nunca debe impedir ver la pantalla */ }
   const hoy = hoyMX();
   const tareasReingreso = new Map();
   for(const t of db.prepare(`SELECT id, siniestro_id, descripcion FROM tareas WHERE disparador='reingreso_90pct' AND estado IN ('pendiente','en_proceso') ORDER BY creado_en`).all()){
@@ -171,20 +217,38 @@ function calcularInicioAlejandra(db){
       if(t) tarjetas.push(t);
     }catch(e){ /* una unidad con datos raros no debe tumbar la pantalla completa */ }
   }
+  // Avisos y seguimientos que no se pueden mandar (sin teléfono o sin vehículo): sección aparte, sin contar.
+  for(const t of tarjetas){
+    if((t.tipo === 'aviso' || t.tipo === 'seguimiento') && (t.falta_vehiculo || !t.telefono)){
+      t.tipo_original = t.tipo; t.tipo = 'sin_datos'; t.orden = 7; t.color = 'gris';
+      t.falta = t.falta_vehiculo ? 'vehiculo' : 'telefono';
+      t.motivo = (t.falta === 'vehiculo' ? 'Falta capturar el vehículo' : 'Falta el teléfono del cliente') + ' — luego: ' + t.motivo.charAt(0).toLowerCase() + t.motivo.slice(1);
+    }
+  }
   const llave = t => [t.orden, t.tipo === 'cita' ? (t.cita_fecha || '') : (t.fecha_entrega_prevista || '9999'), -(t.dias_sin_aviso || 0), t.numero];
   tarjetas.sort((a, b) => {
     const ka = llave(a), kb = llave(b);
     for(let i = 0; i < ka.length; i++){ if(ka[i] < kb[i]) return -1; if(ka[i] > kb[i]) return 1; }
     return 0;
   });
+  // Seguimiento: máximo 10 al día (ya vienen ordenados de más a menos días sin aviso).
+  const hechosHoy = db.prepare(`SELECT COUNT(*) n FROM eventos_cliente WHERE tipo_evento LIKE 'seguimiento:%'
+    AND COALESCE(resultado,'') != 'linea_base' AND substr(datetime(creado_en,'-6 hours'),1,10)=?`).get(hoy).n;
+  const cupo = Math.max(0, MAX_SEGUIMIENTOS_DIA - hechosHoy);
+  const seguimientosPendientes = tarjetas.filter(t => t.tipo === 'seguimiento').length;
+  let dejados = 0;
+  const visibles = tarjetas.filter(t => t.tipo !== 'seguimiento' || (dejados++ < cupo));
   const numeros = {
-    entregas: tarjetas.filter(t => t.tipo === 'entrega' || t.tipo === 'retraso').length,
-    citas: tarjetas.filter(t => t.tipo === 'cita').length,
-    avisos: tarjetas.filter(t => t.tipo === 'aviso').length,
-    seguimiento: tarjetas.filter(t => t.tipo === 'seguimiento').length,
-    reingresos: tarjetas.filter(t => t.tipo === 'reingreso').length,
+    entregas: visibles.filter(t => t.tipo === 'entrega' || t.tipo === 'retraso').length,
+    citas: visibles.filter(t => t.tipo === 'cita').length,
+    avisos: visibles.filter(t => t.tipo === 'aviso').length,
+    seguimiento: visibles.filter(t => t.tipo === 'seguimiento').length,
+    reingresos: visibles.filter(t => t.tipo === 'reingreso').length,
+    citas_viejas: visibles.filter(t => t.tipo === 'cita_vieja').length,
+    sin_datos: visibles.filter(t => t.tipo === 'sin_datos').length,
+    seguimientos_hechos_hoy: hechosHoy, seguimientos_pendientes: seguimientosPendientes,
   };
-  return { hoy, numeros, tarjetas };
+  return { hoy, numeros, tarjetas: visibles, max_seguimientos_dia: MAX_SEGUIMIENTOS_DIA };
 }
 
 // Al confirmar un aviso, cierra las tareas automáticas viejas que pedían exactamente ese aviso, para que
@@ -239,5 +303,5 @@ function registrarLlegada(db, { siniestroId, usuario }){
   return { es_reingreso: esReingreso, fotos };
 }
 
-module.exports = { calcularInicioAlejandra, registrarAviso, registrarLlegada, fotosRecepcionHoy, codigoAvisoActual, hoyMX,
+module.exports = { aplicarLineaBase, aplicarLineaBaseSiToca, MAX_SEGUIMIENTOS_DIA, DIAS_CITA_VIEJA, calcularInicioAlejandra, registrarAviso, registrarLlegada, fotosRecepcionHoy, codigoAvisoActual, hoyMX,
   FOTOS_MINIMAS_RECEPCION, DIAS_SEGUIMIENTO };

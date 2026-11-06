@@ -26,6 +26,12 @@ router.post('/:id/aviso', requireAuth, requireRole(...ROLES), (req, res)=>{
   }catch(e){ responderError(res, e); }
 });
 
+// Solo Roberto: adelantar o repetir la "línea base" (todo lo pendiente de avisar se da por avisado).
+router.post('/linea-base', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  try{ res.json(inicio.aplicarLineaBase(db, { usuario: req.session.user })); }
+  catch(e){ responderError(res, e); }
+});
+
 router.get('/:id/fotos-recepcion', requireAuth, requireRole(...ROLES), (req, res)=>{
   res.json({ fotos: inicio.fotosRecepcionHoy(db, Number(req.params.id)), minimo: inicio.FOTOS_MINIMAS_RECEPCION });
 });
