@@ -2014,7 +2014,8 @@ test('TRIAGE-ROLES-1: Daniela (operativo) puede leer los módulos especializados
     [{ estado_expediente: 'listo_para_valuacion' }, 'expediente digital (Vanessa)'],
     [{ estado_autorizacion: 'autorizada', autorizacion_fecha_respuesta: '2026-08-25', autorizador: 'X' }, 'valuación/autorización'],
     [{ estado_produccion: 'terminado' }, 'producción (Beto)'],
-    [{ estado_calidad: 'liberado' }, 'calidad'],
+    // 6-nov-2026 (Roberto): la revisión de calidad la hace Beto, pero todos pueden hacerla y liberarla --
+    // calidad ya no es un módulo ajeno para Daniela (se prueba en tests/inicio-daniela-orlando.test.js, CAL-2).
     [{ finiquito_estado: 'firmado' }, 'finiquito/encuesta'],
   ];
   for (const [body, nombre] of casos) {

@@ -14,9 +14,10 @@ const zlib = require('zlib');
 
 const UPLOAD_DIR = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'uploads') : path.join(__dirname, '..', 'uploads');
 
-const ETAPAS_FOTO = ['recepcion','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado','otra'];
+// 6-nov-2026: 'reautorizacion' = fotos editadas que Orlando sube para pedir que se autoricen piezas no autorizadas.
+const ETAPAS_FOTO = ['recepcion','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado','reautorizacion','otra'];
 const ETIQUETA_ETAPA_FOTO = { recepcion:'Recepción', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación',
-  pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', otra:'Otras' };
+  pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', otra:'Otras' };
 
 // Etapas de producción que exigen al menos una foto ANTES de poder salir de ellas. Pulido y lavado quedan
 // opcionales (no dejan evidencia útil para la aseguradora); se pueden agregar aquí si se decide lo contrario.

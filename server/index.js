@@ -95,6 +95,8 @@ app.use('/api/actualizacion-unidades', require('./routes/actualizacionUnidades')
 // Fotos de la unidad (4-nov-2026): recepción y avance por etapa, visibles y descargables para todos.
 app.use('/api/fotos', require('./routes/fotos'));
 app.use('/api/inicio-alejandra', require('./routes/inicioAlejandra')); // 5-nov-2026: pantalla de inicio de Alejandra
+app.use('/api/inicio-daniela', require('./routes/inicioDaniela')); // 6-nov-2026: pantalla de inicio de Daniela
+app.use('/api/inicio-orlando', require('./routes/inicioOrlando')); // 6-nov-2026: pantalla de inicio de Orlando
 
 // ---- Frontend estático ----
 // Reporte (2-sep-2026): varios "bugs" reportados ya estaban corregidos en el código pero el navegador

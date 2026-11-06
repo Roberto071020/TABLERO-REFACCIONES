@@ -239,11 +239,11 @@ const TABS = [
   {k:'recibidas', label:'Piezas recibidas', roles:['operativo','admin','jefe']},
   {k:'proveedores', label:'Proveedores', roles:['operativo','admin','jefe']},
   {k:'carga', label:'Carga masiva', roles:['operativo','admin']},
-  {k:'tecnica', label:'Revisión técnica', roles:['orlando','operativo','admin','jefe']},
-  {k:'expediente', label:'Armado de expediente', roles:['vanessa','orlando','operativo','admin','jefe']},
-  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','operativo','admin','jefe']},
-  {k:'produccion', label:'Producción', roles:['beto','operativo','admin','jefe']},
-  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','operativo','admin','jefe']},
+  {k:'tecnica', label:'Revisión técnica', roles:['orlando','admin','jefe']},
+  {k:'expediente', label:'Armado de expediente', roles:['vanessa','orlando','admin','jefe']},
+  {k:'valuacion', label:'Valuación / autorización', roles:['orlando','admin','jefe']},
+  {k:'produccion', label:'Producción', roles:['beto','admin','jefe']},
+  {k:'calidad', label:'Calidad / entrega', roles:['beto','orlando','atencion_cliente','admin','jefe']},
   {k:'reglas', label:'Reglas', roles:['admin','jefe']},
   {k:'respaldos', label:'Respaldos', roles:['admin']},
   // Bandeja manual asistida de WhatsApp (rama whatsapp-bandeja-manual, 14-sep-2026): abierta a TODOS los
@@ -352,7 +352,9 @@ async function render(){
    el motivo y los botones que usa (Ver OT, WhatsApp, siguiente etapa, capturar fecha). Sin tablas anchas
    ni textos técnicos. Usa exactamente los mismos cálculos que el reporte de la mañana (panorama-beto). */
 async function viewInicioBeto(){
-  const cola = await api('GET','/api/reportes/panorama-beto');
+  // 6-nov-2026: las unidades que Beto marca como Terminadas ya no desaparecen sin más -- le quedan en
+  // "Revisar calidad" (él es el responsable; los demás pueden apoyar).
+  const [cola, calidad] = await Promise.all([api('GET','/api/reportes/panorama-beto'), api('GET','/api/inicio-orlando/calidad-pendiente').catch(()=>[])]);
   const hoy = new Date().toISOString().slice(0,10);
   const LABEL = { programado:'Sin iniciar', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
   const vencidas = cola.filter(x => x.fecha_entrega_prevista && x.fecha_entrega_prevista < hoy).length;
@@ -392,6 +394,8 @@ async function viewInicioBeto(){
     ${tarjeta(listas, 'Listas para iniciar', 'verde')}
     ${tarjeta(reingresos, 'Reingresos por llegar', 'azul')}
   </div>
+  ${seccionCalidad(calidad)}
+  ${calidad.length ? '<h3 style="margin:18px 0 2px;">Unidades en el taller</h3>' : ''}
   ${cola.length ? unidades : '<div class="empty" style="margin-top:12px;">No hay unidades autorizadas pendientes.</div>'}`;
 }
 
@@ -430,7 +434,7 @@ function linkWhatsappSegunDispositivo(link){
 }
 
 async function viewInicioAlejandra(){
-  const d = await api('GET', '/api/inicio-alejandra');
+  const [d, apoyoCalidad] = await Promise.all([api('GET', '/api/inicio-alejandra'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => [])]);
   ALE.tarjetas = d.tarjetas;
   const n = d.numeros;
   const tarjetaNum = (num, texto, color, sec) => `<div class="card ${color}" onclick="aleIrA('${sec}')"><div class="num">${num}</div><div class="label">${texto}</div></div>`;
@@ -455,7 +459,8 @@ async function viewInicioAlejandra(){
     ${tarjetaNum(n.seguimiento, 'Seguimientos de hoy', n.seguimiento ? 'rojo' : 'verde', 'seguimiento')}
   </div>
   ${n.seguimiento === 0 && n.seguimientos_hechos_hoy >= d.max_seguimientos_dia ? `<p class="subtle" style="margin-top:-8px;">✅ Ya hiciste los ${d.max_seguimientos_dia} seguimientos de hoy. Mañana te salen los siguientes.</p>` : ''}
-  ${secciones || '<div class="empty" style="margin-top:12px;">🎉 Terminaste todo lo de hoy.</div>'}`;
+  ${secciones || '<div class="empty" style="margin-top:12px;">🎉 Terminaste todo lo de hoy.</div>'}
+  ${seccionCalidad(apoyoCalidad, { apoyo:true })}`;
 }
 function aleIrA(sec){
   const el = document.getElementById('ale-' + sec);
@@ -774,10 +779,298 @@ async function aleEntregarGuardar(){
   }catch(e){}
 }
 
+/* ===================== Piezas comunes de los inicios por persona (6-nov-2026) ===================== */
+function tarjetaNumeroInicio(num, texto, color, destino){
+  return `<div class="card ${color}" onclick="irASeccionInicio('${destino}')"><div class="num">${num}</div><div class="label">${texto}</div></div>`;
+}
+function irASeccionInicio(id){
+  const el = document.getElementById('sec-' + id);
+  if(el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+  else toast('No hay pendientes de este tipo.', 'success');
+}
+const INI_VER_TODO = {};
+function seccionInicio(id, titulo, ayuda, items, renderItem, { max = 10, cerrada = false } = {}){
+  if(!items || !items.length) return '';
+  const visibles = INI_VER_TODO[id] ? items : items.slice(0, max);
+  const cuerpo = `${ayuda ? `<p class="subtle" style="margin:0 0 6px;">${ayuda}</p>` : ''}
+    ${visibles.map(renderItem).join('')}
+    ${items.length > visibles.length ? `<button class="btn secondary" style="width:100%;" onclick="INI_VER_TODO['${id}']=true;render();">Ver ${items.length - visibles.length} más</button>` : ''}`;
+  if(cerrada) return `<details id="sec-${id}" style="margin-top:18px;"><summary style="cursor:pointer;font-weight:700;font-size:17px;">${titulo} <span class="badge gris">${items.length}</span></summary>${cuerpo}</details>`;
+  return `<div id="sec-${id}" style="margin-top:18px;"><h3 style="margin:0 0 2px;">${titulo} <span class="badge gris">${items.length}</span></h3>${cuerpo}</div>`;
+}
+function cajaInicio(contenido){ return `<div class="section" style="margin:8px 0;padding:14px;">${contenido}</div>`; }
+function encabezadoUnidad(id, vehiculo, numero, extra){
+  return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+      <span style="font-weight:700;font-size:16px;">${esc(vehiculo || ('Siniestro ' + numero))}</span>
+      <span class="link" style="font-size:13px;white-space:nowrap;" onclick="goSiniestro(${id})">Ver expediente</span>
+    </div>${extra ? `<div class="subtle" style="margin:2px 0 6px;">${extra}</div>` : ''}`;
+}
+function fechaCorta(f){ if(!f) return ''; const d = String(f).slice(0, 10).split('-'); return d.length === 3 ? `${d[2]}/${d[1]}` : f; }
+
+/* ===================== Revisión de calidad: responsable Beto, todos pueden (6-nov-2026) ===================== */
+const CAL_DIMENSIONES = [
+  ['Alcance', '¿Se hizo todo lo que dice la orden de trabajo?'],
+  ['Seguridad y función', '¿Luces, seguros, vidrios y todo lo que se tocó funciona?'],
+  ['Lámina/ajuste', '¿Las piezas quedaron alineadas, sin golpes ni huecos?'],
+  ['Pintura/acabado', '¿El color iguala y no hay escurridos, polvo ni rayas?'],
+  ['Armado', '¿Tornillos, clips, molduras y emblemas completos y firmes?'],
+  ['Presentación', '¿Está limpia por dentro y por fuera?'],
+  ['Documentación', '¿Están las fotos de cada etapa y la OT?'],
+];
+function seccionCalidad(lista, { apoyo = false } = {}){
+  return seccionInicio(apoyo ? 'calidad-apoyo' : 'calidad', apoyo ? 'Apoyo: revisar calidad' : 'Revisar calidad',
+    apoyo ? 'Llevan 1 día o más terminadas sin revisión de calidad. Si tienes un momento, revísala tú para que no se detenga la entrega.'
+      : 'Unidades terminadas. Revísalas con el checklist y libéralas para que Alejandra avise al cliente.',
+    lista, u => cajaInicio(`${encabezadoUnidad(u.id, u.vehiculo, u.numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
+      <div style="margin-bottom:10px;">${u.rechazados && u.rechazados.length
+        ? `<span class="badge rojo" style="white-space:normal;">Por corregir: ${esc(u.rechazados.map(r => r.dimension).join(', '))}</span>`
+        : `<span class="badge ${u.horas_terminada >= 24 ? 'rojo' : 'ambar'}">Terminada hace ${u.horas_terminada >= 24 ? Math.floor(u.horas_terminada / 24) + ' día(s)' : u.horas_terminada + ' h'}</span>`}</div>
+      <button class="btn" onclick="abrirRevisionCalidad(${u.id})">🔍 Revisar calidad</button>`));
+}
+let CAL = null;
+async function abrirRevisionCalidad(id){
+  try{
+    const [s, filas] = await Promise.all([api('GET', '/api/siniestros/' + id), api('GET', '/api/checklist-calidad?siniestro_id=' + id)]);
+    const porDim = {};
+    filas.forEach(f => { porDim[f.dimension] = f; });
+    CAL = { id, s, porDim, resp: {}, hallazgo: {} };
+    CAL_DIMENSIONES.forEach(([d]) => { const f = porDim[d]; if(f && f.resultado === 'aprobado') CAL.resp[d] = 'bien'; });
+    pintarRevisionCalidad();
+  }catch(e){}
+}
+function pintarRevisionCalidad(){
+  const { s, resp, hallazgo } = CAL;
+  showModal(`
+    <h3>Revisión de calidad</h3>
+    <p class="subtle" style="margin-top:0;">${esc(s.vehiculo || '')} · ${esc(s.placas || '')} · ${esc(s.numero)}</p>
+    <p>Revisa la unidad punto por punto, en este orden:</p>
+    ${CAL_DIMENSIONES.map(([d, pregunta], i) => `<div class="field">
+      <label><b>${i + 1}.</b> ${esc(pregunta)}</label>
+      <div style="display:flex;gap:6px;">
+        <button type="button" class="btn ${resp[d] === 'bien' ? '' : 'secondary'}" onclick="calMarcar(${i}, 'bien')">✔ Bien</button>
+        <button type="button" class="btn ${resp[d] === 'mal' ? 'danger' : 'secondary'}" onclick="calMarcar(${i}, 'mal')">✖ Hay que corregir</button>
+      </div>
+      ${resp[d] === 'mal' ? `<textarea id="cal_h_${i}" placeholder="¿Qué hay que corregir?" style="margin-top:6px;">${esc(hallazgo[d] || '')}</textarea>` : ''}
+    </div>`).join('')}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarRevisionCalidad()">Guardar revisión</button></div>`, true);
+}
+function calGuardarTextos(){
+  CAL_DIMENSIONES.forEach(([d], i) => { const el = document.getElementById('cal_h_' + i); if(el) CAL.hallazgo[d] = el.value.trim(); });
+}
+function calMarcar(i, valor){ calGuardarTextos(); CAL.resp[CAL_DIMENSIONES[i][0]] = valor; pintarRevisionCalidad(); }
+async function guardarRevisionCalidad(){
+  calGuardarTextos();
+  const { id, porDim, resp, hallazgo } = CAL;
+  const faltan = CAL_DIMENSIONES.filter(([d]) => !resp[d]).map(([d]) => d);
+  if(faltan.length){ toast('Falta revisar: ' + faltan.join(', ') + '.', 'error'); return; }
+  const malSinTexto = CAL_DIMENSIONES.filter(([d]) => resp[d] === 'mal' && !hallazgo[d]);
+  if(malSinTexto.length){ toast('Escribe qué hay que corregir en: ' + malSinTexto.map(([d]) => d).join(', ') + '.', 'error'); return; }
+  try{
+    for(const [d] of CAL_DIMENSIONES){
+      const cuerpo = resp[d] === 'bien' ? { resultado:'aprobado' } : { resultado:'rechazado', hallazgo: hallazgo[d] };
+      if(porDim[d]) await api('PATCH', '/api/checklist-calidad/' + porDim[d].id, cuerpo);
+      else await api('POST', '/api/checklist-calidad', { siniestro_id: id, dimension: d, ...cuerpo });
+    }
+    const todoBien = CAL_DIMENSIONES.every(([d]) => resp[d] === 'bien');
+    await api('PATCH', '/api/siniestros/' + id, { estado_calidad: todoBien ? 'liberado' : 'rechazado_a_retrabajo' });
+    toast(todoBien ? '✅ Calidad liberada. Alejandra ya puede avisarle al cliente.' : 'Quedó para corregir. Beto lo verá en su pantalla.', 'success', 6000);
+    closeModal(); render();
+  }catch(e){}
+}
+
+/* ===================== VISTA: INICIO DE DANIELA (6-nov-2026) ===================== */
+let DAN = null;
+async function viewInicioDaniela(){
+  const [d, apoyo] = await Promise.all([api('GET', '/api/inicio-daniela'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => [])]);
+  DAN = d; DAN.textos = [];
+  const n = d.numeros;
+  const filaPieza = (z, botones) => `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--border);">
+      <div><b>${esc(z.descripcion)}</b><div class="subtle">${esc(z.vehiculo || '')} ${esc(z.placas || '')} · <span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.siniestro_numero)}</span>${z.dias_vencida ? ` · <span style="color:var(--rojo);font-weight:700;">vencida hace ${z.dias_vencida} día(s)</span>` : z.fecha_prometida ? ` · promesa ${esc(fechaCorta(z.fecha_prometida))}` : ''}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${botones}</div></div>`;
+  const grupoProveedor = (g, tipo) => {
+    const piezasTxt = g.piezas.map(z => `• ${z.descripcion} (${z.vehiculo || z.siniestro_numero})`).join('\n');
+    const texto = tipo === 'vencidas'
+      ? `Hola, buen día. Le escribimos de Servicio Cristian para dar seguimiento a estas piezas, cuya fecha de entrega ya pasó:\n${piezasTxt}\n¿Nos puede confirmar la nueva fecha de entrega? Gracias.`
+      : `Hola, buen día. Le escribimos de Servicio Cristian. ¿Nos puede confirmar la fecha de entrega de estas piezas?\n${piezasTxt}\nGracias.`;
+    const tel = String(g.telefono || '').replace(/\D/g, '').slice(-10);
+    return cajaInicio(`<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:16px;">🏪 ${esc(g.proveedor)}</span><span class="badge ${tipo === 'vencidas' ? 'rojo' : 'ambar'}">${g.piezas.length} pieza(s)</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
+        ${tel.length === 10 ? `<button class="btn small" onclick="danWhatsappProveedor(${DAN.textos.push({ tel, texto }) - 1})">📲 WhatsApp al proveedor</button>` : ''}
+        ${g.proveedor_id ? `<button class="btn small secondary" onclick="state.filtrosCorreos={ proveedor_id:'${g.proveedor_id}', page:1 }; goTo('correos');">✉️ Ver sus correos</button>` : ''}
+      </div>
+      ${g.piezas.map(z => filaPieza(z, `<button class="btn small" onclick="danCapturarFecha(${z.id}, '${esc(z.estatus)}')">📅 ${tipo === 'vencidas' ? 'Nueva fecha' : 'Capturar fecha'}</button>`)).join('')}`);
+  };
+  return `
+  <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre || 'Daniela').split(' ')[0])} 👋</h2>
+  <p class="subtle" style="margin-top:0;">Aquí solo está lo que sigue pendiente de refacciones, en el orden en que conviene hacerlo. Si una unidad no aparece, sus refacciones están completas.</p>
+  <button class="btn" style="width:100%;margin-bottom:12px;" onclick="danLlegoPieza()">📦 Llegó una pieza</button>
+  <div class="grid-cards">
+    ${tarjetaNumeroInicio(n.por_recibir, 'Piezas por recibir', n.por_recibir ? 'azul' : 'verde', 'recibir')}
+    ${tarjetaNumeroInicio(n.vencidas, 'Piezas vencidas', n.vencidas ? 'rojo' : 'verde', 'vencidas')}
+    ${tarjetaNumeroInicio(n.por_confirmar, 'Fechas por confirmar', n.por_confirmar ? 'ambar' : 'verde', 'confirmar')}
+    ${tarjetaNumeroInicio(n.correos, 'Correos por aprobar', n.correos ? 'ambar' : 'verde', 'correos')}
+  </div>
+  ${seccionInicio('recibir', '1. Recibir piezas', 'El proveedor ya las entregó. Revísalas: si llegaron bien, márcalas; si no, registra qué pasó.', d.recibir,
+    u => cajaInicio(`${encabezadoUnidad(u.siniestro_id, u.vehiculo, u.siniestro_numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
+      ${u.piezas.map(z => filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
+  ${seccionInicio('vencidas', '2. Reclamar piezas vencidas', 'Ya pasó la fecha que prometió el proveedor. Escríbele y captura la nueva fecha.', d.vencidas, g => grupoProveedor(g, 'vencidas'))}
+  ${seccionInicio('confirmar', '3. Confirmar fechas', 'El proveedor todavía no confirma cuándo las entrega. Pídele la fecha y captúrala.', d.confirmar, g => grupoProveedor(g, 'confirmar'))}
+  ${seccionInicio('correos', '4. Aprobar correos', 'Correos que el sistema preparó para los proveedores. Nada se envía sin que lo revises.', d.correos,
+    c => cajaInicio(`<div style="display:flex;justify-content:space-between;gap:8px;"><b>${esc(c.proveedor || 'Proveedor')}</b><span class="subtle">${esc(fechaCorta(c.fecha_envio))}</span></div>
+      <div class="subtle" style="margin:2px 0 8px;">${esc(c.asunto || '')} · ${esc(c.vehiculo || c.siniestro_numero)}</div>
+      ${c.incompleto ? '<span class="badge rojo">Le falta el correo del proveedor</span> ' : ''}<button class="btn small" onclick="abrirRevisarCorreo(${c.id})">✉️ Revisar y enviar</button>`))}
+  ${seccionInicio('mal', '5. Resolver mal surtidas y devoluciones', 'Piezas que llegaron mal o se devolvieron. Cuando el proveedor lo resuelva, ciérralo aquí.', d.mal,
+    z => cajaInicio(`${encabezadoUnidad(z.siniestro_id, z.vehiculo, z.siniestro_numero, `${esc(z.proveedor || '')} · ${esc(z.estatus)}`)}
+      <div style="margin-bottom:8px;"><b>${esc(z.descripcion)}</b>${z.incidencia ? `<div class="subtle">${esc(z.incidencia.descripcion || z.incidencia.tipo)}${z.incidencia.fecha_compromiso ? ' · compromiso ' + esc(fechaCorta(z.incidencia.fecha_compromiso)) : ''}</div>` : ''}</div>
+      ${z.incidencia ? `<button class="btn small" onclick="abrirFormResolverIncidencia(${z.incidencia.id})">✔ Ya se resolvió</button>` : `<button class="btn small" onclick="abrirFormIncidencia(${z.id})">Registrar qué pasó</button>`}`))}
+  ${seccionInicio('sin-piezas', '6. Capturar piezas de pedidos nuevos', 'Pedidos que llegaron sin ninguna pieza capturada.', d.pedidos_sin_piezas,
+    p => cajaInicio(`${encabezadoUnidad(p.siniestro_id, p.vehiculo, p.siniestro_numero, `Pedido ${esc(p.pedido_numero)} · ${esc(p.aseguradora || '')}`)}
+      <button class="btn small" onclick="goSiniestro(${p.siniestro_id})">➕ Capturar piezas</button>`))}
+  ${seccionCalidad(apoyo, { apoyo:true })}
+  ${seccionInicio('viejas', 'Revisa: ¿siguen pendientes?', `Vencieron hace más de ${30} días. Casi siempre ya llegaron o se cancelaron: confírmalo para limpiar la lista.`, d.viejas,
+    z => cajaInicio(filaPieza(z, `<button class="btn small secondary" onclick="marcarRecibida(${z.id})">Ya llegó</button><button class="btn small secondary" onclick="danCancelarPieza(${z.id})">Se canceló</button><button class="btn small" onclick="danCapturarFecha(${z.id}, '${esc(z.estatus)}')">Sí, reclamar</button>`)))}
+  ${(d.revisa.vales + d.revisa.discrepancias + d.revisa.correos_incompletos + d.revisa.sin_placas) ? `<div id="sec-revisa" style="margin-top:18px;"><h3 style="margin:0 0 6px;">Revisa cuando tengas tiempo</h3>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${d.revisa.vales ? `<button class="btn small secondary" onclick="abrirDetalleTarjeta('valesPendientesSinSurtir','Vales pendientes de surtir')">Vales pendientes (${d.revisa.vales})</button>` : ''}
+      ${d.revisa.discrepancias ? `<button class="btn small secondary" onclick="abrirDetalleTarjeta('discrepanciasAbiertas','Discrepancias con proveedor')">Discrepancias (${d.revisa.discrepancias})</button>` : ''}
+      ${d.revisa.correos_incompletos ? `<button class="btn small secondary" onclick="abrirCorreosIncompletos()">Correos sin destinatario (${d.revisa.correos_incompletos})</button>` : ''}
+      ${d.revisa.sin_placas ? `<button class="btn small secondary" onclick="goTo('lista')">Expedientes sin placas (${d.revisa.sin_placas})</button>` : ''}
+    </div></div>` : ''}
+  ${seccionInicio('llegaron', 'Ya llegaron (últimos 7 días)', 'Por si alguna sale mal surtida o hay que devolverla.', d.ya_llegaron,
+    z => `<div style="padding:6px 0;border-top:1px solid var(--border);"><b>${esc(z.descripcion)}</b> <span class="subtle">· ${esc(z.vehiculo || '')} · <span class="link" onclick="goSiniestro(${z.siniestro_id})">${esc(z.siniestro_numero)}</span> · ${esc(z.proveedor || '')} · ${esc(fechaCorta(z.fecha_recepcion))}</span></div>`, { max: 20, cerrada: true })}
+  ${!(n.por_recibir + n.vencidas + n.por_confirmar + n.correos + n.mal_surtidas + n.pedidos_sin_piezas) ? '<div class="empty" style="margin-top:12px;">🎉 No hay refacciones pendientes por ahora.</div>' : ''}`;
+}
+function danWhatsappProveedor(i){ const t = DAN && DAN.textos[i]; if(t) window.open(linkWhatsapp(t.tel, t.texto), '_blank'); }
+function danCapturarFecha(piezaId, estatus){
+  showModal(`
+    <h3>Fecha que confirmó el proveedor</h3>
+    <div class="field"><label>¿Qué día entrega?</label><input id="dan_fecha" type="date" min="${hoyLocalISO()}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="danGuardarFecha(${piezaId}, '${esc(estatus)}')">Guardar</button></div>`);
+}
+async function danGuardarFecha(piezaId, estatus){
+  const fecha = document.getElementById('dan_fecha').value;
+  if(!fecha){ toast('Elige la fecha.', 'error'); return; }
+  try{
+    await api('PATCH', '/api/piezas/' + piezaId, { fecha_prometida: fecha, ...(estatus === 'Asignada' || estatus === 'Sin proveedor' ? { estatus:'Confirmada' } : {}) });
+    toast('Fecha guardada.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+function danCancelarPieza(piezaId){
+  showModal(`
+    <h3>¿Se canceló esta pieza?</h3>
+    <p>Úsalo solo si ya no se va a recibir (se canceló el pedido, se cambió por otra o se consiguió por otro lado). Sale de tu lista.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">No</button><button class="btn" onclick="danGuardarCancelada(${piezaId})">Sí, se canceló</button></div>`);
+}
+async function danGuardarCancelada(piezaId){
+  try{ await api('PATCH', '/api/piezas/' + piezaId, { estatus:'Cancelada' }); toast('Pieza marcada como cancelada.', 'success'); closeModal(); render(); }catch(e){}
+}
+function danLlegoPieza(){
+  showModal(`
+    <h3>📦 Llegó una pieza</h3>
+    <div class="field"><label>Siniestro, placas o vehículo</label><input id="dan_q" placeholder="Ej. YKC789 o Jetta" oninput="danBuscarPiezas()"></div>
+    <div id="dan_res" class="subtle">Escribe al menos 3 letras o números.</div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
+  setTimeout(() => { const el = document.getElementById('dan_q'); if(el) el.focus(); }, 50);
+}
+let danBuscarTimer = null;
+function danBuscarPiezas(){
+  clearTimeout(danBuscarTimer);
+  danBuscarTimer = setTimeout(async () => {
+    const q = ((document.getElementById('dan_q') || {}).value || '').trim();
+    const cont = document.getElementById('dan_res'); if(!cont) return;
+    if(q.length < 3){ cont.innerHTML = 'Escribe al menos 3 letras o números.'; return; }
+    const lista = await api('GET', '/api/inicio-daniela/piezas-pendientes?q=' + encodeURIComponent(q), null, { silent:true }).catch(() => []);
+    cont.innerHTML = !lista.length ? 'No hay piezas pendientes con ese dato.' : lista.map(z => `<div style="padding:8px 0;border-top:1px solid var(--border);">
+      <b>${esc(z.descripcion)}</b><div class="subtle">${esc(z.vehiculo || '')} ${esc(z.placas || '')} · ${esc(z.siniestro_numero)} · ${esc(z.proveedor || '')}</div>
+      <div style="display:flex;gap:6px;margin-top:6px;"><button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button></div></div>`).join('');
+  }, 250);
+}
+
+/* ===================== VISTA: INICIO DE ORLANDO (6-nov-2026) ===================== */
+async function viewInicioOrlando(){
+  const [d, apoyo] = await Promise.all([api('GET', '/api/inicio-orlando'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => [])]);
+  const n = d.numeros;
+  const sub = x => [x.placas, x.cliente_nombre, x.aseguradora].filter(Boolean).map(esc).join(' · ');
+  const PASO = { excel:['Captúrala en Excel', '✔ Ya la capturé en Excel'], fotos:['Completa fotos y carpeta', '✔ Fotos y carpeta completas'], enviar:['Lista: envíasela a Roberto', '📤 Ya se la envié a Roberto'] };
+  return `
+  <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Orlando')} 👋</h2>
+  <p class="subtle" style="margin-top:0;">Esto es lo que tienes que hacer, en este orden. Toca el botón de cada unidad.</p>
+  <div class="grid-cards">
+    ${tarjetaNumeroInicio(n.revisar, 'Por revisar', n.revisar ? 'ambar' : 'verde', 'revisar')}
+    ${tarjetaNumeroInicio(n.desarme, 'Esperando desarme', n.desarme ? 'azul' : 'verde', 'desarme')}
+    ${tarjetaNumeroInicio(n.complementos, 'Complementos', n.complementos ? 'rojo' : 'verde', n.reautorizar ? 'reautorizar' : 'complementos')}
+    ${tarjetaNumeroInicio(n.por_enviar, 'Por enviar a Roberto', n.por_enviar ? 'ambar' : 'verde', 'captura')}
+  </div>
+  ${seccionInicio('reautorizar', '🚨 Fotos editadas para reautorizar', `La aseguradora no autorizó estas piezas. Tienes ${d.horas_reautorizacion} horas para mandar las fotos editadas.`, d.reautorizar,
+    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c))}
+      <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || c.causa || '')}</div>
+      <div style="margin-bottom:10px;">${c.horas_restantes == null ? '' : c.horas_restantes < 0 ? `<span class="badge rojo">Venció hace ${-c.horas_restantes} h — avísale a Roberto</span>` : `<span class="badge ${c.horas_restantes <= 6 ? 'rojo' : 'ambar'}">Te quedan ${c.horas_restantes} h</span>`}
+        <span class="badge ${c.fotos_editadas ? 'verde' : 'gris'}">${c.fotos_editadas} foto(s) subidas</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn" onclick="FotosSC.abrirSubirFotos(${c.siniestro_id}, 'reautorizacion', { titulo:'Fotos editadas para reautorizar' })">📷 Subir fotos editadas</button>
+        ${c.fotos_editadas ? `<button class="btn secondary" onclick="orlComplementoEnviado(${c.id}, true)">✔ Ya se enviaron</button>` : ''}
+      </div>`))}
+  ${seccionInicio('revisar', '1. Revisar unidades nuevas', 'Ya las recibió Alejandra. Empieza por la que lleva más tiempo esperando.', d.revisar,
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+      <div style="margin-bottom:10px;">${x.estado_revision_tecnica === 'en_revision' ? '<span class="badge azul">Ya la empezaste</span>' : `<span class="badge ${x.dias_esperando >= 1 ? 'rojo' : 'ambar'}">${x.dias_esperando >= 1 ? `Esperando hace ${x.dias_esperando} día(s)` : 'Llegó hoy'}</span>`}</div>
+      <button class="btn" onclick="orlRevisar(${x.siniestro_id}, '${esc(x.vehiculo || x.siniestro_numero)}')">🔍 ${x.estado_revision_tecnica === 'en_revision' ? 'Continuar revisión' : 'Revisar'}</button>`))}
+  ${seccionInicio('desarme', '2. Terminar las que esperaban desarme', 'Cuando ya estén desarmadas, termina la revisión.', d.desarme,
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+      <button class="btn" onclick="orlTerminarRevision(${x.siniestro_id})">✔ Ya se desarmó: revisión terminada</button>`))}
+  ${seccionInicio('complementos', '3. Hacer complementos', 'Daños ocultos que salieron en la reparación. Documéntalos con fotos y envíalos.', d.complementos,
+    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c))}
+      <div style="margin-bottom:10px;"><b>Hallazgo:</b> ${esc(c.causa || '')}${c.pieza_operacion ? ' · ' + esc(c.pieza_operacion) : ''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn secondary" onclick="FotosSC.abrirSubirFotos(${c.siniestro_id}, 'otra', { titulo:'Fotos del complemento' })">📷 Fotos del daño</button>
+        <button class="btn" onclick="orlComplementoEnviado(${c.id}, false)">✔ Complemento enviado</button>
+      </div>`))}
+  ${seccionInicio('captura', '4. Captura y envío a Roberto', 'Lo que antes hacía Vanessa: cada unidad te dice su siguiente paso.', d.captura,
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+      <div style="margin-bottom:10px;"><span class="badge ambar">${PASO[x.paso][0]}</span> <span class="subtle">Paso ${x.paso === 'excel' ? 1 : x.paso === 'fotos' ? 2 : 3} de 3</span></div>
+      <button class="btn" onclick="orlSiguientePaso(${x.siniestro_id}, '${x.paso}')">${PASO[x.paso][1]}</button>`))}
+  ${seccionCalidad(apoyo, { apoyo:true })}
+  ${!(n.revisar + n.desarme + n.complementos + n.por_enviar) ? '<div class="empty" style="margin-top:12px;">🎉 No tienes pendientes por ahora.</div>' : ''}`;
+}
+function orlRevisar(id, nombre){
+  showModal(`
+    <h3>Revisar ${esc(nombre)}</h3>
+    <p><b>Paso 1.</b> Revisa los daños y toma tus fotos como siempre.</p>
+    <p><b>Paso 2.</b> ¿Necesitas que la desarmen para ver todo el daño?</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn" onclick="orlTerminarRevision(${id})">✔ No, ya terminé la revisión</button>
+      <button class="btn secondary" onclick="orlPedirDesarme(${id})">🔧 Sí, necesita desarme</button>
+      <button class="btn ghost" onclick="orlEmpezarRevision(${id})">Todavía no termino (la dejo empezada)</button>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>`);
+}
+async function orlCambioRevision(id, estado, mensaje){
+  try{ await api('PATCH', '/api/siniestros/' + id, { estado_revision_tecnica: estado }); toast(mensaje, 'success'); closeModal(); render(); }catch(e){}
+}
+function orlTerminarRevision(id){ return orlCambioRevision(id, 'revision_terminada', 'Revisión terminada. Ahora te sale en "Captura y envío a Roberto".'); }
+function orlPedirDesarme(id){ return orlCambioRevision(id, 'requiere_desarme', 'Marcada para desarme. Avísale a Beto.'); }
+function orlEmpezarRevision(id){ return orlCambioRevision(id, 'en_revision', 'Quedó como empezada.'); }
+async function orlComplementoEnviado(id, esReautorizacion){
+  try{
+    await api('PATCH', '/api/complementos/' + id, { estado:'enviado' });
+    toast(esReautorizacion ? 'Listo: Roberto ya ve que las fotos se enviaron.' : 'Complemento marcado como enviado.', 'success');
+    render();
+  }catch(e){}
+}
+async function orlSiguientePaso(id, paso){
+  const hoy = hoyLocalISO();
+  const cambios = paso === 'excel' ? { excel_capturado:1, excel_capturado_fecha: hoy }
+    : paso === 'fotos' ? { fotos_completas:1, fotos_completas_fecha: hoy } : { enviado_propietario:1, enviado_propietario_fecha: hoy };
+  try{ await api('PATCH', '/api/siniestros/' + id, cambios); toast('Listo.', 'success'); render(); }catch(e){}
+}
+
 /* ===================== VISTA: INICIO ===================== */
 async function viewInicio(){
   if(currentUser && currentUser.rol === 'beto') return viewInicioBeto();
   if(currentUser && currentUser.rol === 'atencion_cliente') return viewInicioAlejandra();
+  if(currentUser && currentUser.rol === 'operativo') return viewInicioDaniela();
+  if(currentUser && (currentUser.rol === 'orlando' || currentUser.rol === 'vanessa')) return viewInicioOrlando();
   const r = await api('GET','/api/reportes/resumen');
   const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
@@ -4358,13 +4651,13 @@ async function viewValuacion(){
     ${puedeReaut ? `<button class="btn" onclick="abrirBuscarReautorizacion()">+ Solicitar reautorización</button>` : ''}
   </div>
   ${puedeReaut && reauts.length ? `<div class="section" style="margin-top:12px;">
-    <h3 style="margin-top:0;">Reautorizaciones esperando fotos de Orlando (${reauts.length})</h3>
+    <h3 style="margin-top:0;">Reautorizaciones en curso (${reauts.length})</h3>
     <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Piezas no autorizadas</th><th>Plazo</th></tr></thead><tbody>
     ${reauts.map(c => { const h = horasRestantes(c); return `<tr>
       <td><span class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero || '')}</span></td>
       <td>${esc(c.vehiculo || '')} ${esc(c.placas || '')}</td>
       <td>${esc(c.pieza_operacion || c.causa || '')}</td>
-      <td>${h == null ? '—' : h < 0 ? `<span class="badge rojo">Vencida hace ${-h} h</span>` : `<span class="badge ${h <= 6 ? 'ambar' : 'verde'}">Quedan ${h} h</span>`}</td>
+      <td>${c.estado === 'enviado' ? '<span class="badge verde">✔ Orlando ya envió las fotos</span>' : h == null ? '—' : h < 0 ? `<span class="badge rojo">Vencida hace ${-h} h</span>` : `<span class="badge ${h <= 6 ? 'ambar' : 'verde'}">Quedan ${h} h</span>`}</td>
     </tr>`; }).join('')}
     </tbody></table></div>` : ''}
   <p class="subtle">Expedientes con checklist documental listo, pendientes de resolver su valuación y autorización. La ruta de refacciones (Inpart/autosurtido/pago de daños) se recalcula sola según la aseguradora y las piezas autorizadas.</p>

@@ -40,7 +40,8 @@ const GRUPOS_CAMPOS_RESTRINGIDOS = [
   { campos:['autosurtido_cotizado_en'], roles:['operativo','admin','jefe'], nombre:'cotización de autosurtido (Daniela)' },
   { campos:['autosurtido_reingreso_en','autosurtido_inventario_cargado','autosurtido_inventario_cargado_en'],
     roles:['atencion_cliente','admin','jefe'], nombre:'reingreso e inventario de autosurtido (Alejandra)' },
-  { campos:['estado_calidad'], roles:['beto','orlando','admin','jefe'], nombre:'calidad' },
+  // 6-nov-2026 (Roberto): Beto es el responsable de la revisión de calidad, pero todos pueden hacerla y liberarla.
+  { campos:['estado_calidad'], roles:['beto','orlando','atencion_cliente','operativo','vanessa','admin','jefe'], nombre:'calidad' },
   { campos:['entrega_receptor','entrega_identificacion','entrega_kilometraje','entrega_combustible','entrega_llaves_entregadas','entrega_observacion','estado_entrega','deducible_pagado_confirmado_en','entrega_encuesta_gnp_solicitada'],
     roles:['beto','atencion_cliente','admin','jefe'], nombre:'entrega' },
   { campos:['finiquito_estado','finiquito_fecha','finiquito_observacion','encuesta_estado','encuesta_calificacion','encuesta_comentarios','postventa_resultado'],
