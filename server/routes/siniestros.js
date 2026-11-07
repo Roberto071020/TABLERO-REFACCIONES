@@ -303,7 +303,10 @@ router.patch('/:id', requireAuth, (req, res)=>{
   // Documento Maestro / Fase C, tabla 9: "criterio de salida: expediente digital validado y listo para
   // valuación." No se puede marcar listo si hay documentos faltantes o ilegibles pendientes (misma lógica
   // que el cierre condicionado de Daniela: el sistema bloquea, no solo advierte).
-  if(nuevo.estado_expediente === 'listo_para_valuacion'){
+  // 7-nov-2026: igual que valuación/autorización, estas dos reglas se revisan cuando el expediente PASA a "listo
+  // para valuación", no en cada cambio posterior (un dato viejo incompleto bloqueaba, p. ej., registrar el envío).
+  const pasaAListo = nuevo.estado_expediente === 'listo_para_valuacion' && anterior.estado_expediente !== 'listo_para_valuacion';
+  if(pasaAListo){
     const pendientes = db.prepare(`SELECT tipo_documento FROM documentos_expediente WHERE siniestro_id = ? AND estado IN ('faltante','no_legible')`).all(req.params.id);
     if(pendientes.length){
       return res.status(400).json({ error:'No se puede marcar el expediente como listo para valuación: hay documentos faltantes o no legibles.',
@@ -313,7 +316,7 @@ router.patch('/:id', requireAuth, (req, res)=>{
   // Punto 10 del documento de Orlando (2-sep-2026): la condición para que el expediente pase de
   // Orlando/Vanessa a Roberto (valuación) exige los 3 checks completos -- fotos de revisión entregadas,
   // expediente digital armado y envío del expediente al propietario -- no solo la bandera manual.
-  if(nuevo.estado_expediente === 'listo_para_valuacion'){
+  if(pasaAListo){
     const faltan = [];
     if(!anterior.fotos_completas) faltan.push('Fotos/carpeta completas');
     if(!anterior.enviado_propietario) faltan.push('Enviado al propietario');

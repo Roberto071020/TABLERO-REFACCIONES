@@ -269,7 +269,7 @@ function renderTabs(){
     `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}${t.k==='whatsapp' && whatsappPendientesBadge?` <span class="badge-count">${whatsappPendientesBadge}</span>`:''}</button>`).join('') +
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
-function goTo(view){ state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
+function goTo(view){ if(view==='inicio') state.resumenCompleto=false; state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
 // Hallazgo de Daniela (26-ago-2026): el menu ocupaba casi toda la pantalla en movil. Se colapsa
 // detras de un boton "Menu" (ver CSS .nav-toggle / nav.tabs.open) y se cierra solo al navegar, porque
 // renderTabs() reconstruye el <nav> desde cero sin la clase "open" en cada render().
@@ -1065,12 +1065,149 @@ async function orlSiguientePaso(id, paso){
   try{ await api('PATCH', '/api/siniestros/' + id, cambios); toast('Listo.', 'success'); render(); }catch(e){}
 }
 
+/* ===================== VISTA: INICIO DE ROBERTO (7-nov-2026) =====================
+   Mismo criterio que el resto del equipo: arriba lo que le toca a Roberto, en orden y con botón; abajo solo lo
+   que está atorado en el equipo. El resumen completo anterior sigue disponible con "Ver resumen completo". */
+let ROB = null;
+async function viewInicioRoberto(){
+  const d = await api('GET', '/api/inicio-roberto');
+  ROB = d;
+  const n = d.numeros;
+  const sub = x => [x.placas, x.cliente_nombre, x.aseguradora].filter(Boolean).map(esc).join(' · ');
+  const tarjetaAlerta = (a, i) => cajaInicio(`<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div><b>${esc(a.titulo)}</b><div class="subtle">Le toca a ${esc(a.quien)}</div></div>
+      <div style="display:flex;gap:8px;align-items:center;"><span class="badge rojo" style="font-size:14px;">${a.items.length}</span>
+      <button class="btn small secondary" onclick="robVerAlerta(${i})">Ver cuáles</button></div></div>`);
+  return `
+  <h2 style="margin-bottom:4px;">Hola, ${esc(((currentUser && currentUser.nombre) || 'Roberto').split(' ')[0])} 👋</h2>
+  <p class="subtle" style="margin-top:0;">Arriba lo que te toca a ti, en orden. Abajo, solo lo que está atorado en el equipo.</p>
+  <div class="grid-cards">
+    ${tarjetaNumeroInicio(n.por_valuar, 'Por valuar', n.por_valuar ? 'ambar' : 'verde', 'por-valuar')}
+    ${tarjetaNumeroInicio(n.esperando, 'Esperando a la aseguradora', 'azul', 'esperando')}
+    ${tarjetaNumeroInicio(n.por_arrancar, 'Por arrancar', n.por_arrancar ? 'ambar' : 'verde', 'arrancar')}
+    ${tarjetaNumeroInicio(n.alertas, 'Alertas del taller', n.alertas ? 'rojo' : 'verde', 'alertas')}
+  </div>
+  ${seccionInicio('reaut', '🚨 Reautorizaciones por vencer', 'Orlando tiene poco tiempo (o ya se le pasó) para mandar las fotos editadas.', d.reautorizaciones,
+    c => cajaInicio(`${encabezadoUnidad(c.id, c.vehiculo, c.numero, sub(c))}
+      <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || '')}</div>
+      <span class="badge rojo">${c.horas_restantes < 0 ? `Venció hace ${-c.horas_restantes} h` : `Quedan ${c.horas_restantes} h`}</span>`))}
+  ${seccionInicio('por-valuar', '1. Valuar', 'Expedientes listos. Cuando lo valúes y lo envíes a la aseguradora, regístralo aquí.', d.por_valuar,
+    x => cajaInicio(`${encabezadoUnidad(x.id, x.vehiculo, x.numero, sub(x))}
+      <button class="btn" onclick="robValueEnvie(${x.id}, '${esc(x.vehiculo || x.numero)}')">📤 Valué y envié</button>`))}
+  ${seccionInicio('esperando', '2. Esperando a la aseguradora', 'En rojo, las que llevan más de 3 días hábiles sin respuesta.', d.esperando,
+    x => cajaInicio(`${encabezadoUnidad(x.id, x.vehiculo, x.numero, sub(x))}
+      <div style="margin-bottom:10px;">${x.vencida ? `<span class="badge rojo">Sin respuesta desde ${esc(fechaCorta(x.enviada))}</span>`
+        : x.enviada ? `<span class="badge azul">Enviada el ${esc(fechaCorta(x.enviada))}</span>` : '<span class="badge gris">Sin fecha de envío</span>'}
+        ${x.por_aclarar ? ' <span class="badge ambar">Por aclarar</span>' : ''}</div>
+      <button class="btn" onclick="robRespuesta(${x.id}, '${esc(x.vehiculo || x.numero)}')">✅ Llegó la respuesta</button>`))}
+  ${seccionInicio('arrancar', '3. Arrancar', 'Autorizadas. Cuando tengan OT y proveedores, envía el expediente completo: se avisa a Alejandra y Daniela.', d.por_arrancar,
+    x => cajaInicio(`${encabezadoUnidad(x.id, x.vehiculo, x.numero, sub(x))}
+      <div style="margin-bottom:10px;">${x.faltan.length ? `<span class="badge ambar" style="white-space:normal;">Falta: ${esc(x.faltan.join(' y '))}</span>` : '<span class="badge verde">Lista para arrancar</span>'}
+        ${x.estado_autorizacion === 'parcial' ? ' <span class="badge ambar">Autorización parcial</span>' : ''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn" onclick="enviarExpedienteCompleto(${x.id})">🚀 Enviar expediente completo</button>
+        ${x.faltan.some(f => f.startsWith('proveedor')) ? `<button class="btn small secondary" onclick="avisarProveedoresPendientes(${x.id})">Avisar que faltan proveedores</button>` : ''}
+      </div>`))}
+  ${seccionInicio('complementos', '4. Complementos que requieren tu decisión', `Daño oculto de más de $${Number(d.limite_complemento).toLocaleString('es-MX')}: solo tú puedes autorizarlo.`, d.complementos,
+    c => cajaInicio(`${encabezadoUnidad(c.id, c.vehiculo, c.numero, sub(c))}
+      <div style="margin-bottom:10px;"><b>${esc(c.causa || '')}</b>${c.pieza_operacion ? ' · ' + esc(c.pieza_operacion) : ''} · <b>$${Number(c.importe || 0).toLocaleString('es-MX')}</b></div>
+      <div style="display:flex;gap:6px;"><button class="btn" onclick="robDecisionComplemento(${c.complemento_id}, 'autorizado')">✔ Autorizar</button>
+      <button class="btn secondary" onclick="robDecisionComplemento(${c.complemento_id}, 'rechazado')">✖ Rechazar</button></div>`))}
+  ${d.alertas.length ? `<div id="sec-alertas" style="margin-top:22px;"><h3 style="margin:0 0 2px;">Alertas del taller</h3>
+    <p class="subtle" style="margin:0 0 6px;">Lo que está atorado en el equipo. Toca "Ver cuáles" para saber qué unidades son.</p>
+    ${d.alertas.map(tarjetaAlerta).join('')}</div>` : '<div id="sec-alertas" class="empty" style="margin-top:18px;">✅ Nada atorado en el taller.</div>'}
+  <div style="margin-top:24px;text-align:center;"><button class="btn ghost" onclick="state.resumenCompleto=true;render();">Ver resumen completo</button></div>`;
+}
+function robVerAlerta(i){
+  const a = ROB && ROB.alertas[i]; if(!a) return;
+  showModal(`
+    <h3>${esc(a.titulo)} (${a.items.length})</h3>
+    <p class="subtle" style="margin-top:0;">Le toca a ${esc(a.quien)}.</p>
+    ${a.items.map(x => `<div style="padding:8px 0;border-top:1px solid var(--border);"><span class="link" onclick="closeModal();goSiniestro(${x.id})"><b>${esc(x.numero)}</b></span>
+      <div class="subtle">${esc(x.detalle || '')}</div></div>`).join('')}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
+}
+function robValueEnvie(id, nombre){
+  showModal(`
+    <h3>Valué y envié</h3>
+    <p class="subtle" style="margin-top:0;">${esc(nombre)}</p>
+    <div class="field"><label>¿Qué día la enviaste a la aseguradora?</label><input id="rob_fecha" type="date" value="${hoyLocalISO()}" max="${hoyLocalISO()}"></div>
+    <div class="row-flex">
+      <div class="field"><label>Folio (opcional)</label><input id="rob_folio"></div>
+      <div class="field"><label>Importe (opcional)</label><input id="rob_importe" type="number" step="0.01" inputmode="decimal"></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="robGuardarEnvio(${id})">Guardar</button></div>`);
+}
+async function robGuardarEnvio(id){
+  const fecha = document.getElementById('rob_fecha').value;
+  if(!fecha){ toast('Indica la fecha de envío.', 'error'); return; }
+  const folio = document.getElementById('rob_folio').value.trim(), importe = document.getElementById('rob_importe').value;
+  try{
+    await api('PATCH', '/api/siniestros/' + id, { valuacion_fecha_envio: fecha, estado_valuacion:'enviada', estado_autorizacion:'en_autorizacion',
+      autorizacion_fecha_envio: fecha, ...(folio ? { valuacion_folio: folio } : {}), ...(importe !== '' ? { valuacion_importe: Number(importe) } : {}) });
+    toast('Registrada. Ahora está en "Esperando a la aseguradora".', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+let ROB_RESP = null;
+function robRespuesta(id, nombre){ ROB_RESP = { id, nombre, estado:'' }; robPintarRespuesta(); }
+function robPintarRespuesta(){
+  const r = ROB_RESP;
+  const opc = (v, t) => `<button type="button" class="btn ${r.estado === v ? '' : 'secondary'}" onclick="robRespGuardarCampos();ROB_RESP.estado='${v}';robPintarRespuesta();">${t}</button>`;
+  const conPiezas = r.estado === 'autorizada' || r.estado === 'parcial';
+  showModal(`
+    <h3>Llegó la respuesta</h3>
+    <p class="subtle" style="margin-top:0;">${esc(r.nombre)}</p>
+    <div class="field"><label>¿Qué respondió la aseguradora?</label><div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${opc('autorizada', 'Autorizada')} ${opc('parcial', 'Parcial')} ${opc('rechazada', 'Rechazada')} ${opc('por_aclarar', 'Por aclarar')}</div></div>
+    ${conPiezas ? `<div class="row-flex">
+      <div class="field"><label>Piezas a cambio</label><input id="rob_piezas" type="number" min="0" inputmode="numeric" value="${esc(r.piezas || '')}"></div>
+      <div class="field"><label>¿Quién autorizó?</label><input id="rob_autorizador" value="${esc(r.autorizador || 'Ajustador')}"></div></div>
+      <div class="field"><label>Fecha de respuesta</label><input id="rob_fresp" type="date" value="${esc(r.fecha || hoyLocalISO())}" max="${hoyLocalISO()}"></div>` : ''}
+    ${r.estado === 'parcial' ? '<p class="subtle">Al guardar se abre la solicitud de reautorización para las piezas que no autorizaron.</p>' : ''}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="robGuardarRespuesta()">Guardar</button></div>`);
+}
+function robRespGuardarCampos(){
+  const g = k => document.getElementById(k);
+  if(g('rob_piezas')) ROB_RESP.piezas = g('rob_piezas').value;
+  if(g('rob_autorizador')) ROB_RESP.autorizador = g('rob_autorizador').value;
+  if(g('rob_fresp')) ROB_RESP.fecha = g('rob_fresp').value;
+}
+async function robGuardarRespuesta(){
+  robRespGuardarCampos();
+  const r = ROB_RESP;
+  if(!r.estado){ toast('Elige qué respondió la aseguradora.', 'error'); return; }
+  const cambios = { estado_autorizacion: r.estado };
+  if(r.estado === 'autorizada' || r.estado === 'parcial'){
+    if(r.piezas === undefined || r.piezas === ''){ toast('Indica cuántas piezas a cambio autorizaron (0 si ninguna).', 'error'); return; }
+    if(!String(r.autorizador || '').trim()){ toast('Indica quién autorizó.', 'error'); return; }
+    Object.assign(cambios, { piezas_autorizadas_cambio: Number(r.piezas), autorizador: r.autorizador.trim(), autorizacion_fecha_respuesta: r.fecha || hoyLocalISO(),
+      valuacion_fecha_respuesta: r.fecha || hoyLocalISO(), estado_valuacion: r.estado === 'autorizada' ? 'autorizada_total' : 'autorizada_parcial' });
+  } else if(r.estado === 'rechazada'){
+    Object.assign(cambios, { estado_valuacion:'rechazada', autorizacion_fecha_respuesta: hoyLocalISO() });
+  }
+  try{
+    await api('PATCH', '/api/siniestros/' + r.id, cambios);
+    toast(r.estado === 'autorizada' || r.estado === 'parcial' ? 'Registrada. Ahora está en "Arrancar".' : 'Respuesta registrada.', 'success');
+    closeModal();
+    if(r.estado === 'parcial') abrirFormNuevaReautorizacion(r.id); else render();
+  }catch(e){}
+}
+async function robDecisionComplemento(id, decision){
+  try{
+    await api('PATCH', '/api/complementos/' + id, { decision });
+    toast(decision === 'autorizado' ? 'Complemento autorizado.' : 'Complemento rechazado.', 'success');
+    render();
+  }catch(e){}
+}
+
 /* ===================== VISTA: INICIO ===================== */
 async function viewInicio(){
   if(currentUser && currentUser.rol === 'beto') return viewInicioBeto();
   if(currentUser && currentUser.rol === 'atencion_cliente') return viewInicioAlejandra();
   if(currentUser && currentUser.rol === 'operativo') return viewInicioDaniela();
   if(currentUser && (currentUser.rol === 'orlando' || currentUser.rol === 'vanessa')) return viewInicioOrlando();
+  if(currentUser && ['admin','jefe'].includes(currentUser.rol) && !state.resumenCompleto) return viewInicioRoberto();
   const r = await api('GET','/api/reportes/resumen');
   const verClientes = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
   const verOrlandoVanessa = currentUser && ['orlando','vanessa','admin','jefe'].includes(currentUser.rol);
@@ -1082,6 +1219,7 @@ async function viewInicio(){
   const colaBeto = verBeto ? await api('GET','/api/reportes/panorama-beto') : [];
   const LABEL_PROD = { programado:'Programado', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', sin_iniciar:'Sin iniciar' };
   return `
+  ${verRoberto ? `<button class="btn ghost small" onclick="state.resumenCompleto=false;render();">← Volver a mi inicio</button>` : ''}
   <h2>Resumen diario</h2>
   <p class="subtle">Vista de arranque: pedidos nuevos, piezas pendientes, incidencias y entregas atrasadas, en un solo lugar.</p>
   ${verRoberto ? `
