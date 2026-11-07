@@ -90,6 +90,8 @@ app.use('/api/whatsapp-manual', require('./routes/whatsappBandejaManual'));
 app.use('/api/externo', require('./routes/reporteExterno'));
 // Carga de órdenes de trabajo por Claude (5-nov-2026): ventanilla con clave CARGA_OT_TOKEN, solo sube OT a expedientes existentes.
 app.use('/api/externo', require('./routes/cargaOt'));
+// 7-nov-2026: Claude valida y (con el visto bueno de Roberto) aplica la plantilla de unidades. Requiere ACTUALIZACION_TOKEN.
+app.use('/api/externo', require('./routes/actualizacionExterna'));
 // Actualización rápida de unidades (4-nov-2026): pegar una tabla para poner al día muchos expedientes a la vez.
 app.use('/api/actualizacion-unidades', require('./routes/actualizacionUnidades'));
 // Fotos de la unidad (4-nov-2026): recepción y avance por etapa, visibles y descargables para todos.
