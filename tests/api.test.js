@@ -2976,7 +2976,7 @@ test('DANIELA2-1 (A-05): una fecha prevista de hoy o anterior se bloquea y exige
   assert.equal(bloqueado.data.error, 'FECHA_PREVISTA_INVALIDA');
   const confirmado = await req('POST', '/api/pedidos', { numero: 'D2A05-PED', siniestro_id: s.id, fecha_prevista: hoy, confirmar_fecha_prevista: true });
   assert.equal(confirmado.status, 201);
-  assert.equal(confirmado.data.fecha_prevista_confirmada_por, 'Administrador');
+  assert.equal(confirmado.data.fecha_prevista_confirmada_por, require('../server/db').prepare("SELECT nombre FROM usuarios WHERE email='admin@serviciocristian.mx'").get().nombre);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 
@@ -2994,7 +2994,7 @@ test('DANIELA2-2 (A-06): la vista de piezas recibidas trae fecha, quién la reci
   assert.equal(fila.pedido_numero, 'D2A06-PED');
   assert.equal(fila.siniestro_numero, 'D2A06-SIN');
   assert.ok(fila.fecha_recepcion);
-  assert.equal(fila.recibido_por_nombre, 'Administrador');
+  assert.equal(fila.recibido_por_nombre, require('../server/db').prepare("SELECT nombre FROM usuarios WHERE email='admin@serviciocristian.mx'").get().nombre);
   await req('POST', '/api/auth/login', { email: 'daniela@serviciocristian.mx', password: 'ServicioCristian2026-Reset!' });
 });
 

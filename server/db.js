@@ -1476,6 +1476,16 @@ CREATE TABLE IF NOT EXISTS whatsapp_envios_manuales_historial (
 CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_manuales_historial_envio ON whatsapp_envios_manuales_historial(envio_id);
 `);
 
+// 7-nov-2026 (Roberto): su cuenta de propietario se mostraba como "Administrador"; ahora dice su nombre.
+// Solo cambia el nombre visible (no el correo ni la contraseña) y solo si sigue con el nombre genérico.
+try{
+  const adm = db.prepare(`SELECT id FROM usuarios WHERE email = 'admin@serviciocristian.mx' AND nombre = 'Administrador'`).get();
+  if(adm){
+    db.prepare(`UPDATE usuarios SET nombre = 'Roberto' WHERE id = ?`).run(adm.id);
+    db.prepare(`INSERT INTO auditoria (entidad_tipo, entidad_id, accion, campo, valor_anterior, valor_nuevo, usuario_nombre) VALUES ('usuario', ?, 'edicion', 'nombre', 'Administrador', 'Roberto', 'sistema')`).run(adm.id);
+  }
+}catch(e){ /* nunca debe impedir que arranque el servidor */ }
+
 module.exports = db;
 
 
