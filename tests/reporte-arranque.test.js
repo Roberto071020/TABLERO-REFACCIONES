@@ -231,7 +231,11 @@ test('ACT-4: "AUTOSURTIDO GNP" en requiere refacciones marca la ruta sin captura
   const enc = ['SINIESTRO','UBICACION','REQUIERE REFACCIONES'].join(TAB);
   const texto = [enc, fila('ACT-AS-GNP','PISO','AUTOSURTIDO GNP'), fila('ACT-AS-MAP','PISO','AUTOSURTIDO GNP')].join('\n');
   const r = actualizacion.aplicar(db, texto, null);
-  assert.match(r.filas.find(f => f.siniestro === 'ACT-AS-MAP').errores[0], /solo aplica para GNP/);
+  // 7-nov-2026 (Roberto): cualquier aseguradora puede solicitar autosurtido; solo en GNP 1-3 piezas es regla fija.
+  assert.equal(r.filas.find(f => f.siniestro === 'ACT-AS-MAP').errores.length, 0);
+  const map = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-AS-MAP'`).get();
+  assert.equal(map.aseguradora_ruta_refacciones, 'autosurtido');
+  assert.match(map.aseguradora_regla_aplicada, /a solicitud de la aseguradora/);
   const s = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-AS-GNP'`).get();
   assert.equal(s.aseguradora_ruta_refacciones, 'autosurtido');
   assert.equal(s.requiere_refacciones, 'si');
@@ -242,6 +246,24 @@ test('ACT-4: "AUTOSURTIDO GNP" en requiere refacciones marca la ruta sin captura
   const p = await req('PATCH', '/api/siniestros/' + s.id, { vehiculo:'Aveo Rojo' });
   assert.equal(p.status, 200, JSON.stringify(p.data));
   assert.equal(db.prepare(`SELECT aseguradora_ruta_refacciones r FROM siniestros WHERE id=?`).get(s.id).r, 'autosurtido', 'editar la ficha no la regresa a "por confirmar"');
+  const pm = await req('PATCH', '/api/siniestros/' + map.id, { vehiculo:'Jetta' });
+  assert.equal(pm.status, 200, JSON.stringify(pm.data));
+  assert.equal(db.prepare(`SELECT aseguradora_ruta_refacciones r FROM siniestros WHERE id=?`).get(map.id).r, 'autosurtido', 'Mapfre con autosurtido solicitado lo conserva al editar la ficha');
+});
+
+test('ACT-5: "LATINO" se reconoce como La Latinoamericana, y una unidad en PISO con cita pasada queda como ya llegada', () => {
+  crearSiniestro('ACT-LAT', { aseguradora:'La Latinoamericana' });
+  crearSiniestro('ACT-PISO-CITA', { aseguradora:'GNP', fecha_admision: dias(-20), ubicacion:'Tránsito' });
+  const enc = ['ASEGURADORA','SINIESTRO','UBICACION','CITA REINGRESO'].join(TAB);
+  const c = dias(-3).split('-').reverse().join('/');
+  const texto = [enc, ['LATINO','ACT-LAT','TRANSITO',''].join(TAB), ['GNP','ACT-PISO-CITA','PISO',c].join(TAB)].join('\n');
+  const r = actualizacion.aplicar(db, texto, null);
+  assert.ok(!r.filas.find(f => f.siniestro === 'ACT-LAT').cambios.some(x => x.campo === 'aseguradora'), 'no cambia el nombre de la aseguradora');
+  const s = db.prepare(`SELECT * FROM siniestros WHERE numero='ACT-PISO-CITA'`).get();
+  assert.equal(s.reingreso_recibido_en, dias(-3));
+  const { calcularPanoramaBeto } = require('../server/panoramaBeto');
+  const b = calcularPanoramaBeto(db).find(u => u.numero === 'ACT-PISO-CITA');
+  assert.ok(!b || !b.reingreso_citado, 'Beto no la ve como reingreso por llegar');
 });
 
 test('REPORTE-8: panorama del taller cuenta patio, circulando y fechas promesa', () => {

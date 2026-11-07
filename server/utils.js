@@ -549,6 +549,7 @@ const ALIAS_ASEGURADORA = [
   [/^INBURSA\b/i, 'Inbursa'],
   [/^ALLIANZ\b/i, 'Allianz'],
   [/LATINOAMERICANA/i, 'La Latinoamericana'],
+  [/^LATINO\b/i, 'La Latinoamericana'], // 7-nov-2026: la plantilla del equipo la escribe "LATINO".
   [/^MAPFRE\b/i, 'Mapfre'],
   [/^AFIRME\b/i, 'Afirme'],
   [/^ZURICH\b/i, 'Zurich']
@@ -637,6 +638,9 @@ function calcularSemaforo(s){
 // inventar un campo nuevo: es una traduccion a texto amigable de aseguradora_ruta_refacciones.
 function esquemaSurtidoLabel(ruta, aseguradora){
   if(aseguradora === 'ANA') return 'Autosurtido ANA';
+  // 7-nov-2026 (Roberto): cualquier aseguradora puede pedir autosurtido para agilizar una entrega;
+  // solo en GNP con 1 a 3 piezas es regla fija.
+  if(ruta === 'autosurtido' && aseguradora !== 'GNP') return 'Autosurtido (a solicitud de la aseguradora)';
   if(aseguradora === 'GNP'){
     if(ruta === 'autosurtido') return 'Autosurtido GNP';
     if(ruta === 'pendiente_confirmar') return 'GNP: falta capturar piezas';

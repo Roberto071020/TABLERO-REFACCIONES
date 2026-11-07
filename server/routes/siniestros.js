@@ -387,7 +387,13 @@ router.patch('/:id', requireAuth, (req, res)=>{
   const ruta = calcularRutaAseguradora(nuevo.aseguradora, nuevo.piezas_autorizadas_cambio);
   // 4-nov-2026: una unidad GNP marcada directamente como "Autosurtido GNP" (actualización masiva, sin
   // capturar el número de piezas) conserva su ruta en vez de regresar a "pendiente de confirmar".
-  const conservarAutosurtido = ruta.ruta === 'pendiente_confirmar' && anterior.aseguradora_ruta_refacciones === 'autosurtido' && nuevo.aseguradora === 'GNP';
+  // 7-nov-2026 (Roberto): cualquier aseguradora puede SOLICITAR autosurtido para agilizar una entrega (solo
+  // GNP con 1 a 3 piezas lo tiene como regla fija). Una unidad marcada como autosurtido lo conserva mientras
+  // no cambien la aseguradora ni el número de piezas a cambio (que es lo que decide la regla automática).
+  const cambioBaseRuta = nuevo.aseguradora !== anterior.aseguradora
+    || String(nuevo.piezas_autorizadas_cambio ?? '') !== String(anterior.piezas_autorizadas_cambio ?? '');
+  const conservarAutosurtido = anterior.aseguradora_ruta_refacciones === 'autosurtido' && ruta.ruta !== 'autosurtido'
+    && (!cambioBaseRuta || (ruta.ruta === 'pendiente_confirmar' && nuevo.aseguradora === 'GNP'));
   nuevo.aseguradora_ruta_refacciones = conservarAutosurtido ? 'autosurtido' : ruta.ruta;
   nuevo.aseguradora_regla_aplicada = conservarAutosurtido ? anterior.aseguradora_regla_aplicada : ruta.regla;
 

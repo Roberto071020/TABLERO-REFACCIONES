@@ -41,7 +41,7 @@ const ETIQUETA_CAMPO = { aseguradora:'Aseguradora', vehiculo:'Vehículo', placas
   estado_autorizacion:'Autorización', autorizacion_fecha_respuesta:'Fecha de autorización', autorizador:'Autorizó',
   requiere_refacciones:'Requiere refacciones', piezas_autorizadas_cambio:'Piezas a cambio', aseguradora_ruta_refacciones:'Esquema de surtido',
   aseguradora_regla_aplicada:'Regla aplicada', archivado:'Archivada', archivado_en:'Archivada el', fecha_entrega_prevista:'Fecha de entrega', estado_produccion:'Etapa',
-  cita_fecha:'Cita de reingreso', fecha_entrega_real:'Fecha entregada', estado_entrega:'Estado de entrega' };
+  cita_fecha:'Cita de reingreso', reingreso_recibido_en:'Llegó a su cita', fecha_entrega_real:'Fecha entregada', estado_entrega:'Estado de entrega' };
 
 function limpiar(t){
   return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -135,14 +135,14 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
       const v = siNo(f.requiere_refacciones);
       if(v) nuevo.requiere_refacciones = v;
       else if(limpiar(f.requiere_refacciones).startsWith('auto')){
-        // "AUTOSURTIDO GNP": tiene piezas a cambio pero NO van a Inpart (GNP con 1 a 3 piezas).
+        // "AUTOSURTIDO": tiene piezas a cambio pero NO van a Inpart. 7-nov-2026 (Roberto): cualquier
+        // aseguradora puede solicitarlo para agilizar una entrega; solo GNP con 1 a 3 piezas es regla fija.
         const aseg = nuevo.aseguradora || (actual && actual.aseguradora);
-        if(aseg !== 'GNP') r.errores.push(`Autosurtido solo aplica para GNP (esta unidad es ${aseg || 'sin aseguradora'}).`);
-        else{
-          nuevo.requiere_refacciones = 'si';
-          nuevo.aseguradora_ruta_refacciones = 'autosurtido';
-          nuevo.aseguradora_regla_aplicada = 'GNP marcada como autosurtido (1 a 3 piezas a cambio) en la actualización de unidades. Nunca debe figurar como pendiente de Inpart.';
-        }
+        nuevo.requiere_refacciones = 'si';
+        nuevo.aseguradora_ruta_refacciones = 'autosurtido';
+        nuevo.aseguradora_regla_aplicada = aseg === 'GNP'
+          ? 'GNP marcada como autosurtido (1 a 3 piezas a cambio) en la actualización de unidades. Nunca debe figurar como pendiente de Inpart.'
+          : `${aseg || 'Aseguradora'}: autosurtido a solicitud de la aseguradora (actualización de unidades). No va a Inpart.`;
       }
       else r.errores.push(`"Requiere refacciones" debe ser SI, NO o AUTOSURTIDO GNP (llegó "${f.requiere_refacciones}").`);
     }
@@ -191,6 +191,19 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
       if(!nuevo.estado_produccion) nuevo.estado_produccion = 'terminado';
       else if(nuevo.estado_produccion !== 'terminado'){ r.avisos.push('Tiene fecha de entregada; la etapa se registra como Terminado.'); nuevo.estado_produccion = 'terminado'; }
     }
+    // 7-nov-2026: si la unidad está en PISO y su cita ya pasó (o es hoy), ya llegó aunque nadie lo haya
+    // registrado: se marca la llegada para que no le salga a Alejandra como "no ha llegado" ni a Beto como
+    // "reingreso por llegar".
+    {
+      const ubic = nuevo.ubicacion || (actual && actual.ubicacion) || '';
+      const cita = nuevo.cita_fecha || (actual && actual.cita_fecha) || '';
+      const yaRegistrada = actual && ((actual.fecha_admision && String(actual.fecha_admision).slice(0,10) >= String(cita).slice(0,10))
+        || (actual.reingreso_recibido_en && String(actual.reingreso_recibido_en).slice(0,10) >= String(cita).slice(0,10)));
+      if(/^piso/i.test(ubic) && cita && String(cita).slice(0,10) <= hoy && !yaRegistrada && !nuevo.fecha_entrega_real){
+        nuevo.reingreso_recibido_en = String(cita).slice(0,10);
+        r.avisos.push('Está en PISO y su cita ya pasó: se registra que ya llegó.');
+      }
+    }
     if(nuevo.fecha_entrega_prevista && nuevo.fecha_entrega_prevista < hoy && !nuevo.fecha_entrega_real && !(actual && actual.fecha_entrega_real)){
       r.avisos.push('La fecha de entrega ya pasó: va a aparecer como vencida.');
     }
@@ -237,7 +250,7 @@ function mostrar(campo, v){
   if(campo === 'estado_produccion') return ETIQUETA_ETAPA[v] || v;
   if(campo === 'archivado') return Number(v) ? 'Sí' : 'No (activa)';
   if(campo === 'requiere_refacciones') return v === 'si' ? 'Sí' : v === 'no' ? 'No' : 'Sin definir';
-  if(campo === 'aseguradora_ruta_refacciones') return ({ autosurtido:'Autosurtido GNP', inpart:'Inpart', pago_danos:'Pago de daños', pendiente_confirmar:'Por confirmar' })[v] || v;
+  if(campo === 'aseguradora_ruta_refacciones') return ({ autosurtido:'Autosurtido', inpart:'Inpart', pago_danos:'Pago de daños', pendiente_confirmar:'Por confirmar' })[v] || v;
   return String(v);
 }
 
