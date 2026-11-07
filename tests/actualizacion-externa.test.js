@@ -42,3 +42,25 @@ test('EXT-2: validar no guarda nada; confirmar aplica y deja la auditoría a nom
   assert.equal(s.aseguradora, 'Mapfre'); assert.equal(s.estado_produccion, 'en_laminado');
   assert.ok(db.prepare(`SELECT 1 FROM auditoria WHERE entidad_id=? AND usuario_nombre='Claude (actualización de unidades)'`).get(s.id));
 });
+
+test('EXT-3: REVISION = PENDIENTE manda la unidad a Orlando; POR VALUAR, a la lista de Valuación de Roberto', async () => {
+  process.env.ACTUALIZACION_TOKEN = 'clave-de-prueba-larga-123456';
+  const crear = n => db.prepare(`INSERT INTO siniestros (numero, aseguradora, vehiculo, estado_autorizacion) VALUES (?, 'Mapfre', 'Fit', 'en_autorizacion')`).run(n);
+  crear('EXT-REV-1'); crear('EXT-REV-2');
+  const texto = ['SINIESTRO\tAUTORIZADA\tREVISION', 'EXT-REV-1\tNO\tPENDIENTE', 'EXT-REV-2\tNO\tPOR VALUAR'].join('\n');
+  const c = await post('/api/externo/unidades/confirmar', { texto }, 'clave-de-prueba-larga-123456');
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  const u1 = db.prepare(`SELECT * FROM siniestros WHERE numero='EXT-REV-1'`).get();
+  const u2 = db.prepare(`SELECT * FROM siniestros WHERE numero='EXT-REV-2'`).get();
+  assert.equal(u1.estado_autorizacion, null); assert.equal(u2.estado_autorizacion, null);
+  const { calcularInicioOrlando } = require('../server/inicioOrlando');
+  const o = calcularInicioOrlando(db);
+  assert.ok(o.revisar.some(x => x.siniestro_id === u1.id), 'PENDIENTE: le sale a Orlando para revisar');
+  assert.ok(!o.revisar.some(x => x.siniestro_id === u2.id) && !o.captura.some(x => x.siniestro_id === u2.id), 'POR VALUAR: ya no le estorba a Orlando');
+  assert.equal(u2.estado_expediente, 'listo_para_valuacion');
+  const r = await fetch('http://localhost:' + PORT + '/api/auth/login', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ email:'admin@serviciocristian.mx', password:'ServicioCristian2026!' }) });
+  const ck = r.headers.get('set-cookie').split(';')[0];
+  const b = await (await fetch('http://localhost:' + PORT + '/api/reportes/bandeja-valuacion', { headers:{ Cookie: ck } })).json();
+  assert.ok(b.some(x => x.id === u2.id), 'POR VALUAR: aparece en la lista de Valuación de Roberto');
+  assert.ok(!b.some(x => x.id === u1.id));
+});

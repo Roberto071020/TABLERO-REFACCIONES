@@ -18,6 +18,7 @@ const ENCABEZADOS = {
   'piezas a cambio':'piezas', 'piezas autorizadas a cambio':'piezas', 'no. piezas':'piezas', 'piezas':'piezas',
   'fecha entrega':'fecha_entrega', 'fecha de entrega':'fecha_entrega', 'fecha promesa':'fecha_entrega', 'fecha promesa de entrega':'fecha_entrega',
   'etapa':'etapa', 'etapa actual':'etapa',
+  'revision':'revision', 'estado revision':'revision', 'pendiente':'revision',
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
   'entregada':'entregada', 'fecha entregada':'entregada', 'fecha entregado':'entregada', 'entregado':'entregada'
 };
@@ -41,6 +42,8 @@ const ETIQUETA_CAMPO = { aseguradora:'Aseguradora', vehiculo:'Vehículo', placas
   estado_autorizacion:'Autorización', autorizacion_fecha_respuesta:'Fecha de autorización', autorizador:'Autorizó',
   requiere_refacciones:'Requiere refacciones', piezas_autorizadas_cambio:'Piezas a cambio', aseguradora_ruta_refacciones:'Esquema de surtido',
   aseguradora_regla_aplicada:'Regla aplicada', archivado:'Archivada', archivado_en:'Archivada el', fecha_entrega_prevista:'Fecha de entrega', estado_produccion:'Etapa',
+  fecha_hora_disponible_revision:'Disponible para revisión', estado_revision_tecnica:'Revisión técnica', excel_capturado:'Capturado en Excel',
+  fotos_completas:'Fotos completas', enviado_propietario:'Enviado a Roberto', estado_expediente:'Expediente',
   cita_fecha:'Cita de reingreso', reingreso_recibido_en:'Llegó a su cita', fecha_entrega_real:'Fecha entregada', estado_entrega:'Estado de entrega' };
 
 function limpiar(t){
@@ -160,7 +163,33 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
         else if(n > 0 && nuevo.requiere_refacciones === 'no') r.avisos.push('Dice que NO requiere refacciones pero tiene piezas a cambio; revisa cuál es correcto.');
       }
     }
-    if(f.autorizada){
+    // 7-nov-2026 (Roberto): unidades que todavía no se valúan. REVISION = "PENDIENTE" -> a la pantalla de Orlando
+    // (Revisar unidades nuevas); "POR VALUAR" -> ya revisada y con expediente enviado, a la lista de Valuación de
+    // Roberto. En ambos casos queda SIN autorización (no "en autorización", que significa enviada a la aseguradora).
+    let revision = null;
+    if(f.revision){
+      const t = limpiar(f.revision);
+      if(t.startsWith('pend') || t.startsWith('revis')) revision = 'pendiente';
+      else if(t.includes('valu')) revision = 'por_valuar';
+      else r.errores.push(`"Revisión" debe ser PENDIENTE o POR VALUAR (llegó "${f.revision}").`);
+    }
+    if(revision){
+      if(actual && ['autorizada','parcial'].includes(actual.estado_autorizacion)){
+        r.avisos.push('Ya está autorizada en el tablero; no se regresa a revisión.'); revision = null;
+      } else {
+        nuevo.estado_autorizacion = null;
+        if(revision === 'pendiente'){
+          if(!(actual && actual.fecha_hora_disponible_revision)) nuevo.fecha_hora_disponible_revision = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          if(actual && actual.estado_revision_tecnica === 'revision_terminada') r.avisos.push('En el tablero ya tenía la revisión terminada; se deja así.');
+        } else {
+          if(!(actual && actual.fecha_hora_disponible_revision)) nuevo.fecha_hora_disponible_revision = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          nuevo.estado_revision_tecnica = 'revision_terminada';
+          nuevo.excel_capturado = 1; nuevo.fotos_completas = 1; nuevo.enviado_propietario = 1;
+          nuevo.estado_expediente = 'listo_para_valuacion';
+        }
+      }
+    }
+    if(f.autorizada && !revision){
       const v = siNo(f.autorizada);
       const estadoActual = actual ? actual.estado_autorizacion : null;
       if(v === 'si'){
