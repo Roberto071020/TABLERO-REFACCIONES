@@ -6,6 +6,8 @@ const whatsappFaseA = require('../whatsappFaseA'); // WhatsApp Fase A -- modo "s
 const router = express.Router();
 
 const PLACEHOLDERS = ['', 'por confirmar', 'sin datos', 'n/a', 'na', 'pendiente', '-', 'xxx'];
+// Tránsito = circulando (fuera del taller). Acepta "Tránsito", "TRANSITO", "transito".
+function esUbicacionTransito(u){ return /^tr/i.test(String(u || '').trim()); }
 function esGenerico(v){ return !v || PLACEHOLDERS.includes(String(v).trim().toLowerCase()); }
 function calcularCompleto(row){
   return (!esGenerico(row.vehiculo) && !esGenerico(row.placas)) ? 1 : 0;
@@ -298,6 +300,14 @@ router.patch('/:id', requireAuth, (req, res)=>{
       && String(req.body.fecha_entrega_prevista) !== String(anterior.fecha_entrega_prevista || '')
       && !['admin','jefe'].includes(req.session.user.rol)){
     return res.status(403).json({ error:'Esta fecha de entrega es un compromiso obligatorio de GNP establecido por el supervisor; solo Roberto puede moverla.' });
+  }
+  // 9-nov-2026 (Roberto): "no puede tener fecha de entrega si no está en piso". Capturarla a una unidad que
+  // circula se rechaza; si la unidad pasa a Tránsito (o ya estaba así con una fecha vieja), la fecha se quita.
+  if(esUbicacionTransito(nuevo.ubicacion) && nuevo.fecha_entrega_prevista && String(nuevo.fecha_entrega_prevista).trim() && !nuevo.fecha_entrega_real){
+    if(req.body.fecha_entrega_prevista !== undefined && String(req.body.fecha_entrega_prevista || '') !== String(anterior.fecha_entrega_prevista || '')){
+      return res.status(400).json({ error:'La unidad está circulando: no puede tener fecha de entrega hasta que entre a piso.' });
+    }
+    nuevo.fecha_entrega_prevista = null;
   }
 
   // Documento Maestro / Fase C, tabla 9: "criterio de salida: expediente digital validado y listo para

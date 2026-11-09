@@ -155,7 +155,9 @@ test('ACT-1: revisar muestra los cambios sin guardar nada y marca errores por re
   const uno = r.filas.find(f => f.siniestro === 'ACT-UNO');
   assert.equal(uno.accion, 'actualizar');
   const campos = uno.cambios.map(c => c.campo);
-  for(const c of ['ubicacion','estado_autorizacion','requiere_refacciones','fecha_entrega_prevista','estado_produccion']) assert.ok(campos.includes(c), c);
+  for(const c of ['ubicacion','estado_autorizacion','requiere_refacciones','estado_produccion']) assert.ok(campos.includes(c), c);
+  // 9-nov-2026: viene en TRÁNSITO, así que la fecha de entrega de la plantilla no se toma (Roberto).
+  assert.ok(!campos.includes('fecha_entrega_prevista')); assert.ok(uno.avisos.some(x => /circulando/.test(x)));
   assert.equal(r.filas.find(f => f.siniestro === 'ACT-MALO').accion, 'error', 'no existe y no trae aseguradora');
   assert.match(r.filas.find(f => f.siniestro.startsWith('4.26')).errores[0], /Excel/);
   assert.match(r.filas.find(f => f.siniestro === 'ACT-FECHA').errores[0], /fecha válida/);

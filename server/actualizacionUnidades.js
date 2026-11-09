@@ -233,6 +233,12 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
         r.avisos.push('Está en PISO y su cita ya pasó: se registra que ya llegó.');
       }
     }
+    // 9-nov-2026 (Roberto): "no puede tener fecha de entrega si no está en piso". Si la unidad está (o queda) en
+    // TRÁNSITO, la fecha de la plantilla no se toma y la que tuviera en el tablero se quita.
+    if(/^tr/i.test(nuevo.ubicacion || (actual && actual.ubicacion) || '') && !nuevo.fecha_entrega_real && !(actual && actual.fecha_entrega_real)){
+      if(nuevo.fecha_entrega_prevista){ delete nuevo.fecha_entrega_prevista; r.avisos.push('Está circulando (TRÁNSITO): no puede tener fecha de entrega; no se toma.'); }
+      if(actual && actual.fecha_entrega_prevista){ nuevo.fecha_entrega_prevista = null; r.avisos.push('Está circulando (TRÁNSITO): se quita su fecha de entrega.'); }
+    }
     if(nuevo.fecha_entrega_prevista && nuevo.fecha_entrega_prevista < hoy && !nuevo.fecha_entrega_real && !(actual && actual.fecha_entrega_real)){
       r.avisos.push('La fecha de entrega ya pasó: va a aparecer como vencida.');
     }
