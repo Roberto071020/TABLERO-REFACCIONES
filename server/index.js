@@ -92,6 +92,8 @@ app.use('/api/externo', require('./routes/reporteExterno'));
 app.use('/api/externo', require('./routes/cargaOt'));
 // 7-nov-2026: Claude valida y (con el visto bueno de Roberto) aplica la plantilla de unidades. Requiere ACTUALIZACION_TOKEN.
 app.use('/api/externo', require('./routes/actualizacionExterna'));
+// 9-nov-2026: consultas de SOLO LECTURA para reportes y estadísticas (LECTURA_TOKEN). Conexión de base en modo lectura.
+app.use('/api/externo', require('./routes/consultaExterna'));
 // Actualización rápida de unidades (4-nov-2026): pegar una tabla para poner al día muchos expedientes a la vez.
 app.use('/api/actualizacion-unidades', require('./routes/actualizacionUnidades'));
 // Fotos de la unidad (4-nov-2026): recepción y avance por etapa, visibles y descargables para todos.
