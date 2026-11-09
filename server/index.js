@@ -101,6 +101,7 @@ app.use('/api/fotos', require('./routes/fotos'));
 app.use('/api/inicio-alejandra', require('./routes/inicioAlejandra')); // 5-nov-2026: pantalla de inicio de Alejandra
 app.use('/api/inicio-daniela', require('./routes/inicioDaniela')); // 6-nov-2026: pantalla de inicio de Daniela
 app.use('/api/inicio-orlando', require('./routes/inicioOrlando')); // 6-nov-2026: pantalla de inicio de Orlando
+app.use('/api/asistencia', require('./routes/asistencia')); // 9-nov-2026: registro de entrada del personal
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto
 
 // ---- Frontend estático ----

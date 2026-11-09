@@ -269,7 +269,7 @@ function renderTabs(){
     `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}${t.k==='whatsapp' && whatsappPendientesBadge?` <span class="badge-count">${whatsappPendientesBadge}</span>`:''}</button>`).join('') +
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
-function goTo(view){ if(view==='inicio') state.resumenCompleto=false; state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
+function goTo(view){ if(view==='inicio'){ state.resumenCompleto=false; BETO_FILTRO=null; } state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
 // Hallazgo de Daniela (26-ago-2026): el menu ocupaba casi toda la pantalla en movil. Se colapsa
 // detras de un boton "Menu" (ver CSS .nav-toggle / nav.tabs.open) y se cierra solo al navegar, porque
 // renderTabs() reconstruye el <nav> desde cero sin la clase "open" en cada render().
@@ -316,6 +316,7 @@ async function render(){
   renderTabs();
   const app = document.getElementById('app');
   app.innerHTML = '<div class="empty">Cargando…</div>';
+  if(await bloqueoEntrada(app)) return;
   try{
     if(state.view==='inicio') app.innerHTML = await viewInicio();
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
@@ -346,6 +347,116 @@ async function render(){
   actualizarBadgeWhatsapp(); // en segundo plano, no bloquea el render ya mostrado.
 }
 
+/* ===================== REGISTRO DE ENTRADA (9-nov-2026) =====================
+   Roberto: "que el personal registre su entrada en SC Control; con esto los obligo a abrirlo desde que llegan".
+   Mientras la persona no registre su entrada del día, el tablero solo le muestra esta pantalla (en celular y
+   en computadora). Se registra desde el celular: foto en ese momento + ubicación dentro del taller. */
+let ENTRADA = { fecha: null, ok: false, info: null };
+async function bloqueoEntrada(app){
+  if(!currentUser || ['admin', 'jefe'].includes(currentUser.rol)) return false;
+  const hoy = hoyLocalISO();
+  if(ENTRADA.fecha === hoy && ENTRADA.ok) return false;
+  let e;
+  try{ e = await api('GET', '/api/asistencia/estado', null, { silent: true }); }catch(err){ return false; } // si falla, no se bloquea el trabajo
+  ENTRADA = { fecha: hoy, ok: !e.requiere || e.registrado, info: e };
+  if(ENTRADA.ok) return false;
+  document.getElementById('mainTabs').innerHTML = '';
+  app.innerHTML = vistaRegistroEntrada(e);
+  return true;
+}
+function vistaRegistroEntrada(e){
+  const nombre = esc(((currentUser && currentUser.nombre) || '').split(' ')[0]);
+  const saludo = new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes';
+  if(!esCelular()) return `<div class="section" style="max-width:520px;margin:30px auto;text-align:center;padding:26px;">
+      <h2 style="margin-top:0;">${saludo}, ${nombre} 👋</h2>
+      <p style="font-size:17px;">Primero registra tu entrada <b>desde tu celular</b>:</p>
+      <ol style="text-align:left;font-size:16px;line-height:1.6;max-width:380px;margin:0 auto 18px;">
+        <li>Abre SC Control en tu celular.</li><li>Presiona <b>"Registrar mi entrada"</b> y tómate la foto.</li><li>Regresa aquí y presiona el botón de abajo.</li></ol>
+      <button class="btn" style="font-size:17px;padding:12px 22px;" onclick="ENTRADA.fecha=null;render();">Ya me registré</button>
+    </div>`;
+  return `<div class="section" style="max-width:520px;margin:24px auto;text-align:center;padding:26px;">
+      <h2 style="margin-top:0;">${saludo}, ${nombre} 👋</h2>
+      <p style="font-size:17px;margin-bottom:20px;">Registra tu entrada para empezar el día.</p>
+      <button id="btnEntrada" class="btn" style="font-size:20px;padding:16px 26px;width:100%;" onclick="document.getElementById('fotoEntrada').click()">📸 Registrar mi entrada</button>
+      <input id="fotoEntrada" type="file" accept="image/*" capture="user" style="display:none;" onchange="enviarEntrada(this)">
+      <p class="subtle" style="margin-top:14px;">Se toma una foto y se revisa que estés en el taller.<br>La entrada es a las ${esc(e.hora_entrada || '9:00')}.</p>
+      <div id="msgEntrada" style="margin-top:10px;"></div>
+    </div>`;
+}
+function ubicacionActual(){
+  return new Promise((ok, mal) => {
+    if(!navigator.geolocation) return mal(new Error('Tu celular no permite compartir la ubicación.'));
+    navigator.geolocation.getCurrentPosition(p => ok({ lat: p.coords.latitude, lng: p.coords.longitude, precision: p.coords.accuracy }),
+      err => mal(new Error(err.code === 1 ? 'Necesitas permitir la ubicación para SC Control (en los ajustes del navegador) y volver a intentar.' : 'No se pudo obtener tu ubicación. Revisa que la ubicación esté activada y vuelve a intentar.')),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  });
+}
+function fotoReducida(archivo){
+  return new Promise((ok, mal) => {
+    const url = URL.createObjectURL(archivo), img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 640 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url); ok(c.toDataURL('image/jpeg', 0.75));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); mal(new Error('No se pudo leer la foto. Vuelve a tomarla.')); };
+    img.src = url;
+  });
+}
+async function enviarEntrada(input){
+  const archivo = input.files && input.files[0]; input.value = '';
+  if(!archivo) return;
+  const msg = document.getElementById('msgEntrada'), btn = document.getElementById('btnEntrada');
+  const aviso = (t, color) => { msg.innerHTML = `<div class="badge ${color}" style="white-space:normal;font-size:15px;padding:8px 12px;">${esc(t)}</div>`; };
+  btn.disabled = true; aviso('Revisando tu ubicación…', 'azul');
+  try{
+    const [foto, ubi] = await Promise.all([fotoReducida(archivo), ubicacionActual()]);
+    const r = await api('POST', '/api/asistencia/entrada', { ...ubi, foto }, { silent: true });
+    ENTRADA = { fecha: hoyLocalISO(), ok: true, info: null };
+    toast(r.retardo ? `Entrada registrada a las ${r.hora} (después de las 9:00).` : `Entrada registrada a las ${r.hora}. ¡Buen día!`, r.retardo ? 'info' : 'success');
+    render();
+  }catch(e){
+    aviso(e.message, 'rojo'); btn.disabled = false;
+  }
+}
+// Inicio de Roberto: quién ya llegó hoy.
+function seccionEntradasHoy(a){
+  if(!a) return '';
+  if(!a.taller_configurado) return cajaInicio(`<b>📍 Activa el registro de entrada</b>
+    <p class="subtle" style="margin:4px 0 10px;">Estando en el taller, abre SC Control en tu celular y presiona este botón. Desde ese momento el equipo tendrá que registrar su entrada al abrir el tablero.</p>
+    <button class="btn" onclick="marcarUbicacionTaller()">📍 Marcar ubicación del taller</button>`);
+  const fila = p => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--border);">
+      <span style="font-weight:600;">${esc(p.nombre)}</span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        ${p.hora ? `<span class="badge ${p.retardo ? 'rojo' : 'verde'}">${esc(p.hora)}${p.retardo ? ' · retardo' : ''}</span>` : '<span class="badge gris">Sin registro</span>'}
+        ${p.con_foto ? `<span class="link" style="font-size:13px;" onclick="verFotoEntrada(${p.registro_id}, '${esc(p.nombre)}', '${esc(p.hora)}')">Ver foto</span>` : ''}
+      </span></div>`;
+  return `<div id="sec-entradas" class="section" style="margin:14px 0 8px;padding:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+      <b style="font-size:17px;">🕘 Entradas de hoy</b>
+      <span class="subtle">Entrada ${esc(a.hora_entrada)} · ${a.resumen.a_tiempo} a tiempo · ${a.resumen.retardos} retardo(s) · ${a.resumen.sin_registro} sin registro</span>
+    </div>
+    ${a.personas.map(fila).join('')}
+    <div style="text-align:right;margin-top:8px;"><button class="btn ghost small" onclick="marcarUbicacionTaller()">Volver a marcar ubicación del taller</button></div>
+  </div>`;
+}
+function verFotoEntrada(id, nombre, hora){
+  showModal(`<h3>${esc(nombre)} · ${esc(hora)}</h3>
+    <img src="/api/asistencia/${id}/foto" alt="Foto de entrada" style="max-width:100%;border-radius:10px;display:block;margin:0 auto;">
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
+}
+async function marcarUbicacionTaller(){
+  if(!esCelular()){ toast('Hazlo desde tu celular, estando en el taller.', 'error'); return; }
+  toast('Obteniendo la ubicación…', 'info', 2500);
+  try{
+    const u = await ubicacionActual();
+    const r = await api('POST', '/api/asistencia/taller', u);
+    toast(`Ubicación del taller guardada${r.precision ? ` (precisión ${r.precision} m)` : ''}. El registro de entrada ya está activo.`, 'success', 7000);
+    render();
+  }catch(e){ if(e.message) toast(e.message, 'error'); }
+}
+
 /* ===================== VISTA: INICIO DE BETO (5-nov-2026) =====================
    Roberto: "todo lo de Beto, lo más sencillo posible". Al entrar ve UNA sola pantalla pensada para el
    celular: 4 números grandes y sus unidades como tarjetas, en el orden sugerido de trabajo, cada una con
@@ -361,13 +472,22 @@ async function viewInicioBeto(){
   const porVencer = cola.filter(x => x.prioridad === 1 && !(x.fecha_entrega_prevista < hoy)).length;
   const listas = cola.filter(x => x.prioridad === 3 || x.prioridad === 3.5).length;
   const reingresos = cola.filter(x => x.reingreso_citado).length;
-  const tarjeta = (n, texto, color) => `<div class="card ${color}" style="cursor:default;"><div class="num">${n}</div><div class="label">${texto}</div></div>`;
+  // 9-nov-2026 (Roberto): los cuadros de arriba ahora se pueden tocar -- muestran solo esas unidades.
+  const FILTROS = {
+    vencidas: { titulo:'Vencidas', f: x => x.fecha_entrega_prevista && x.fecha_entrega_prevista < hoy },
+    porVencer: { titulo:'Vencen hoy o mañana', f: x => x.prioridad === 1 && !(x.fecha_entrega_prevista < hoy) },
+    listas: { titulo:'Listas para iniciar', f: x => x.prioridad === 3 || x.prioridad === 3.5 },
+    reingresos: { titulo:'Reingresos por llegar', f: x => x.reingreso_citado },
+  };
+  const filtro = FILTROS[BETO_FILTRO] ? BETO_FILTRO : null;
+  const tarjeta = (n, texto, color, clave) => `<div class="card ${color}" onclick="betoFiltrar('${clave}')" style="${filtro === clave ? 'outline:3px solid var(--primary, #2563eb);outline-offset:2px;' : ''}"><div class="num">${n}</div><div class="label">${texto}</div></div>`;
   const fechaBadge = x => !x.fecha_entrega_prevista ? '<span class="badge gris">Sin fecha</span>'
     : x.fecha_entrega_prevista < hoy ? `<span class="badge rojo">Vencida · ${esc(x.fecha_entrega_prevista)}</span>`
     : x.prioridad === 1 ? `<span class="badge ambar">Entrega ${esc(x.fecha_entrega_prevista)}</span>`
     : `<span class="badge verde">Entrega ${esc(x.fecha_entrega_prevista)}</span>`;
   const colorMotivo = x => x.prioridad === 1 ? 'rojo' : x.prioridad === 2 ? 'ambar' : (x.prioridad === 3 || x.prioridad === 3.5) ? 'verde' : 'gris';
-  const unidades = cola.map(x => {
+  const visibles = filtro ? cola.filter(FILTROS[filtro].f) : cola;
+  const unidades = visibles.map(x => {
     const sig = siguienteEtapaProduccion(x.estado_produccion);
     const motivo = x.reingreso_citado ? 'Reingreso citado: todavía no llega' : x.en_transito ? 'Circulando'
       : x.prioridad === 3 ? 'Lista para iniciar' : x.prioridad === 3.5 ? 'Lista para iniciar (piezas suficientes)'
@@ -389,14 +509,26 @@ async function viewInicioBeto(){
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Beto')} 👋</h2>
   <p class="subtle" style="margin-top:0;">Tus unidades en el orden en que conviene trabajarlas.</p>
   <div class="grid-cards">
-    ${tarjeta(vencidas, 'Vencidas', vencidas ? 'rojo' : 'verde')}
-    ${tarjeta(porVencer, 'Vencen hoy o mañana', porVencer ? 'ambar' : 'verde')}
-    ${tarjeta(listas, 'Listas para iniciar', 'verde')}
-    ${tarjeta(reingresos, 'Reingresos por llegar', 'azul')}
+    ${tarjeta(vencidas, 'Vencidas', vencidas ? 'rojo' : 'verde', 'vencidas')}
+    ${tarjeta(porVencer, 'Vencen hoy o mañana', porVencer ? 'ambar' : 'verde', 'porVencer')}
+    ${tarjeta(listas, 'Listas para iniciar', 'verde', 'listas')}
+    ${tarjeta(reingresos, 'Reingresos por llegar', 'azul', 'reingresos')}
   </div>
-  ${seccionCalidad(calidad)}
-  ${calidad.length ? '<h3 style="margin:18px 0 2px;">Unidades en el taller</h3>' : ''}
-  ${cola.length ? unidades : '<div class="empty" style="margin-top:12px;">No hay unidades autorizadas pendientes.</div>'}`;
+  ${filtro ? '' : seccionCalidad(calidad)}
+  <div id="beto-unidades">
+  ${filtro ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 2px;">
+      <h3 style="margin:0;">${esc(FILTROS[filtro].titulo)} <span class="badge gris">${visibles.length}</span></h3>
+      <button class="btn small secondary" onclick="betoFiltrar(null)">Ver todas</button></div>`
+    : calidad.length ? '<h3 style="margin:18px 0 2px;">Unidades en el taller</h3>' : ''}
+  ${visibles.length ? unidades : `<div class="empty" style="margin-top:12px;">${filtro ? 'No hay unidades en este grupo.' : 'No hay unidades autorizadas pendientes.'}</div>`}
+  </div>`;
+}
+let BETO_FILTRO = null;
+async function betoFiltrar(clave){
+  BETO_FILTRO = clave && BETO_FILTRO !== clave ? clave : null;
+  await render();
+  const el = document.getElementById('beto-unidades');
+  if(el && BETO_FILTRO) el.scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
 /* ===================== VISTA: INICIO DE ALEJANDRA (5-nov-2026) =====================
@@ -1070,7 +1202,7 @@ async function orlSiguientePaso(id, paso){
    que está atorado en el equipo. El resumen completo anterior sigue disponible con "Ver resumen completo". */
 let ROB = null;
 async function viewInicioRoberto(){
-  const d = await api('GET', '/api/inicio-roberto');
+  const [d, entradas] = await Promise.all([api('GET', '/api/inicio-roberto'), api('GET', '/api/asistencia/hoy', null, { silent: true }).catch(() => null)]);
   ROB = d;
   const n = d.numeros;
   const sub = x => [x.placas, x.cliente_nombre, x.aseguradora].filter(Boolean).map(esc).join(' · ');
@@ -1087,6 +1219,7 @@ async function viewInicioRoberto(){
     ${tarjetaNumeroInicio(n.por_arrancar, 'Por arrancar', n.por_arrancar ? 'ambar' : 'verde', 'arrancar')}
     ${tarjetaNumeroInicio(n.alertas, 'Alertas del taller', n.alertas ? 'rojo' : 'verde', 'alertas')}
   </div>
+  ${seccionEntradasHoy(entradas)}
   ${seccionInicio('reaut', '🚨 Reautorizaciones por vencer', 'Orlando tiene poco tiempo (o ya se le pasó) para mandar las fotos editadas.', d.reautorizaciones,
     c => cajaInicio(`${encabezadoUnidad(c.id, c.vehiculo, c.numero, sub(c))}
       <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || '')}</div>

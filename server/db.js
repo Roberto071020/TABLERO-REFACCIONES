@@ -1486,6 +1486,30 @@ try{
   }
 }catch(e){ /* nunca debe impedir que arranque el servidor */ }
 
+// 9-nov-2026 (Roberto): registro de entrada del personal. Una fila por persona y día (hora de Veracruz).
+// "configuracion" guarda datos generales del taller (por ahora, su ubicación para validar la entrada).
+db.exec(`
+CREATE TABLE IF NOT EXISTS configuracion (
+  clave TEXT PRIMARY KEY,
+  valor TEXT,
+  actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS asistencia (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+  usuario_nombre TEXT,
+  fecha TEXT NOT NULL,
+  hora_local TEXT NOT NULL,
+  retardo INTEGER NOT NULL DEFAULT 0,
+  lat REAL, lng REAL, precision_m REAL, distancia_m REAL,
+  foto_ruta TEXT,
+  ip TEXT, dispositivo TEXT,
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(usuario_id, fecha)
+);
+CREATE INDEX IF NOT EXISTS idx_asistencia_fecha ON asistencia(fecha);
+`);
+
 module.exports = db;
 
 
