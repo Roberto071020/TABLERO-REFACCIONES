@@ -71,6 +71,25 @@ function rutaFoto(relativa){
 
 function esRetardo(hora){ return hora > HORA_ENTRADA; }
 
+// Racha (9-nov-2026, Roberto: "todo lo que motive al personal"): días seguidos llegando a tiempo. Solo cuentan
+// los días en que el taller abrió (alguien registró entrada), para que un día festivo o domingo no la rompa.
+// Un retardo o un día sin registro (estando abierto el taller) la corta.
+function racha(db, usuarioId, hastaFecha){
+  const dias = db.prepare(`SELECT DISTINCT fecha FROM asistencia WHERE fecha <= ? ORDER BY fecha DESC LIMIT 400`).all(hastaFecha).map(r => r.fecha);
+  const mios = new Map(db.prepare(`SELECT fecha, retardo FROM asistencia WHERE usuario_id = ? AND fecha <= ?`).all(usuarioId, hastaFecha).map(r => [r.fecha, r.retardo]));
+  let n = 0;
+  for(const f of dias){
+    if(!mios.has(f)){ if(f === hastaFecha) continue; break; } // hoy todavía puede registrarse
+    if(mios.get(f)) break;
+    n++;
+  }
+  return n;
+}
+function esPrimeroDelDia(db, usuarioId, fecha){
+  const p = db.prepare(`SELECT usuario_id FROM asistencia WHERE fecha = ? ORDER BY hora_local ASC, id ASC LIMIT 1`).get(fecha);
+  return !!p && p.usuario_id === usuarioId;
+}
+
 // Para el inicio de Roberto: cada persona que debe registrarse, con su registro de hoy (o sin registro).
 function entradasDeHoy(db){
   const { fecha } = ahoraMX();
@@ -80,11 +99,11 @@ function entradasDeHoy(db){
   const porUsuario = new Map(regs.map(r => [r.usuario_id, r]));
   const lista = personas.map(p => {
     const r = porUsuario.get(p.id);
-    return r ? { usuario_id: p.id, nombre: p.nombre, registro_id: r.id, hora: r.hora_local, retardo: !!r.retardo, distancia_m: r.distancia_m, con_foto: !!r.foto_ruta }
+    return r ? { usuario_id: p.id, nombre: p.nombre, registro_id: r.id, hora: r.hora_local, retardo: !!r.retardo, distancia_m: r.distancia_m, con_foto: !!r.foto_ruta, racha: racha(db, p.id, fecha) }
       : { usuario_id: p.id, nombre: p.nombre, registro_id: null, hora: null, retardo: false };
   }).sort((a, b) => (a.hora ? 0 : 1) - (b.hora ? 0 : 1) || String(a.hora || '').localeCompare(String(b.hora || '')) || a.nombre.localeCompare(b.nombre));
   return { fecha, hora_entrada: HORA_ENTRADA, taller_configurado: !!leerTaller(db), personas: lista,
     resumen: { a_tiempo: lista.filter(x => x.hora && !x.retardo).length, retardos: lista.filter(x => x.retardo).length, sin_registro: lista.filter(x => !x.hora).length } };
 }
 
-module.exports = { RADIO_M, HORA_ENTRADA, ahoraMX, requiereRegistro, leerTaller, guardarTaller, validarEntrada, guardarFoto, rutaFoto, esRetardo, entradasDeHoy, distanciaM };
+module.exports = { RADIO_M, HORA_ENTRADA, ahoraMX, requiereRegistro, leerTaller, guardarTaller, validarEntrada, guardarFoto, rutaFoto, esRetardo, entradasDeHoy, distanciaM, racha, esPrimeroDelDia };

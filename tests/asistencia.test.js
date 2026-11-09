@@ -95,3 +95,21 @@ test('ASIS-6: retardo después de las 9:00', () => {
   assert.equal(A.esRetardo('09:00'), false);
   assert.equal(A.esRetardo('09:01'), true);
 });
+
+test('ASIS-7: racha de días a tiempo; un día que el taller no abrió no la rompe; un retardo sí', () => {
+  const u = db.prepare(`SELECT id FROM usuarios WHERE email='beto@serviciocristian.mx'`).get().id;
+  const otro = db.prepare(`SELECT id FROM usuarios WHERE email='alejandra@serviciocristian.mx'`).get().id;
+  const reg = (uid, fecha, hora, retardo) => db.prepare(`INSERT INTO asistencia (usuario_id, usuario_nombre, fecha, hora_local, retardo) VALUES (?,?,?,?,?)`).run(uid, 'x', fecha, hora, retardo);
+  reg(u, '2025-03-03', '09:20', 1);   // retardo: aquí se corta
+  reg(u, '2025-03-04', '08:50', 0);
+  reg(u, '2025-03-05', '08:55', 0);
+  // 2025-03-06: nadie registró (taller cerrado) -> no rompe
+  reg(otro, '2025-03-07', '08:40', 0);
+  reg(u, '2025-03-07', '08:45', 0);
+  assert.equal(A.racha(db, u, '2025-03-07'), 3);
+  assert.equal(A.esPrimeroDelDia(db, otro, '2025-03-07'), true);
+  assert.equal(A.esPrimeroDelDia(db, u, '2025-03-07'), false);
+  reg(otro, '2025-03-08', '08:30', 0); // taller abierto y Beto no registró -> se corta
+  reg(u, '2025-03-10', '08:30', 0);
+  assert.equal(A.racha(db, u, '2025-03-10'), 1);
+});

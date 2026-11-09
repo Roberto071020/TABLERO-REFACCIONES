@@ -24,7 +24,7 @@ router.post('/entrada', requireAuth, (req, res) => {
   if(!A.requiereRegistro(u.rol)) return res.status(400).json({ error:'Tu usuario no necesita registrar entrada.' });
   const { fecha, hora } = A.ahoraMX();
   const ya = db.prepare(`SELECT hora_local, retardo FROM asistencia WHERE usuario_id = ? AND fecha = ?`).get(u.id, fecha);
-  if(ya) return res.json({ ok:true, hora: ya.hora_local, retardo: !!ya.retardo, ya_registrado: true });
+  if(ya) return res.json({ ok:true, hora: ya.hora_local, retardo: !!ya.retardo, ya_registrado: true, racha: A.racha(db, u.id, fecha), primero: A.esPrimeroDelDia(db, u.id, fecha) });
   const v = A.validarEntrada(A.leerTaller(db), req.body || {});
   if(!v.ok){
     // Queda constancia de los intentos rechazados (por ejemplo, desde fuera del taller).
@@ -42,7 +42,8 @@ router.post('/entrada', requireAuth, (req, res) => {
   }catch(e){
     if(!String(e).includes('UNIQUE')) throw e; // doble toque: ya quedó registrada
   }
-  res.json({ ok:true, hora, retardo: !!retardo });
+  // Para el festejo en pantalla: racha de días a tiempo y si fue el primero en llegar.
+  res.json({ ok:true, hora, retardo: !!retardo, racha: A.racha(db, u.id, fecha), primero: A.esPrimeroDelDia(db, u.id, fecha) });
 });
 
 // Roberto marca la ubicación del taller desde su celular, estando ahí.

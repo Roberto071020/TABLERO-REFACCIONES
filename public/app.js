@@ -414,12 +414,73 @@ async function enviarEntrada(input){
     const [foto, ubi] = await Promise.all([fotoReducida(archivo), ubicacionActual()]);
     const r = await api('POST', '/api/asistencia/entrada', { ...ubi, foto }, { silent: true });
     ENTRADA = { fecha: hoyLocalISO(), ok: true, info: null };
-    toast(r.retardo ? `Entrada registrada a las ${r.hora} (después de las 9:00).` : `Entrada registrada a las ${r.hora}. ¡Buen día!`, r.retardo ? 'info' : 'success');
-    render();
+    if(r.retardo){ toast(`Entrada registrada a las ${r.hora}.`, 'info'); render(); }
+    else mostrarFestejoEntrada(r); // al cerrar el festejo se abre su pantalla normal
+
   }catch(e){
     aviso(e.message, 'rojo'); btn.disabled = false;
   }
 }
+// Festejo al llegar a tiempo (9-nov-2026, Roberto: "todo lo que motive al personal"). Reconocer al que llega
+// temprano en lugar de regañar al que llega tarde: confeti, su hora, su racha de días a tiempo y una frase del día.
+const FRASES_ENTRADA = [
+  'El primero en llegar marca el ritmo del taller.',
+  'Un buen día de trabajo empieza a tiempo.',
+  'La puntualidad también es calidad.',
+  'Los clientes notan cuando un equipo llega listo.',
+  'Hoy es un buen día para entregar a tiempo.',
+  'Constancia hoy, resultados mañana.',
+  'Un equipo puntual es un equipo confiable.',
+  'Llegar a tiempo es la primera tarea bien hecha del día.',
+  'Las grandes reparaciones empiezan con un buen arranque.',
+  'Tu ejemplo cuenta: gracias por llegar a tiempo.',
+];
+function mensajeRacha(n){
+  if(n >= 30) return `🏆 ${n} días seguidos a tiempo. ¡Eres ejemplo para todo el taller!`;
+  if(n >= 20) return `🔥 ${n} días seguidos a tiempo. ¡Imparable!`;
+  if(n >= 10) return `🔥 ${n} días seguidos a tiempo. ¡Dos semanas completas!`;
+  if(n >= 5) return `🔥 ${n} días seguidos a tiempo. ¡Semana completa!`;
+  if(n >= 2) return `🔥 ${n} días seguidos a tiempo. ¡No la rompas!`;
+  return '🔥 Hoy empieza tu racha. ¡Mañana van 2!';
+}
+function mostrarFestejoEntrada(r){
+  const nombre = esc(((currentUser && currentUser.nombre) || '').split(' ')[0]);
+  const dia = Math.floor(Date.now() / 86400000);
+  const frase = FRASES_ENTRADA[dia % FRASES_ENTRADA.length];
+  const capa = document.createElement('div');
+  capa.id = 'festejoEntrada';
+  capa.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.88);display:flex;align-items:center;justify-content:center;padding:16px;';
+  capa.innerHTML = `<canvas id="confetiEntrada" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></canvas>
+    <div style="position:relative;background:#fff;color:#0f172a;border-radius:18px;max-width:420px;width:100%;padding:28px 22px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+      <div style="font-size:64px;line-height:1;">${r.primero ? '🥇' : '🎉'}</div>
+      <h2 style="margin:12px 0 4px;font-size:26px;">${r.primero ? '¡Llegaste primero!' : '¡Llegaste a tiempo!'}</h2>
+      <p style="font-size:18px;margin:0 0 14px;">Bien, ${nombre}. Entrada a las <b>${esc(r.hora)}</b>.</p>
+      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;font-size:17px;font-weight:600;margin-bottom:14px;">${esc(mensajeRacha(r.racha || 1))}</div>
+      <p style="font-style:italic;color:#475569;margin:0 0 20px;">“${esc(frase)}”</p>
+      <button class="btn" style="font-size:18px;padding:12px 24px;width:100%;" onclick="cerrarFestejoEntrada()">Empezar el día 💪</button>
+    </div>`;
+  document.body.appendChild(capa);
+  lanzarConfeti(document.getElementById('confetiEntrada'));
+}
+function cerrarFestejoEntrada(){ const c = document.getElementById('festejoEntrada'); if(c) c.remove(); render(); }
+function lanzarConfeti(canvas){
+  if(!canvas || !canvas.getContext) return;
+  const ctx = canvas.getContext('2d'), W = canvas.width = window.innerWidth, H = canvas.height = window.innerHeight;
+  const colores = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#9333ea', '#06b6d4'];
+  const piezas = Array.from({ length: 140 }, () => ({ x: Math.random() * W, y: -20 - Math.random() * H * 0.6, w: 6 + Math.random() * 6, h: 8 + Math.random() * 8,
+    vy: 2 + Math.random() * 3.5, vx: -1.5 + Math.random() * 3, g: Math.random() * Math.PI, vg: -0.2 + Math.random() * 0.4, c: colores[Math.floor(Math.random() * colores.length)] }));
+  const fin = Date.now() + 3500;
+  (function cuadro(){
+    if(!document.body.contains(canvas)) return;
+    ctx.clearRect(0, 0, W, H);
+    for(const p of piezas){
+      p.y += p.vy; p.x += p.vx; p.g += p.vg;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.g); ctx.fillStyle = p.c; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore();
+    }
+    if(Date.now() < fin) requestAnimationFrame(cuadro); else ctx.clearRect(0, 0, W, H);
+  })();
+}
+
 // Inicio de Roberto: quién ya llegó hoy.
 function seccionEntradasHoy(a){
   if(!a) return '';
@@ -430,6 +491,7 @@ function seccionEntradasHoy(a){
       <span style="font-weight:600;">${esc(p.nombre)}</span>
       <span style="display:flex;gap:8px;align-items:center;">
         ${p.hora ? `<span class="badge ${p.retardo ? 'rojo' : 'verde'}">${esc(p.hora)}${p.retardo ? ' · retardo' : ''}</span>` : '<span class="badge gris">Sin registro</span>'}
+        ${p.racha >= 2 ? `<span title="Días seguidos a tiempo" style="font-size:13px;white-space:nowrap;">🔥${p.racha}</span>` : ''}
         ${p.con_foto ? `<span class="link" style="font-size:13px;" onclick="verFotoEntrada(${p.registro_id}, '${esc(p.nombre)}', '${esc(p.hora)}')">Ver foto</span>` : ''}
       </span></div>`;
   return `<div id="sec-entradas" class="section" style="margin:14px 0 8px;padding:14px;">
