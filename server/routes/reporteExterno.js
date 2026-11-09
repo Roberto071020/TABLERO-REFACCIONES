@@ -31,4 +31,15 @@ router.get('/reporte-arranque', (req, res)=>{
   res.json(r);
 });
 
+// 9-nov-2026 (Roberto): corte de las 3 de la tarde -- lo que sigue pendiente de hoy, por persona. Misma clave.
+router.get('/corte-tarde', (req, res)=>{
+  if(!process.env.REPORTE_TOKEN) return res.status(503).json({ error:'La ventanilla externa no está activada (falta REPORTE_TOKEN).' });
+  const auth = req.get('authorization') || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if(!claveValida(token)) return res.status(401).json({ error:'Clave inválida.' });
+  const r = require('../corteTarde').calcularCorteTarde(db);
+  if(req.query.formato === 'texto') return res.type('text/plain; charset=utf-8').send(r.texto);
+  res.json(r);
+});
+
 module.exports = router;
