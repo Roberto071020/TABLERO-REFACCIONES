@@ -111,7 +111,8 @@ app.use('/api/inicio-alejandra', require('./routes/inicioAlejandra')); // 5-nov-
 app.use('/api/inicio-daniela', require('./routes/inicioDaniela')); // 6-nov-2026: pantalla de inicio de Daniela
 app.use('/api/inicio-orlando', require('./routes/inicioOrlando')); // 6-nov-2026: pantalla de inicio de Orlando
 app.use('/api/asistencia', require('./routes/asistencia'));
-app.use('/api/detenidas', require('./routes/detenidas')); // 10-nov-2026: unidades detenidas y a quién le toca // 9-nov-2026: registro de entrada del personal
+app.use('/api/detenidas', require('./routes/detenidas'));
+app.use('/api/llegada', require('./routes/llegada')); // 10-nov-2026: "Ya llegó" desde la pantalla de Beto // 10-nov-2026: unidades detenidas y a quién le toca // 9-nov-2026: registro de entrada del personal
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto
 
 // ---- Frontend estático ----

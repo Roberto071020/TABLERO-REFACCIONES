@@ -628,7 +628,7 @@ async function viewInicioBeto(){
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         ${x.ot_archivo_id ? `<a class="btn small secondary" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a><button class="btn small secondary" onclick="FotosSC.compartirOt(${x.ot_archivo_id}, '${esc(x.numero)}')">📤 WhatsApp</button>` : '<span class="badge gris">Sin OT</span>'}
         ${!x.fecha_entrega_prevista && !x.en_transito ? `<button class="btn small secondary" onclick="abrirFormFechaEntrega(${x.id})">📅 Poner fecha</button>` : ''}
-        ${x.en_transito || x.reingreso_citado ? '' : sinIniciar ? `<button class="btn small" onclick="abrirFormEtapaProduccion(${x.id})">▶ Iniciar reparación</button>` : sig ? `<button class="btn small" onclick="avanzarEtapaProduccion(${x.id},'${x.estado_produccion || ''}')">→ ${esc(LABEL[sig])}</button>` : `<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${x.id})">Resolver</button>`}
+        ${x.en_transito || x.reingreso_citado ? `<button class="btn small" onclick="betoYaLlego(${x.id}, '${esc(x.vehiculo || x.numero)}')">🚗 Ya llegó</button>` : sinIniciar ? `<button class="btn small" onclick="abrirFormEtapaProduccion(${x.id})">▶ Iniciar reparación</button>` : sig ? `<button class="btn small" onclick="avanzarEtapaProduccion(${x.id},'${x.estado_produccion || ''}')">→ ${esc(LABEL[sig])}</button>` : `<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${x.id})">Resolver</button>`}
       </div></div>`;
   }).join('');
   return `
@@ -650,6 +650,16 @@ async function viewInicioBeto(){
   </div>`;
 }
 let BETO_FILTRO = null;
+// "Ya llegó" (10-nov-2026): Beto registra que una unidad circulando o citada ya está en el patio, para poder trabajarla.
+function betoYaLlego(id, nombre){
+  showModal(`<h3>¿Ya llegó al taller?</h3>
+    <p>${esc(nombre)}</p>
+    <p class="subtle">Se registra que llegó hoy y pasa a <b>Piso</b>, para que puedas iniciarla.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="betoConfirmarLlegada(${id})">🚗 Sí, ya está aquí</button></div>`);
+}
+async function betoConfirmarLlegada(id){
+  try{ await api('POST', '/api/llegada/' + id); closeModal(); toast('Listo: la unidad ya está en piso.', 'success'); render(); }catch(e){}
+}
 async function betoFiltrar(clave){
   BETO_FILTRO = clave && BETO_FILTRO !== clave ? clave : null;
   await render();
