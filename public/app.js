@@ -145,7 +145,7 @@ function renderLogin(){
       <img class="login-logo" src="/img/logo.png" alt="Servicio Cristian">
       <h2>Servicio Cristian</h2>
       <p class="subtle">Tablero de Seguimiento de Refacciones</p>
-      <div class="field"><label>Correo</label><input id="loginEmail" type="email" placeholder="daniela@serviciocristian.mx"></div>
+      <div class="field"><label>Usuario o correo</label><input id="loginEmail" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="ej. marco.cobos"></div>
       <div class="field"><label>Contraseña</label><input id="loginPass" type="password" onkeydown="if(event.key==='Enter')hacerLogin()"></div>
       <div class="field errmsg" id="loginError"></div>
       <button class="btn" style="width:100%" onclick="hacerLogin()">Entrar</button>
@@ -264,7 +264,10 @@ async function actualizarBadgeWhatsapp(){
   if(nav) renderTabs();
 }
 function renderTabs(){
-  const visibles = TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
+  // Personal de patio (rol 'tecnico', 9-nov-2026): por ahora solo registra su entrada -- sin menú, búsqueda ni "+ Nuevo".
+  const esTecnico = !!(currentUser && currentUser.rol === 'tecnico');
+  document.querySelectorAll('.search-box, button[onclick="openNuevoMenu()"]').forEach(el => { el.style.display = esTecnico ? 'none' : ''; });
+  const visibles = esTecnico ? [] : TABS.filter(t=> !t.roles || (currentUser && t.roles.includes(currentUser.rol)));
   document.getElementById('mainTabs').innerHTML = visibles.map(t=>
     `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}${t.k==='whatsapp' && whatsappPendientesBadge?` <span class="badge-count">${whatsappPendientesBadge}</span>`:''}</button>`).join('') +
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
@@ -488,11 +491,12 @@ function seccionEntradasHoy(a){
     <p class="subtle" style="margin:4px 0 10px;">Estando en el taller, abre SC Control en tu celular y presiona este botón. Desde ese momento el equipo tendrá que registrar su entrada al abrir el tablero.</p>
     <button class="btn" onclick="marcarUbicacionTaller()">📍 Marcar ubicación del taller</button>`);
   const fila = p => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--border);">
-      <span style="font-weight:600;">${esc(p.nombre)}</span>
+      <span style="font-weight:600;">${esc(p.nombre)}${p.puesto ? ` <span class="subtle" style="font-weight:400;font-size:13px;">${esc(p.puesto)}</span>` : ''}</span>
       <span style="display:flex;gap:8px;align-items:center;">
         ${p.hora ? `<span class="badge ${p.retardo ? 'rojo' : 'verde'}">${esc(p.hora)}${p.retardo ? ' · retardo' : ''}</span>` : '<span class="badge gris">Sin registro</span>'}
         ${p.racha >= 2 ? `<span title="Días seguidos a tiempo" style="font-size:13px;white-space:nowrap;">🔥${p.racha}</span>` : ''}
         ${p.con_foto ? `<span class="link" style="font-size:13px;" onclick="verFotoEntrada(${p.registro_id}, '${esc(p.nombre)}', '${esc(p.hora)}')">Ver foto</span>` : ''}
+        <span class="link" style="font-size:13px;" title="Darle una contraseña nueva" onclick="robNuevaPassword(${p.usuario_id}, '${esc(p.nombre)}')">🔑</span>
       </span></div>`;
   return `<div id="sec-entradas" class="section" style="margin:14px 0 8px;padding:14px;">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
@@ -502,6 +506,22 @@ function seccionEntradasHoy(a){
     ${a.personas.map(fila).join('')}
     <div style="text-align:right;margin-top:8px;"><button class="btn ghost small" onclick="marcarUbicacionTaller()">Volver a marcar ubicación del taller</button></div>
   </div>`;
+}
+// Si alguien olvida su contraseña, Roberto le genera una nueva desde "Entradas de hoy" (🔑).
+function robNuevaPassword(id, nombre){
+  showModal(`<h3>Contraseña nueva para ${esc(nombre)}</h3>
+    <p>Su contraseña actual dejará de funcionar y se le dará una nueva. ¿Continuar?</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="robConfirmarPassword(${id}, '${esc(nombre)}')">Sí, generar</button></div>`);
+}
+async function robConfirmarPassword(id, nombre){
+  try{
+    const r = await api('POST', '/api/auth/usuarios/' + id + '/reset-password');
+    showModal(`<h3>Listo</h3>
+      <p>Dale estos datos a ${esc(nombre)}:</p>
+      <div style="font-size:18px;background:#f1f5f9;border-radius:10px;padding:12px;">Usuario: <b>${esc(r.email)}</b><br>Contraseña: <b>${esc(r.password_temporal)}</b></div>
+      <p class="subtle">Puede cambiarla después con el candado 🔒 del menú.</p>
+      <div class="modal-actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>`);
+  }catch(e){}
 }
 function verFotoEntrada(id, nombre, hora){
   showModal(`<h3>${esc(nombre)} · ${esc(hora)}</h3>
@@ -517,6 +537,45 @@ async function marcarUbicacionTaller(){
     toast(`Ubicación del taller guardada${r.precision ? ` (precisión ${r.precision} m)` : ''}. El registro de entrada ya está activo.`, 'success', 7000);
     render();
   }catch(e){ if(e.message) toast(e.message, 'error'); }
+}
+
+/* ===================== UNIDADES DETENIDAS (10-nov-2026) =====================
+   Al marcar "Detenido", Beto indica por qué; a quien le toca destrabarla le aparece aquí hasta que Beto la regresa
+   a una etapa de trabajo. Mismos motivos que server/detenidas.js. */
+const MOTIVOS_DETENIDO = {
+  falta_pieza: { etiqueta:'Falta pieza', quien:'Daniela' },
+  pieza_mal: { etiqueta:'Pieza llegó mal', quien:'Daniela' },
+  dano_oculto: { etiqueta:'Daño oculto', quien:'Orlando' },
+  espera_autorizacion: { etiqueta:'Espera autorización', quien:'Roberto' },
+  falta_material: { etiqueta:'Falta material', quien:'Roberto' },
+  otro: { etiqueta:'Otro', quien:'Roberto' },
+};
+const diasTexto = n => n === 0 ? 'desde hoy' : n === 1 ? 'hace 1 día' : `hace ${n} días`;
+function seccionDetenidas(lista, ayuda){
+  if(!lista || !lista.length) return '';
+  return `<div id="sec-detenidas" style="margin-top:18px;"><h3 style="margin:0 0 2px;">⛔ Unidades detenidas que esperan algo de ti <span class="badge rojo">${lista.length}</span></h3>
+    <p class="subtle" style="margin:0 0 6px;">${ayuda}</p>
+    ${lista.map(d => cajaInicio(`${encabezadoUnidad(d.id, d.vehiculo, d.numero, [d.placas, d.aseguradora].filter(Boolean).map(esc).join(' · '))}
+      <span class="badge rojo" style="white-space:normal;">${esc(d.motivo_etiqueta)}${d.nota ? ': ' + esc(d.nota) : ''} · ${diasTexto(d.dias)}</span>`)).join('')}</div>`;
+}
+
+/* ===================== INICIO DEL PERSONAL DE PATIO (9-nov-2026) =====================
+   Por ahora solo confirma su entrada del día. Más adelante aquí verán las unidades que Beto les asigne. */
+async function viewInicioTecnico(){
+  const nombre = esc(((currentUser && currentUser.nombre) || '').split(' ')[0]);
+  let e = null;
+  try{ e = await api('GET', '/api/asistencia/estado', null, { silent: true }); }catch(err){}
+  const registro = e && e.registrado
+    ? `<div style="font-size:56px;line-height:1;">✅</div>
+       <h2 style="margin:10px 0 4px;">Entrada registrada</h2>
+       <p style="font-size:18px;margin:0 0 12px;">Hoy llegaste a las <b>${esc(e.hora)}</b>.</p>
+       ${!e.retardo && e.racha ? `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;font-size:17px;font-weight:600;">${esc(mensajeRacha(e.racha))}</div>` : ''}`
+    : `<p style="font-size:17px;">Hoy todavía no registras tu entrada.</p>`;
+  return `<div class="section" style="max-width:480px;margin:24px auto;text-align:center;padding:26px;">
+      <h2 style="margin-top:0;">Hola, ${nombre} 👋</h2>
+      ${registro}
+      <p class="subtle" style="margin-top:18px;">Pronto aquí vas a ver las unidades que te asigne Beto.</p>
+    </div>`;
 }
 
 /* ===================== VISTA: INICIO DE BETO (5-nov-2026) =====================
@@ -560,7 +619,12 @@ async function viewInicioBeto(){
         <span class="link" style="font-weight:700;font-size:16px;" onclick="goSiniestro(${x.id})">${esc(x.vehiculo || x.numero)}</span>${fechaBadge(x)}
       </div>
       <div class="subtle" style="margin:2px 0 6px;">${esc(x.placas || '')}${x.placas ? ' · ' : ''}${esc(x.numero)} · ${esc(x.aseguradora || '')}${x.es_autosurtido ? ' · Autosurtido' : ''}</div>
-      <div style="margin-bottom:10px;"><span class="badge ${colorMotivo(x)}">${esc(motivo)}</span> <b style="margin-left:4px;">${esc(LABEL[x.estado_produccion] || 'Sin iniciar')}</b></div>
+      ${x.estado_produccion === 'detenido' ? (() => {
+        const m = MOTIVOS_DETENIDO[x.detenido_motivo];
+        const dias = x.detenido_desde ? Math.max(0, Math.floor((Date.now() - Date.parse(String(x.detenido_desde).replace(' ', 'T') + 'Z')) / 86400000)) : null;
+        return m ? `<div style="margin-bottom:10px;"><span class="badge rojo" style="white-space:normal;">⛔ Detenida: ${esc(m.etiqueta)}${x.detenido_nota ? ' — ' + esc(x.detenido_nota) : ''}${dias !== null ? ' · ' + diasTexto(dias) : ''} · ya le avisó a ${esc(m.quien)}</span></div>`
+          : `<div style="margin-bottom:10px;"><span class="badge rojo" style="white-space:normal;">⛔ Detenida sin motivo: toca "Resolver" e indica por qué</span></div>`;
+      })() : `<div style="margin-bottom:10px;"><span class="badge ${colorMotivo(x)}">${esc(motivo)}</span> <b style="margin-left:4px;">${esc(LABEL[x.estado_produccion] || 'Sin iniciar')}</b></div>`}
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         ${x.ot_archivo_id ? `<a class="btn small secondary" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a><button class="btn small secondary" onclick="FotosSC.compartirOt(${x.ot_archivo_id}, '${esc(x.numero)}')">📤 WhatsApp</button>` : '<span class="badge gris">Sin OT</span>'}
         ${!x.fecha_entrega_prevista && !x.en_transito ? `<button class="btn small secondary" onclick="abrirFormFechaEntrega(${x.id})">📅 Poner fecha</button>` : ''}
@@ -1075,7 +1139,8 @@ async function guardarRevisionCalidad(){
 /* ===================== VISTA: INICIO DE DANIELA (6-nov-2026) ===================== */
 let DAN = null;
 async function viewInicioDaniela(){
-  const [d, apoyo] = await Promise.all([api('GET', '/api/inicio-daniela'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => [])]);
+  const [d, apoyo, det] = await Promise.all([api('GET', '/api/inicio-daniela'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => []),
+    api('GET', '/api/detenidas', null, { silent:true }).catch(() => ({ detenidas: [] }))]);
   DAN = d; DAN.textos = [];
   const n = d.numeros;
   const filaPieza = (z, botones) => `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--border);">
@@ -1105,6 +1170,7 @@ async function viewInicioDaniela(){
     ${tarjetaNumeroInicio(n.por_confirmar, 'Fechas por confirmar', n.por_confirmar ? 'ambar' : 'verde', 'confirmar')}
     ${tarjetaNumeroInicio(n.correos, 'Correos por aprobar', n.correos ? 'ambar' : 'verde', 'correos')}
   </div>
+  ${seccionDetenidas(det.detenidas, 'Beto las detuvo porque falta una pieza o llegó mal. Consíguela o resuélvelo con el proveedor; cuando llegue, Beto la reanuda.')}
   ${seccionInicio('recibir', '1. Recibir piezas', 'El proveedor ya las entregó. Revísalas: si llegaron bien, márcalas; si no, registra qué pasó.', d.recibir,
     u => cajaInicio(`${encabezadoUnidad(u.siniestro_id, u.vehiculo, u.siniestro_numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
       ${u.piezas.map(z => filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
@@ -1184,7 +1250,8 @@ function danBuscarPiezas(){
 
 /* ===================== VISTA: INICIO DE ORLANDO (6-nov-2026) ===================== */
 async function viewInicioOrlando(){
-  const [d, apoyo] = await Promise.all([api('GET', '/api/inicio-orlando'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => [])]);
+  const [d, apoyo, det] = await Promise.all([api('GET', '/api/inicio-orlando'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => []),
+    api('GET', '/api/detenidas', null, { silent:true }).catch(() => ({ detenidas: [] }))]);
   const n = d.numeros;
   const sub = x => [x.placas, x.cliente_nombre, x.aseguradora].filter(Boolean).map(esc).join(' · ');
   const PASO = { excel:['Captúrala en Excel', '✔ Ya la capturé en Excel'], fotos:['Completa fotos y carpeta', '✔ Fotos y carpeta completas'], enviar:['Lista: envíasela a Roberto', '📤 Ya se la envié a Roberto'] };
@@ -1197,6 +1264,7 @@ async function viewInicioOrlando(){
     ${tarjetaNumeroInicio(n.complementos, 'Complementos', n.complementos ? 'rojo' : 'verde', n.reautorizar ? 'reautorizar' : 'complementos')}
     ${tarjetaNumeroInicio(n.por_enviar, 'Por enviar a Roberto', n.por_enviar ? 'ambar' : 'verde', 'captura')}
   </div>
+  ${seccionDetenidas(det.detenidas, 'Beto encontró daño oculto. Documéntalo como complemento con sus fotos para que se pueda autorizar.')}
   ${seccionInicio('reautorizar', '🚨 Fotos editadas para reautorizar', `La aseguradora no autorizó estas piezas. Tienes ${d.horas_reautorizacion} horas para mandar las fotos editadas.`, d.reautorizar,
     c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c))}
       <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || c.causa || '')}</div>
@@ -1398,6 +1466,7 @@ async function robDecisionComplemento(id, decision){
 
 /* ===================== VISTA: INICIO ===================== */
 async function viewInicio(){
+  if(currentUser && currentUser.rol === 'tecnico') return viewInicioTecnico();
   if(currentUser && currentUser.rol === 'beto') return viewInicioBeto();
   if(currentUser && currentUser.rol === 'atencion_cliente') return viewInicioAlejandra();
   if(currentUser && currentUser.rol === 'operativo') return viewInicioDaniela();
@@ -3424,7 +3493,7 @@ function abrirFormEtapaProduccion(siniestroId){
     const fechaBloqueada = (yaComprometida && !esRoberto) || (tieneFecha && !puedeCambiarFecha);
     showModal(`
       <h3>Actualizar etapa de producción</h3>
-      <div class="field"><label>Etapa</label><select id="fprod_estado">
+      <div class="field"><label>Etapa</label><select id="fprod_estado" onchange="document.getElementById('fprod_det_wrap').style.display=this.value==='detenido'?'block':'none'">
         <option value="" ${!s.estado_produccion?'selected':''}>Sin iniciar</option>
         <option value="programado" ${s.estado_produccion==='programado'?'selected':''}>Programado</option>
         <option value="mecanica" ${s.estado_produccion==='mecanica'?'selected':''}>Mecánica</option>
@@ -3438,6 +3507,11 @@ function abrirFormEtapaProduccion(siniestroId){
         <option value="terminado" ${s.estado_produccion==='terminado'?'selected':''}>Terminado</option>
       </select></div>
       <p class="subtle" style="margin-top:4px;">Orden confirmado por Roberto: mecánica → hojalatería → pintura → armado → pulido → lavado → entrega.</p>
+      <div id="fprod_det_wrap" style="display:${s.estado_produccion==='detenido'?'block':'none'};background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px 12px;margin-top:8px;">
+        <label style="font-weight:700;">¿Por qué está detenida?</label>
+        ${Object.entries(MOTIVOS_DETENIDO).map(([k, m]) => `<label style="display:flex;align-items:center;gap:8px;margin:6px 0;"><input type="radio" name="fprod_det" value="${k}" ${s.detenido_motivo===k?'checked':''}> <span><b>${m.etiqueta}</b> <span class="subtle">· le avisa a ${m.quien}</span></span></label>`).join('')}
+        <input id="fprod_det_nota" placeholder="Nota corta (obligatoria si es 'Otro')" value="${esc(s.detenido_nota||'')}" style="margin-top:4px;">
+      </div>
       <div class="field" style="margin-top:12px;"><label>Fecha de entrega prevista</label><input id="fprod_fecha_entrega" type="date" value="${esc(s.fecha_entrega_prevista||'')}" ${fechaBloqueada?'disabled':''}></div>
       ${tieneFecha && !fechaBloqueada?`<div class="field"><label>Motivo del cambio (solo si cambias la fecha)</label><input id="fprod_motivo_fecha" placeholder="Ej. llegó tarde una pieza, complemento autorizado…"></div>`:''}
       ${fechaBloqueada && !(yaComprometida && !esRoberto)?`<p class="subtle">La fecha ya está capturada. Solo Daniela o Roberto pueden cambiarla.</p>`:''}
@@ -3474,6 +3548,13 @@ async function guardarFechaEntrega(siniestroId, esCambio){
 async function guardarEtapaProduccion(siniestroId){
   try{
     const body = { estado_produccion: document.getElementById('fprod_estado').value };
+    if(body.estado_produccion === 'detenido'){
+      const sel = document.querySelector('input[name="fprod_det"]:checked');
+      if(!sel){ toast('Indica por qué está detenida la unidad.', 'error'); return; }
+      body.detenido_motivo = sel.value;
+      body.detenido_nota = document.getElementById('fprod_det_nota').value.trim();
+      if(sel.value === 'otro' && !body.detenido_nota){ toast('Escribe brevemente por qué está detenida.', 'error'); return; }
+    }
     const fechaInput = document.getElementById('fprod_fecha_entrega');
     if(fechaInput && !fechaInput.disabled && fechaInput.value !== (fechaInput.defaultValue || '')){
       body.fecha_entrega_prevista = fechaInput.value;

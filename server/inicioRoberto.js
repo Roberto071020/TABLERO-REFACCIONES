@@ -91,7 +91,10 @@ function calcularInicioRoberto(db, { alertas: conAlertas = true } = {}){
     let piezas = [];
     try{ piezas = require('./inicioDaniela').calcularInicioDaniela(db).vencidas
       .flatMap(g => g.piezas.map(z => ({ id: z.siniestro_id, numero: z.siniestro_numero, detalle: `${z.descripcion} · ${g.proveedor} · vencida hace ${z.dias_vencida} día(s)` }))); }catch(e){}
+    let detenidas = [];
+    try{ const D = require('./detenidas'); detenidas = D.listarDetenidas(db).map(d => ({ id: d.id, numero: d.numero, detalle: [d.vehiculo, D.textoDetalle(d)].filter(Boolean).join(' · ') })); }catch(e){}
     alertas = [
+      { clave:'detenidas', titulo:'Unidades detenidas', quien:'quien indica el motivo', items: detenidas },
       { clave:'vencidas', titulo:'Entregas vencidas', quien:'Beto y Alejandra', items: vencidas },
       { clave:'listas', titulo:'Listas para iniciar y sin tocar', quien:'Beto', items: listas },
       { clave:'calidad', titulo:'Terminadas sin revisión de calidad (+1 día)', quien:'Beto', items: calidad },

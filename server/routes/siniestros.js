@@ -354,6 +354,23 @@ router.patch('/:id', requireAuth, (req, res)=>{
     if(faltan) return res.status(409).json({ error: faltan.mensaje, codigo:'FOTOS_REQUERIDAS', etapa: faltan.etapa, etiqueta: faltan.etiqueta });
   }
 
+  // 10-nov-2026 (Roberto): al marcar "Detenido" se indica POR QUÉ; el sistema le avisa a quien le toca destrabarla
+  // (server/detenidas.js). Al regresarla a una etapa de trabajo, el motivo se limpia (queda en la auditoría).
+  {
+    const { MOTIVOS } = require('../detenidas');
+    const motivo = req.body.detenido_motivo;
+    const nota = String(req.body.detenido_nota || '').trim().slice(0, 200) || null;
+    const entra = nuevo.estado_produccion === 'detenido' && anterior.estado_produccion !== 'detenido';
+    const sigue = nuevo.estado_produccion === 'detenido' && anterior.estado_produccion === 'detenido';
+    if(entra || (sigue && motivo !== undefined)){
+      if(!MOTIVOS[motivo]) return res.status(400).json({ error:'Indica por qué está detenida la unidad.' });
+      if(motivo === 'otro' && !nota) return res.status(400).json({ error:'Escribe brevemente por qué está detenida.' });
+      req._detenido = { motivo, nota, nueva: entra };
+    } else if(anterior.estado_produccion === 'detenido' && nuevo.estado_produccion !== 'detenido'){
+      req._detenidoFin = true;
+    }
+  }
+
   // Tabla 11: "criterio de salida: alcance autorizado y restricciones conocidas." Autorizada/parcial exige
   // quién autorizó y cuándo respondió (mismos datos que pide la tabla: "fecha envío/respuesta, autorizador").
   if(tocaCampos('estado_autorizacion','autorizacion_fecha_respuesta','autorizador') && ['autorizada','parcial'].includes(nuevo.estado_autorizacion)){
@@ -445,6 +462,18 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.archivado, nuevo.archivado_en,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  if(req._detenido){
+    const d = req._detenido;
+    db.prepare(`UPDATE siniestros SET detenido_motivo = ?, detenido_nota = ?, detenido_desde = CASE WHEN ? = 1 OR detenido_desde IS NULL THEN datetime('now') ELSE detenido_desde END WHERE id = ?`)
+      .run(d.motivo, d.nota, d.nueva ? 1 : 0, anterior.id);
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:anterior.id, accion:'detenida', campo:'detenido_motivo',
+      valor_anterior: anterior.detenido_motivo || null, valor_nuevo: d.motivo + (d.nota ? ' — ' + d.nota : ''), usuario:req.session.user });
+  }
+  if(req._detenidoFin){
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:anterior.id, accion:'detenida_resuelta', campo:'detenido_motivo',
+      valor_anterior: anterior.detenido_motivo || null, valor_nuevo: nuevo.estado_produccion || null, usuario:req.session.user });
+    db.prepare(`UPDATE siniestros SET detenido_motivo = NULL, detenido_nota = NULL, detenido_desde = NULL WHERE id = ?`).run(anterior.id);
+  }
   if(req._cambioFechaEntrega){
     const c = req._cambioFechaEntrega;
     registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:anterior.id, accion:'cambio_fecha_entrega', campo:'motivo',

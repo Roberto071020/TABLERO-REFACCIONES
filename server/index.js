@@ -33,6 +33,15 @@ app.use(session({
   cookie: { maxAge: 1000*60*60*12, sameSite:'lax' } // 12 horas
 }));
 
+// 9-nov-2026: el personal de patio (rol 'tecnico') por ahora SOLO registra su entrada. Fuera de su sesión y
+// de su registro de entrada no puede consultar nada (ni expedientes ni datos de clientes).
+app.use('/api', (req, res, next) => {
+  const u = req.session && req.session.user;
+  if(!u || u.rol !== 'tecnico') return next();
+  if(req.path.startsWith('/auth/') || req.path === '/asistencia/estado' || req.path === '/asistencia/entrada' || /^\/asistencia\/\d+\/foto$/.test(req.path)) return next();
+  return res.status(403).json({ error:'Tu usuario por ahora solo registra la entrada.' });
+});
+
 // ---- Auth ----
 app.post('/api/auth/login', login);
 app.post('/api/auth/logout', logout);
@@ -101,7 +110,8 @@ app.use('/api/fotos', require('./routes/fotos'));
 app.use('/api/inicio-alejandra', require('./routes/inicioAlejandra')); // 5-nov-2026: pantalla de inicio de Alejandra
 app.use('/api/inicio-daniela', require('./routes/inicioDaniela')); // 6-nov-2026: pantalla de inicio de Daniela
 app.use('/api/inicio-orlando', require('./routes/inicioOrlando')); // 6-nov-2026: pantalla de inicio de Orlando
-app.use('/api/asistencia', require('./routes/asistencia')); // 9-nov-2026: registro de entrada del personal
+app.use('/api/asistencia', require('./routes/asistencia'));
+app.use('/api/detenidas', require('./routes/detenidas')); // 10-nov-2026: unidades detenidas y a quién le toca // 9-nov-2026: registro de entrada del personal
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto
 
 // ---- Frontend estático ----

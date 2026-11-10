@@ -77,7 +77,8 @@ function calcularPanoramaBeto(db){
       es_autosurtido: esAutosurtido,
       piezas_suficientes: !!piezasSuficientes,
       ot_archivo_id: (db.prepare(`SELECT id FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='Orden de trabajo' AND eliminado=0 ORDER BY id DESC LIMIT 1`).get(s.id) || {}).id || null,
-      cita_fecha: s.cita_fecha || null };
+      cita_fecha: s.cita_fecha || null,
+      detenido_motivo: s.detenido_motivo || null, detenido_nota: s.detenido_nota || null, detenido_desde: s.detenido_desde || null };
   });
 
   // Modificación 1(c): orden por antigüedad/urgencia en vez de solo el orden físico en que llegan las

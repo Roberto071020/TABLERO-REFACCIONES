@@ -109,7 +109,7 @@ test('FOTOS-4: no deja salir de hojalatería sin foto, ni marcar Terminado sin f
   assert.equal(r1.data.codigo, 'FOTOS_REQUERIDAS');
   assert.equal(r1.data.etapa, 'en_laminado');
   // Detenido siempre se permite (es un bloqueo, no un avance).
-  assert.equal((await req('PATCH', '/api/siniestros/' + id, { estado_produccion:'detenido' })).status, 200);
+  assert.equal((await req('PATCH', '/api/siniestros/' + id, { estado_produccion:'detenido', detenido_motivo:'falta_pieza' })).status, 200); // 10-nov-2026: Detenido exige motivo
   assert.equal((await req('PATCH', '/api/siniestros/' + id, { estado_produccion:'en_laminado' })).status, 200);
   await subirFoto(id, 'en_laminado');
   assert.equal((await req('PATCH', '/api/siniestros/' + id, { estado_produccion:'pintura' })).status, 200);

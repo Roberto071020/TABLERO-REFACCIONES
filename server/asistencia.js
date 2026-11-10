@@ -94,13 +94,14 @@ function esPrimeroDelDia(db, usuarioId, fecha){
 function entradasDeHoy(db){
   const { fecha } = ahoraMX();
   const ph = ROLES_EXENTOS.map(() => '?').join(',');
-  const personas = db.prepare(`SELECT id, nombre FROM usuarios WHERE activo = 1 AND rol NOT IN (${ph}) ORDER BY nombre`).all(...ROLES_EXENTOS);
+  const conPuesto = !!db.prepare(`SELECT 1 FROM pragma_table_info('usuarios') WHERE name='puesto'`).get();
+  const personas = db.prepare(`SELECT id, nombre${conPuesto ? ', puesto' : ''} FROM usuarios WHERE activo = 1 AND rol NOT IN (${ph}) ORDER BY nombre`).all(...ROLES_EXENTOS);
   const regs = db.prepare(`SELECT id, usuario_id, hora_local, retardo, distancia_m, foto_ruta FROM asistencia WHERE fecha = ?`).all(fecha);
   const porUsuario = new Map(regs.map(r => [r.usuario_id, r]));
   const lista = personas.map(p => {
     const r = porUsuario.get(p.id);
-    return r ? { usuario_id: p.id, nombre: p.nombre, registro_id: r.id, hora: r.hora_local, retardo: !!r.retardo, distancia_m: r.distancia_m, con_foto: !!r.foto_ruta, racha: racha(db, p.id, fecha) }
-      : { usuario_id: p.id, nombre: p.nombre, registro_id: null, hora: null, retardo: false };
+    return r ? { usuario_id: p.id, nombre: p.nombre, puesto: p.puesto || null, registro_id: r.id, hora: r.hora_local, retardo: !!r.retardo, distancia_m: r.distancia_m, con_foto: !!r.foto_ruta, racha: racha(db, p.id, fecha) }
+      : { usuario_id: p.id, nombre: p.nombre, puesto: p.puesto || null, registro_id: null, hora: null, retardo: false };
   }).sort((a, b) => (a.hora ? 0 : 1) - (b.hora ? 0 : 1) || String(a.hora || '').localeCompare(String(b.hora || '')) || a.nombre.localeCompare(b.nombre));
   return { fecha, hora_entrada: HORA_ENTRADA, taller_configurado: !!leerTaller(db), personas: lista,
     resumen: { a_tiempo: lista.filter(x => x.hora && !x.retardo).length, retardos: lista.filter(x => x.retardo).length, sin_registro: lista.filter(x => !x.hora).length } };

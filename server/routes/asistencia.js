@@ -15,7 +15,7 @@ router.get('/estado', requireAuth, (req, res) => {
   // Mientras Roberto no marque la ubicación del taller, nadie queda bloqueado.
   const requiere = A.requiereRegistro(u.rol) && !!taller;
   const r = db.prepare(`SELECT hora_local, retardo FROM asistencia WHERE usuario_id = ? AND fecha = ?`).get(u.id, fecha);
-  res.json({ fecha, requiere, registrado: !!r, hora: r ? r.hora_local : null, retardo: r ? !!r.retardo : false,
+  res.json({ fecha, requiere, registrado: !!r, hora: r ? r.hora_local : null, retardo: r ? !!r.retardo : false, racha: r ? A.racha(db, u.id, fecha) : 0,
     taller_configurado: !!taller, hora_entrada: A.HORA_ENTRADA });
 });
 

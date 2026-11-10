@@ -4,7 +4,7 @@ const db = require('./db');
 const TEMP_PASSWORD = 'ServicioCristian2026!';
 
 function seed(){
-  const count = db.prepare('SELECT COUNT(*) n FROM usuarios').get().n;
+  const count = db.prepare("SELECT COUNT(*) n FROM usuarios WHERE rol != 'tecnico'").get().n; // 9-nov-2026: el personal de patio se da de alta en db.js; no cuenta como "ya hay usuarios"
   if(count > 0){ console.log('Ya existen usuarios; se omite el seed de usuarios.'); }
   else {
     const hash = bcrypt.hashSync(TEMP_PASSWORD, 10);

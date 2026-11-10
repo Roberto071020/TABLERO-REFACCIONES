@@ -1510,7 +1510,59 @@ CREATE TABLE IF NOT EXISTS asistencia (
 CREATE INDEX IF NOT EXISTS idx_asistencia_fecha ON asistencia(fecha);
 `);
 
+// 9-nov-2026 (Roberto): personal de patio con usuario propio. Por ahora SOLO registran su entrada (rol 'tecnico');
+// después Beto podrá asignarles unidades. Se agrega el rol a la tabla (mismo patrón de recreación que los roles
+// anteriores) y la columna "puesto" (Pintor, Hojalatero, Mecánico).
+try{
+  const sqlU = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='usuarios'").get();
+  if(sqlU && !sqlU.sql.includes("'tecnico'")){
+    const cols = db.prepare(`SELECT name FROM pragma_table_info('usuarios')`).all().map(c => c.name);
+    const extra = cols.filter(c => !['id','nombre','email','password_hash','rol','activo','creado_en'].includes(c));
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`
+      CREATE TABLE usuarios_new_t (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'operativo' CHECK(rol IN ('operativo','jefe','consulta','admin','atencion_cliente','orlando','vanessa','beto','tecnico')),
+        activo INTEGER NOT NULL DEFAULT 1,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now'))${extra.map(c => `, ${c}`).join('')}
+      );
+      INSERT INTO usuarios_new_t (id,nombre,email,password_hash,rol,activo,creado_en${extra.map(c => ','+c).join('')})
+        SELECT id,nombre,email,password_hash,rol,activo,creado_en${extra.map(c => ','+c).join('')} FROM usuarios;
+      DROP TABLE usuarios;
+      ALTER TABLE usuarios_new_t RENAME TO usuarios;
+    `);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+  if(!db.prepare(`SELECT 1 FROM pragma_table_info('usuarios') WHERE name='puesto'`).get()) db.exec(`ALTER TABLE usuarios ADD COLUMN puesto TEXT`);
+  // Solo se guarda la contraseña cifrada; Roberto tiene la lista con las contraseñas iniciales.
+  const PATIO = [
+  ['Marco Cobos', 'marco.cobos', 'Pintor', '$2b$10$HMAfMIKGyPEOMwzmI7B/pu92dLGBsJhtIlnvO2sJ5ouvNws/.R2HO'],
+  ['Marcelo López', 'marcelo.lopez', 'Hojalatero', '$2b$10$zdVrVIJXJPpm5kPGcRAm1OPrrhhGes.Y3X3hVfirNMXAfFpF25aNG'],
+  ['Jaime Pacheco', 'jaime.pacheco', 'Hojalatero', '$2b$10$wdyv2S.HzmDkfKK4iKKltOWUhlT0BsqIvhdqc/Hb01T32Wat8zmYu'],
+  ['Pedro Aguirre', 'pedro.aguirre', 'Hojalatero', '$2b$10$I1DIF4REmcVSA8Bm4T418.RSxWmlvm7sGaLTtoEQTiC.MM0Wg.YwG'],
+  ['Adrián Rivera', 'adrian.rivera', 'Pintor', '$2b$10$NsZPY7M.RWjZYgyS7VuH4u6Qaj4ukel/SGPD3dXbYFJBuL5kTKnYC'],
+  ['Ángel Cobos', 'angel.cobos', 'Pintor', '$2b$10$aNSA7g9t.KDAKATHGRfxD.IlqAQKzdH4ZL4v/U3cCp7S1V2VZDPkm'],
+  ['Vicente Bernabé', 'vicente.bernabe', 'Hojalatero', '$2b$10$WXaHBdoZ8G2uQWUNFw5sSu1VyxlzNBfUHA14aw4Of3rYCble0kwmm'],
+  ['José López', 'jose.lopez', 'Hojalatero', '$2b$10$xTlXBT64QHf13TukcDLIXetA7UIcpxrA6NEqj0goeEzcxua1UPRHS'],
+  ['Gerardo Cazares', 'gerardo.cazares', 'Pintor', '$2b$10$IKo2sV3h4mO2FpgN.lXLa.HTd3sJNH6H1zUKwXZNr6QlPXPvsHDNy'],
+  ['Fidel Aquino', 'fidel.aquino', 'Hojalatero', '$2b$10$NDLz/xdx67L6Syn8XdXTweKUpt0Wjqo9GvEKGyQaKCT7isbqXOXVe'],
+  ['Ramiro Ferman', 'ramiro.ferman', 'Pintor', '$2b$10$EBHz7ilPvMxgtkyLc9sPUeahifi7OTMsp33Zewkvkj4zkpE7i2BHa'],
+  ['Jesús Palomares', 'jesus.palomares', 'Mecánico', '$2b$10$Q.YIBPQpquTpGDeqROgiA.rW4ec9RVfvDxl147T0A70uCqIerKHqS'],
+  ['Adrián Beiza', 'adrian.beiza', 'Auxiliar de refacciones', '$2b$10$thwvnpEkNTBKurV.xzN1ue5HbvBhK2tRw8d3KkhyVZtOMAXZoj.QO']
+  ];
+  for(const [nombre, usuario, puesto, hash] of PATIO){
+    if(db.prepare('SELECT 1 FROM usuarios WHERE email = ?').get(usuario)) continue;
+    const id = db.prepare(`INSERT INTO usuarios (nombre, email, password_hash, rol, puesto) VALUES (?,?,?,'tecnico',?)`).run(nombre, usuario, hash, puesto).lastInsertRowid;
+    db.prepare(`INSERT INTO auditoria (entidad_tipo, entidad_id, accion, usuario_nombre) VALUES ('usuario', ?, 'alta', 'sistema')`).run(id);
+  }
+}catch(e){ console.error('No se pudo dar de alta al personal de patio:', e.message); }
+
+// 10-nov-2026 (Roberto): motivo de "Detenido" y desde cuándo, para avisar a quien le toca destrabar la unidad.
+for(const [col, tipo] of [['detenido_motivo','TEXT'], ['detenido_nota','TEXT'], ['detenido_desde','TEXT']]){
+  if(!db.prepare(`SELECT 1 FROM pragma_table_info('siniestros') WHERE name=?`).get(col)) db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${tipo}`);
+}
+
 module.exports = db;
-
-
-

@@ -34,6 +34,10 @@ function calcularCorteTarde(db, ahora = new Date()){
   const desde = inicioDiaUTC(hoy);
   const personas = [];
 
+  const detenidas = seguro(() => require('./detenidas').listarDetenidas(db), []);
+  const det = para => detenidas.filter(d => d.para === para);
+  const renglonDet = (para, texto) => { const l = det(para); return l.length ? `${l.length} ${l.length === 1 ? 'detenida' : 'detenidas'} ${texto} (${l.map(d => String(d.vehiculo || d.numero).split(' ').slice(0, 2).join(' ') + ' ' + (d.dias === 1 ? '1 día' : d.dias + ' días')).slice(0, MAX_NOMBRES).join('; ')}${l.length > MAX_NOMBRES ? '…' : ''})` : null; };
+
   // ---- Beto (producción y calidad) ----
   {
     const panorama = seguro(() => calcularPanoramaBeto(db), []);
@@ -47,6 +51,7 @@ function calcularCorteTarde(db, ahora = new Date()){
       renglon(calidad.length, calidad.length === 1 ? 'terminada sin revisión de calidad' : 'terminadas sin revisión de calidad', calidad),
       renglon(listas.length, listas.length === 1 ? 'lista para iniciar y sin arrancar' : 'listas para iniciar y sin arrancar', listas),
       renglon(sinFecha.length, 'sin fecha de entrega', sinFecha),
+      renglonDet('beto', 'sin motivo registrado'),
     ].filter(Boolean) });
   }
 
@@ -77,6 +82,7 @@ function calcularCorteTarde(db, ahora = new Date()){
       r.push(renglon(d.correos.length, d.correos.length === 1 ? 'correo a proveedor sin aprobar' : 'correos a proveedores sin aprobar'));
       r.push(renglon(d.mal.length, d.mal.length === 1 ? 'pieza mal surtida sin resolver' : 'piezas mal surtidas sin resolver'));
     }
+    r.unshift(renglonDet('daniela', 'esperando pieza'));
     personas.push({ nombre:'Daniela', renglones: r.filter(Boolean) });
   }
 
@@ -92,6 +98,7 @@ function calcularCorteTarde(db, ahora = new Date()){
       r.push(renglon(o.captura.length, o.captura.length === 1 ? 'expediente sin terminar de enviar' : 'expedientes sin terminar de enviar', o.captura));
       r.push(renglon(o.complementos.length, o.complementos.length === 1 ? 'complemento sin documentar' : 'complementos sin documentar', o.complementos));
     }
+    r.unshift(renglonDet('orlando', 'por daño oculto'));
     personas.push({ nombre:'Orlando', renglones: r.filter(Boolean) });
   }
 
