@@ -89,3 +89,19 @@ test('EXT-EXP: EXPEDIENTE = SI registra el expediente completo (solo autorizadas
   const c2 = await post('/api/externo/unidades/validar', { texto: 'SINIESTRO\tEXPEDIENTE\nEXT-EXP-1\tSI' }, 'clave-de-prueba-larga-123456');
   assert.equal(c2.data.filas[0].accion, 'sin_cambios');
 });
+
+test('EXT-REAUT: NO AUTORIZADAS deja la unidad parcial y abre la reautorización de 24 h para Orlando (sin duplicar)', async () => {
+  process.env.ACTUALIZACION_TOKEN = 'clave-de-prueba-larga-123456';
+  db.prepare(`INSERT INTO siniestros (numero, aseguradora, vehiculo, estado_autorizacion) VALUES ('EXT-RA-1', 'GNP', 'CX-5', 'en_autorizacion')`).run();
+  const texto = 'SINIESTRO\tNO AUTORIZADAS\nEXT-RA-1\tMoldura puerta del. der.; Masa balero del. der.';
+  const c = await post('/api/externo/unidades/confirmar', { texto }, 'clave-de-prueba-larga-123456');
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  const s = db.prepare(`SELECT * FROM siniestros WHERE numero='EXT-RA-1'`).get();
+  assert.equal(s.estado_autorizacion, 'parcial');
+  const comp = db.prepare(`SELECT * FROM complementos WHERE siniestro_id=? AND tipo='no_autorizado_inicial'`).all(s.id);
+  assert.equal(comp.length, 1); assert.match(comp[0].pieza_operacion, /Masa balero/); assert.ok(comp[0].fecha_limite);
+  const o = require('../server/inicioOrlando').calcularInicioOrlando(db);
+  assert.ok(o.reautorizar.some(x => x.siniestro_id === s.id));
+  const v = await post('/api/externo/unidades/validar', { texto }, 'clave-de-prueba-larga-123456');
+  assert.equal(v.data.filas[0].accion, 'sin_cambios');
+});

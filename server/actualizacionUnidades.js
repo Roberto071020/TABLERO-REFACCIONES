@@ -19,6 +19,7 @@ const ENCABEZADOS = {
   'fecha entrega':'fecha_entrega', 'fecha de entrega':'fecha_entrega', 'fecha promesa':'fecha_entrega', 'fecha promesa de entrega':'fecha_entrega',
   'etapa':'etapa', 'etapa actual':'etapa',
   'archivar':'archivar', 'archivada':'archivar', 'archivado':'archivar',
+  'no autorizadas':'no_autorizadas', 'piezas no autorizadas':'no_autorizadas', 'componentes no autorizados':'no_autorizadas', 'no autorizado':'no_autorizadas', // 11-nov-2026
   'expediente':'expediente', 'expediente enviado':'expediente', 'expediente completo':'expediente', 'expediente completo enviado':'expediente', // 11-nov-2026 // 11-nov-2026: SI = archivar (p. ej. pérdida total)
   'revision':'revision', 'estado revision':'revision', 'pendiente':'revision',
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
@@ -200,10 +201,17 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
           if(!(actual && actual.autorizacion_fecha_respuesta)) nuevo.autorizacion_fecha_respuesta = hoy;
           if(!(actual && actual.autorizador)) nuevo.autorizador = 'Actualización masiva';
         }
+      } else if(/^parc/i.test(limpiar(f.autorizada))){
+        // 11-nov-2026: autorización PARCIAL (la aseguradora no autorizó algunas piezas).
+        if(estadoActual !== 'parcial'){
+          nuevo.estado_autorizacion = 'parcial';
+          if(!(actual && actual.autorizacion_fecha_respuesta)) nuevo.autorizacion_fecha_respuesta = hoy;
+          if(!(actual && actual.autorizador)) nuevo.autorizador = 'Actualización masiva';
+        }
       } else if(v === 'no'){
         if(['autorizada','parcial'].includes(estadoActual)) r.avisos.push('En el tablero ya está autorizada; no se cambia a "no". Corrígelo en la ficha si es un error.');
         else if(!estadoActual) nuevo.estado_autorizacion = 'en_autorizacion';
-      } else r.errores.push(`"Autorizada" debe ser SI o NO (llegó "${f.autorizada}").`);
+      } else r.errores.push(`"Autorizada" debe ser SI, NO o PARCIAL (llegó "${f.autorizada}").`);
     }
     for(const [col, campo, etiqueta] of [['fecha_entrega','fecha_entrega_prevista','Fecha de entrega'], ['cita','cita_fecha','Cita de reingreso'], ['entregada','fecha_entrega_real','Fecha entregada']]){
       if(!f[col]) continue;
@@ -268,7 +276,24 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
       if(String(antes == null ? '' : antes) === String(valor == null ? '' : valor)) continue;
       r.cambios.push({ campo, etiqueta: ETIQUETA_CAMPO[campo] || campo, antes: mostrar(campo, antes), despues: mostrar(campo, valor), valor });
     }
-    if(r.accion === 'actualizar' && !r.cambios.length) r.accion = 'sin_cambios';
+    // 11-nov-2026 (Roberto, "componentes no autorizados"): NO AUTORIZADAS = lista de piezas que la aseguradora no autorizó.
+    // Deja la autorización como PARCIAL y abre la solicitud de reautorización: Orlando tiene 24 h para las fotos editadas.
+    if(f.no_autorizadas && String(f.no_autorizadas).trim() && actual){
+      const lista = String(f.no_autorizadas).trim();
+      const est = nuevo.estado_autorizacion || actual.estado_autorizacion;
+      if(est !== 'parcial' && est !== 'autorizada'){
+        nuevo.estado_autorizacion = 'parcial';
+        if(!actual.autorizacion_fecha_respuesta) nuevo.autorizacion_fecha_respuesta = hoy;
+        if(!actual.autorizador) nuevo.autorizador = 'Actualización masiva';
+        for(const campo of ['estado_autorizacion', 'autorizacion_fecha_respuesta', 'autorizador']) if(nuevo[campo] !== undefined && !r.cambios.some(c => c.campo === campo))
+          r.cambios.push({ campo, etiqueta: ETIQUETA_CAMPO[campo] || campo, antes: mostrar(campo, actual[campo]), despues: mostrar(campo, nuevo[campo]), valor: nuevo[campo] });
+      }
+      const ya = db.prepare(`SELECT 1 FROM complementos WHERE siniestro_id=? AND tipo='no_autorizado_inicial' AND decision='pendiente' AND pieza_operacion=?`).get(actual.id, lista);
+      if(ya) r.avisos.push('La solicitud de reautorización de esas piezas ya existe.');
+      else { r._reautorizar = lista; if(r.accion === 'sin_cambios' || !r.cambios.length) r.accion = 'actualizar';
+        r.avisos.push(`Reautorización: Orlando tiene 24 h para mandar fotos editadas de: ${lista}.`); }
+    } else if(f.no_autorizadas && String(f.no_autorizadas).trim() && !actual) r.errores.push('La unidad no existe en el tablero.');
+    if(r.accion === 'actualizar' && !r.cambios.length && !r._reautorizar) r.accion = 'sin_cambios';
     r._actualId = actual ? actual.id : null;
     return r;
   });
@@ -330,6 +355,7 @@ function aplicar(db, texto, usuario, { archivarFaltantes = false } = {}){
           registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:id, accion:'actualizacion_masiva', campo:c.campo,
             valor_anterior: c.antes === '—' ? null : c.antes, valor_nuevo: c.valor, usuario });
         }
+        if(r._reautorizar) crearReautorizacion(db, id, r._reautorizar, usuario);
         if(cambios.some(c => c.campo === 'expediente_completo_enviado_en')){
           registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:id, accion:'expediente_completo_enviado', usuario });
           db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
@@ -355,6 +381,19 @@ function aplicar(db, texto, usuario, { archivarFaltantes = false } = {}){
     throw e;
   }
   return { ...a, aplicadas: aplicables.length, archivadas: lote ? a.archivar.length : 0, lote };
+}
+
+// Misma solicitud que crea Roberto desde "Llegó la respuesta → Parcial" (server/routes/complementos.js): plazo de 24 h.
+function crearReautorizacion(db, siniestroId, piezas, usuario){
+  const limite = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  const info = db.prepare(`INSERT INTO complementos (siniestro_id, causa, fecha, pieza_operacion, decision, estado, autor_id, tipo, fecha_limite)
+    VALUES (?, ?, ?, ?, 'pendiente', 'detectado', ?, 'no_autorizado_inicial', ?)`)
+    .run(siniestroId, 'Piezas no autorizadas por la aseguradora', new Date().toISOString().slice(0, 10), piezas, usuario && usuario.id ? usuario.id : null, limite);
+  registrarAuditoria(db, { entidad_tipo:'complemento', entidad_id: info.lastInsertRowid, accion:'alta', usuario, valor_nuevo:'Reautorización: ' + piezas });
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,'pendiente','automatica','reautorizacion_solicitada',?)`)
+    .run(siniestroId, 'aviso', `Piezas no autorizadas por la aseguradora: ${piezas}. Se necesitan fotos editadas señalando el daño antes de ${limite.slice(0,16).replace('T',' ')} para reautorizar (plazo de 24h).`,
+      limite.slice(0, 10), usuario && usuario.id ? usuario.id : null);
 }
 
 function asegurarTablaArchivado(db){
