@@ -18,6 +18,7 @@ const ENCABEZADOS = {
   'piezas a cambio':'piezas', 'piezas autorizadas a cambio':'piezas', 'no. piezas':'piezas', 'piezas':'piezas',
   'fecha entrega':'fecha_entrega', 'fecha de entrega':'fecha_entrega', 'fecha promesa':'fecha_entrega', 'fecha promesa de entrega':'fecha_entrega',
   'etapa':'etapa', 'etapa actual':'etapa',
+  'archivar':'archivar', 'archivada':'archivar', 'archivado':'archivar', // 11-nov-2026: SI = archivar (p. ej. pérdida total)
   'revision':'revision', 'estado revision':'revision', 'pendiente':'revision',
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
   'entregada':'entregada', 'fecha entregada':'entregada', 'fecha entregado':'entregada', 'entregado':'entregada'
@@ -244,7 +245,12 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
     }
 
     // Si la unidad viene en la lista pero estaba archivada, se reactiva (sigue en proceso).
-    if(actual && actual.archivado){ nuevo.archivado = 0; nuevo.archivado_en = null; r.avisos.push('Estaba archivada: se reactiva.'); }
+    // 11-nov-2026 (Roberto: "archívalo"): ARCHIVAR = SI saca la unidad de las listas (pérdida total, cancelada…). Se puede reactivar.
+    const archivarla = f.archivar && /^s/i.test(limpiar(f.archivar));
+    if(archivarla){
+      if(!actual) r.errores.push('No se puede archivar una unidad que no existe en el tablero.');
+      else if(!actual.archivado){ nuevo.archivado = 1; nuevo.archivado_en = new Date().toISOString().replace('T', ' ').slice(0, 19); r.avisos.push('Se archiva.'); }
+    } else if(actual && actual.archivado){ nuevo.archivado = 0; nuevo.archivado_en = null; r.avisos.push('Estaba archivada: se reactiva.'); }
     if(r.errores.length){ r.accion = 'error'; return r; }
     for(const [campo, valor] of Object.entries(nuevo)){
       const antes = actual ? actual[campo] : null;

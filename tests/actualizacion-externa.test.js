@@ -64,3 +64,13 @@ test('EXT-3: REVISION = PENDIENTE manda la unidad a Orlando; POR VALUAR, a la li
   assert.ok(b.some(x => x.id === u2.id), 'POR VALUAR: aparece en la lista de Valuación de Roberto');
   assert.ok(!b.some(x => x.id === u1.id));
 });
+
+test('EXT-ARCH: ARCHIVAR = SI archiva la unidad (y se puede reactivar después)', async () => {
+  process.env.ACTUALIZACION_TOKEN = 'clave-de-prueba-larga-123456';
+  db.prepare(`INSERT INTO siniestros (numero, aseguradora, vehiculo) VALUES ('EXT-PT-1', 'GNP', 'Spark')`).run();
+  const c = await post('/api/externo/unidades/confirmar', { texto: 'SINIESTRO\tARCHIVAR\nEXT-PT-1\tSI' }, 'clave-de-prueba-larga-123456');
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  assert.equal(db.prepare(`SELECT archivado FROM siniestros WHERE numero='EXT-PT-1'`).get().archivado, 1);
+  const n = await post('/api/externo/unidades/validar', { texto: 'SINIESTRO\tARCHIVAR\nNO-EXISTE-9\tSI' }, 'clave-de-prueba-larga-123456');
+  assert.equal(n.data.filas[0].accion, 'error');
+});
