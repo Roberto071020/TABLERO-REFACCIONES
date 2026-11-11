@@ -44,12 +44,16 @@ function calcularCorteTarde(db, ahora = new Date()){
     const movidaHoy = id => !!db.prepare(`SELECT 1 FROM auditoria WHERE entidad_tipo='siniestro' AND entidad_id=? AND campo='estado_produccion' AND fecha >= ? LIMIT 1`).get(id, desde);
     const vencidas = panorama.filter(u => u.fecha_entrega_prevista && u.fecha_entrega_prevista < hoy && !u.en_transito && !movidaHoy(u.id));
     const listas = panorama.filter(u => (u.prioridad === 3 || u.prioridad === 3.5) && (!u.estado_produccion || u.estado_produccion === 'programado'));
-    const sinFecha = panorama.filter(u => !u.fecha_entrega_prevista && !u.en_transito && !u.reingreso_citado && (u.refacciones_completas || u.piezas_suficientes));
+    // 11-nov-2026 (Roberto): las unidades de GNP en piso cuentan para el indicador desde que se manda el expediente,
+    // tengan o no sus piezas: TODAS necesitan fecha de entrega ese mismo día.
+    const gnpPisoSinFecha = panorama.filter(u => /^gnp/i.test(String(u.aseguradora || '')) && !u.fecha_entrega_prevista && !u.en_transito && !u.reingreso_citado);
+    const sinFecha = panorama.filter(u => !gnpPisoSinFecha.includes(u) && !u.fecha_entrega_prevista && !u.en_transito && !u.reingreso_citado && (u.refacciones_completas || u.piezas_suficientes));
     const calidad = seguro(() => unidadesPorRevisarCalidad(db, { minHoras: HORAS_CALIDAD }), []);
     personas.push({ nombre:'Beto', renglones: [
       renglon(vencidas.length, vencidas.length === 1 ? 'vencida sin avance hoy' : 'vencidas sin avance hoy', vencidas),
       renglon(calidad.length, calidad.length === 1 ? 'terminada sin revisión de calidad' : 'terminadas sin revisión de calidad', calidad),
       renglon(listas.length, listas.length === 1 ? 'lista para iniciar y sin arrancar' : 'listas para iniciar y sin arrancar', listas),
+      renglon(gnpPisoSinFecha.length, 'GNP en piso sin fecha de entrega (cuentan para el indicador)', gnpPisoSinFecha),
       renglon(sinFecha.length, 'sin fecha de entrega', sinFecha),
       renglonDet('beto', 'sin motivo registrado'),
     ].filter(Boolean) });

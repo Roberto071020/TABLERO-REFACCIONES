@@ -48,3 +48,9 @@ test('CORTE-3: la ventanilla usa la misma clave del reporte de la mañana', asyn
   assert.equal(r.status, 200);
   assert.match(await r.text(), /CORTE DE LAS 3/);
 });
+
+test('CORTE-4: una unidad GNP en piso sin fecha de entrega le sale a Beto aunque espere piezas', () => {
+  crear('CT-GNP-1', { aseguradora:'GNP', vehiculo:'Nissan Altima 2017', estado_autorizacion:'autorizada', ubicacion:'Piso', requiere_refacciones:'si', aseguradora_ruta_refacciones:'autosurtido' });
+  const beto = calcularCorteTarde(db).personas.find(p => p.nombre === 'Beto');
+  assert.ok(beto.renglones.some(r => /GNP en piso sin fecha de entrega/.test(r) && /Nissan Altima/.test(r)), JSON.stringify(beto));
+});
