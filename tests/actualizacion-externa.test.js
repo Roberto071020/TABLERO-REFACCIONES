@@ -74,3 +74,18 @@ test('EXT-ARCH: ARCHIVAR = SI archiva la unidad (y se puede reactivar después)'
   const n = await post('/api/externo/unidades/validar', { texto: 'SINIESTRO\tARCHIVAR\nNO-EXISTE-9\tSI' }, 'clave-de-prueba-larga-123456');
   assert.equal(n.data.filas[0].accion, 'error');
 });
+
+test('EXT-EXP: EXPEDIENTE = SI registra el expediente completo (solo autorizadas) y avisa a Alejandra y Daniela', async () => {
+  process.env.ACTUALIZACION_TOKEN = 'clave-de-prueba-larga-123456';
+  db.prepare(`INSERT INTO siniestros (numero, aseguradora, vehiculo, estado_autorizacion) VALUES ('EXT-EXP-1', 'GNP', 'Sportage', 'en_autorizacion')`).run();
+  const v = await post('/api/externo/unidades/validar', { texto: 'SINIESTRO\tEXPEDIENTE\nEXT-EXP-1\tSI' }, 'clave-de-prueba-larga-123456');
+  assert.equal(v.data.filas[0].accion, 'error');
+  const c = await post('/api/externo/unidades/confirmar', { texto: 'SINIESTRO\tAUTORIZADA\tEXPEDIENTE\nEXT-EXP-1\tSI\tSI' }, 'clave-de-prueba-larga-123456');
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  const s = db.prepare(`SELECT * FROM siniestros WHERE numero='EXT-EXP-1'`).get();
+  assert.ok(s.expediente_completo_enviado_en);
+  assert.ok(db.prepare(`SELECT 1 FROM tareas WHERE siniestro_id=? AND disparador='expediente_completo_enviado'`).get(s.id));
+  // Una segunda vez no duplica nada.
+  const c2 = await post('/api/externo/unidades/validar', { texto: 'SINIESTRO\tEXPEDIENTE\nEXT-EXP-1\tSI' }, 'clave-de-prueba-larga-123456');
+  assert.equal(c2.data.filas[0].accion, 'sin_cambios');
+});

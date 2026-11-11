@@ -18,7 +18,8 @@ const ENCABEZADOS = {
   'piezas a cambio':'piezas', 'piezas autorizadas a cambio':'piezas', 'no. piezas':'piezas', 'piezas':'piezas',
   'fecha entrega':'fecha_entrega', 'fecha de entrega':'fecha_entrega', 'fecha promesa':'fecha_entrega', 'fecha promesa de entrega':'fecha_entrega',
   'etapa':'etapa', 'etapa actual':'etapa',
-  'archivar':'archivar', 'archivada':'archivar', 'archivado':'archivar', // 11-nov-2026: SI = archivar (p. ej. pérdida total)
+  'archivar':'archivar', 'archivada':'archivar', 'archivado':'archivar',
+  'expediente':'expediente', 'expediente enviado':'expediente', 'expediente completo':'expediente', 'expediente completo enviado':'expediente', // 11-nov-2026 // 11-nov-2026: SI = archivar (p. ej. pérdida total)
   'revision':'revision', 'estado revision':'revision', 'pendiente':'revision',
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
   'entregada':'entregada', 'fecha entregada':'entregada', 'fecha entregado':'entregada', 'entregado':'entregada'
@@ -245,6 +246,16 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
     }
 
     // Si la unidad viene en la lista pero estaba archivada, se reactiva (sigue en proceso).
+    // 11-nov-2026 (Roberto: "lo de enviar expediente completo, ¿lo puedes hacer tú?"): EXPEDIENTE = SI registra el envío
+    // del expediente completo (mismo efecto que el botón "Enviar expediente completo": avisa a Alejandra y Daniela).
+    if(f.expediente && /^s/i.test(limpiar(f.expediente))){
+      const est = nuevo.estado_autorizacion || (actual && actual.estado_autorizacion);
+      if(!['autorizada','parcial'].includes(est)) r.errores.push('Para registrar el expediente completo, la unidad debe estar autorizada.');
+      else if(!(actual && actual.expediente_completo_enviado_en)){
+        nuevo.expediente_completo_enviado_en = new Date().toISOString();
+        r.avisos.push('Expediente completo enviado: se avisa a Alejandra y Daniela.');
+      }
+    }
     // 11-nov-2026 (Roberto: "archívalo"): ARCHIVAR = SI saca la unidad de las listas (pérdida total, cancelada…). Se puede reactivar.
     const archivarla = f.archivar && /^s/i.test(limpiar(f.archivar));
     if(archivarla){
@@ -290,6 +301,7 @@ function mostrar(campo, v){
   if(v == null || v === '') return '—';
   if(campo === 'estado_produccion') return ETIQUETA_ETAPA[v] || v;
   if(campo === 'archivado') return Number(v) ? 'Sí' : 'No (activa)';
+  if(campo === 'expediente_completo_enviado_en') return 'Enviado ' + String(v).slice(0, 10);
   if(campo === 'requiere_refacciones') return v === 'si' ? 'Sí' : v === 'no' ? 'No' : 'Sin definir';
   if(campo === 'aseguradora_ruta_refacciones') return ({ autosurtido:'Autosurtido', inpart:'Inpart', pago_danos:'Pago de daños', pendiente_confirmar:'Por confirmar' })[v] || v;
   return String(v);
@@ -317,6 +329,13 @@ function aplicar(db, texto, usuario, { archivarFaltantes = false } = {}){
         for(const c of cambios){
           registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:id, accion:'actualizacion_masiva', campo:c.campo,
             valor_anterior: c.antes === '—' ? null : c.antes, valor_nuevo: c.valor, usuario });
+        }
+        if(cambios.some(c => c.campo === 'expediente_completo_enviado_en')){
+          registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:id, accion:'expediente_completo_enviado', usuario });
+          db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+            VALUES (?,?,?,?,'pendiente','automatica','expediente_completo_enviado',?)`)
+            .run(id, 'mensaje', 'Expediente completo: evaluación autorizada, orden de trabajo y proveedores ya asignados. Alejandra: informar al cliente y coordinar entrada a producción. Daniela: dar seguimiento a los pedidos en Impart.',
+              new Date().toISOString().slice(0, 10), usuario && usuario.id ? usuario.id : null);
         }
       }
     }
