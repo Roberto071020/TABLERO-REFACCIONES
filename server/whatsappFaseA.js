@@ -655,7 +655,7 @@ function vigenciaPlantillaPrincipal(db, siniestro, codigo){
     case '5.9': return etapa === '5.9';
     case '5.10': return etapa === '5.10';
     case '5.11': return etapa === '5.11';
-    case '5.12': return etapa === 'postventa' && siniestro.encuesta_estado !== 'respondida'; // ya hubo seguimiento -> deja de ser vigente.
+    case '5.12': return etapa === 'postventa' && siniestro.encuesta_estado !== 'respondida' && siniestro.encuesta_estado !== 'no_solicitar'; // 11-nov-2026: cliente GNP inconforme en la entrega -> sin recordatorio // ya hubo seguimiento -> deja de ser vigente.
     // Punto 2 (séptima revisión): fail-safe explícito. Un código que este módulo no reconoce NUNCA se
     // autoriza por defecto -- se bloquea de forma segura, igual que cualquier otro motivo de bloqueo.
     default: return false;

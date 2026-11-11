@@ -668,7 +668,7 @@ const NUEVAS_COLUMNAS_FASE_F = [
   ['finiquito_estado', 'TEXT'],         // 'pendiente' | 'firmado' | 'inconformidad_abierta'
   ['finiquito_fecha', 'TEXT'],
   ['finiquito_observacion', 'TEXT'],
-  ['encuesta_estado', 'TEXT'],          // 'pendiente' | 'enviada' | 'respondida'
+  ['encuesta_estado', 'TEXT'],          // 'pendiente' | 'enviada' | 'respondida' | 'no_solicitar' (11-nov-2026: GNP inconforme en la entrega, no se le pide)
   ['encuesta_calificacion', 'INTEGER'],
   ['encuesta_comentarios', 'TEXT']
 ];

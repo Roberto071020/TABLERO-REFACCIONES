@@ -17,6 +17,7 @@ const { unidadesPorRevisarCalidad, HORAS_APOYO } = require('./calidadPendiente')
 const LINEA_BASE_DESDE = process.env.LINEA_BASE_ROBERTO || '2026-11-09';
 const LIMITE_COMPLEMENTO = 1000; // mismo límite que server/routes/complementos.js (LIMITE_AUTORIZACION_SIN_PROPIETARIO)
 const HORAS_ALERTA_REAUTORIZACION = 6;
+const DIAS_INCONFORMES = 15; // 11-nov-2026: ver alerta 'inconformes'
 
 function hoyMX(){ return new Date(Date.now() - 6 * 3600000).toISOString().slice(0, 10); }
 function aMs(v){ if(!v) return NaN; const t = String(v); return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(t) ? t : t.replace(' ', 'T') + 'Z'); }
@@ -93,7 +94,14 @@ function calcularInicioRoberto(db, { alertas: conAlertas = true } = {}){
       .flatMap(g => g.piezas.map(z => ({ id: z.siniestro_id, numero: z.siniestro_numero, detalle: `${z.descripcion} · ${g.proveedor} · vencida hace ${z.dias_vencida} día(s)` }))); }catch(e){}
     let detenidas = [];
     try{ const D = require('./detenidas'); detenidas = D.listarDetenidas(db).map(d => ({ id: d.id, numero: d.numero, detalle: [d.vehiculo, D.textoDetalle(d)].filter(Boolean).join(' · ') })); }catch(e){}
+    // 11-nov-2026: clientes GNP que se fueron inconformes (Roberto: "es mejor sin respuesta a una mala calificación").
+    // Se muestran 15 días después de la entrega para que Roberto los atienda antes de que GNP los encueste.
+    const desde = new Date(Date.parse(hoy) - DIAS_INCONFORMES * 86400000).toISOString().slice(0, 10);
+    const inconformes = db.prepare(`SELECT id, numero, vehiculo, placas, cliente_nombre, cliente_telefono, encuesta_comentarios, fecha_entrega_real FROM siniestros
+      WHERE encuesta_estado = 'no_solicitar' AND fecha_entrega_real >= ? ORDER BY fecha_entrega_real DESC`).all(desde)
+      .map(s => ({ id: s.id, numero: s.numero, detalle: [s.vehiculo, s.cliente_nombre, s.cliente_telefono, 'entregada ' + s.fecha_entrega_real, s.encuesta_comentarios ? 'Motivo: ' + s.encuesta_comentarios : ''].filter(Boolean).join(' · ') }));
     alertas = [
+      { clave:'inconformes', titulo:'Clientes GNP inconformes en la entrega (no se les pidió la encuesta)', quien:'ti', items: inconformes },
       { clave:'detenidas', titulo:'Unidades detenidas', quien:'quien indica el motivo', items: detenidas },
       { clave:'vencidas', titulo:'Entregas vencidas', quien:'Beto y Alejandra', items: vencidas },
       { clave:'listas', titulo:'Listas para iniciar y sin tocar', quien:'Beto', items: listas },

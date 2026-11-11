@@ -984,7 +984,7 @@ let ALE_ENT = null;
 async function aleEntregar(id){
   try{
     const s = await api('GET', '/api/siniestros/' + id);
-    ALE_ENT = { id, s, d: { receptor: s.cliente_nombre || '', ine: '', deducible: s.deducible_aplica ? '' : 'no_aplica', km: '', gasolina: '', llaves: '', finiquito: '', encuesta: '' } };
+    ALE_ENT = { id, s, d: { receptor: s.cliente_nombre || '', ine: '', deducible: s.deducible_aplica ? '' : 'no_aplica', km: '', gasolina: '', llaves: '', finiquito: '', encuesta: '', correo: s.cliente_correo || '', motivo: '' } };
     aleEntregarPaso();
   }catch(e){}
 }
@@ -1004,7 +1004,9 @@ function aleEntregarPaso(){
     ${fila(s.deducible_aplica ? 5 : 4, 'Gasolina al entregar', `<div style="display:flex;gap:6px;flex-wrap:wrap;">${ALE_GASOLINA.map(g => opc('gasolina', g, g)).join(' ')}</div>`)}
     ${fila(s.deducible_aplica ? 6 : 5, '¿Se le entregaron las llaves?', `<div style="display:flex;gap:6px;">${opc('llaves','1','Sí')} ${opc('llaves','0','No')}</div>`)}
     ${fila(s.deducible_aplica ? 7 : 6, '¿Firmó el finiquito?', `<div style="display:flex;gap:6px;flex-wrap:wrap;">${opc('finiquito','firmado','Sí, firmó')} ${opc('finiquito','inconformidad_abierta','No, tiene una inconformidad')}</div>`)}
-    ${esGnp ? fila(s.deducible_aplica ? 8 : 7, 'Pídele que conteste la encuesta de GNP ahí mismo. ¿La contestó?', `<div style="display:flex;gap:6px;">${opc('encuesta','respondida','Sí')} ${opc('encuesta','enviada','No')}</div>`) : ''}
+    ${esGnp ? fila(s.deducible_aplica ? 8 : 7, '¿Se va conforme con la reparación y la atención?', `<div style="display:flex;gap:6px;flex-wrap:wrap;">${opc('encuesta','enviada','Sí, conforme')} ${opc('encuesta','no_solicitar','No, algo no le gustó')}</div>
+      ${d.encuesta === 'enviada' ? `<div class="subtle" style="margin:8px 0 4px;">Confirma su correo: ahí le llega la encuesta de GNP en 1 o 2 días. Pídele que la conteste y que revise también su correo no deseado.</div><input id="ale_ent_correo" type="email" placeholder="correo del cliente" value="${esc(d.correo)}">` : ''}
+      ${d.encuesta === 'no_solicitar' ? `<div class="subtle" style="margin:8px 0 4px;"><b>No le menciones la encuesta.</b> Trata de resolverlo antes de que se vaya; a Roberto le aparece en su inicio.</div><textarea id="ale_ent_motivo" placeholder="¿Qué no le gustó?">${esc(d.motivo)}</textarea>` : ''}`) : ''}
     <div class="field" id="ale_ent_obs_wrap" style="display:${d.finiquito === 'inconformidad_abierta' ? 'block' : 'none'}"><label>¿Cuál es la inconformidad?</label><textarea id="ale_ent_obs">${esc(d.obs || '')}</textarea></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleEntregarGuardar()">✅ Unidad entregada</button></div>`, true);
 }
@@ -1013,6 +1015,8 @@ function aleEntGuardarCampos(){
   if(g('ale_ent_receptor')) ALE_ENT.d.receptor = g('ale_ent_receptor').value.trim();
   if(g('ale_ent_km')) ALE_ENT.d.km = g('ale_ent_km').value.trim();
   if(g('ale_ent_obs')) ALE_ENT.d.obs = g('ale_ent_obs').value.trim();
+  if(g('ale_ent_correo')) ALE_ENT.d.correo = g('ale_ent_correo').value.trim();
+  if(g('ale_ent_motivo')) ALE_ENT.d.motivo = g('ale_ent_motivo').value.trim();
 }
 function aleEntSet(campo, valor){ aleEntGuardarCampos(); ALE_ENT.d[campo] = valor; aleEntregarPaso(); }
 async function aleEntregarGuardar(){
@@ -1026,7 +1030,11 @@ async function aleEntregarGuardar(){
   if(!d.gasolina) faltan.push('gasolina');
   if(d.llaves === '') faltan.push('llaves');
   if(!d.finiquito) faltan.push('finiquito');
-  if(esGnp && !d.encuesta) faltan.push('encuesta');
+  // 11-nov-2026: la encuesta de GNP llega días después; en la entrega solo se ve si se va conforme (Roberto: "es mejor
+  // sin respuesta a una mala calificación"). Conforme -> se le pide; inconforme -> no se le menciona y se anota el motivo.
+  if(esGnp && !d.encuesta) faltan.push('si se va conforme');
+  if(esGnp && d.encuesta === 'enviada' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.correo || '')) faltan.push('correo del cliente');
+  if(esGnp && d.encuesta === 'no_solicitar' && !d.motivo) faltan.push('qué no le gustó');
   if(faltan.length){ toast('Falta: ' + faltan.join(', ') + '.', 'error'); return; }
   if(d.ine !== 'si'){ toast('Sin INE no se entrega la unidad. Pídele su identificación.', 'error'); return; }
   if(d.deducible === 'pendiente'){ toast('El deducible no está pagado: no se entrega la unidad hasta que lo pague.', 'error'); return; }
@@ -1037,7 +1045,8 @@ async function aleEntregarGuardar(){
       entrega_receptor: d.receptor, entrega_identificacion: 'INE', entrega_kilometraje: d.km, entrega_combustible: d.gasolina,
       entrega_llaves_entregadas: Number(d.llaves), estado_entrega: d.finiquito === 'firmado' ? 'entregado' : 'entregado_con_observacion',
       ...(d.deducible === 'pagado' ? { deducible_pagado_confirmado_en: hoy } : {}),
-      ...(esGnp ? { entrega_encuesta_gnp_solicitada: 1, encuesta_estado: d.encuesta } : {})
+      ...(esGnp ? { entrega_encuesta_gnp_solicitada: d.encuesta === 'enviada' ? 1 : 0, encuesta_estado: d.encuesta,
+        ...(d.encuesta === 'enviada' ? { cliente_correo: d.correo } : { encuesta_comentarios: 'Inconforme en la entrega: ' + d.motivo }) } : {})
     });
     await api('PATCH', `/api/siniestros/${id}/entrega`, { fecha_entrega_real: hoy });
     // El finiquito firmado exige la entrega ya registrada, por eso va al final.
@@ -2697,7 +2706,7 @@ async function viewSiniestro(id){
     const LABEL_RES = { pendiente:'Pendiente', aprobado:'Aprobado', rechazado:'Rechazado' };
     const LABEL_ENTREGA = { listo:'Listo', cita_confirmada:'Cita confirmada', entregado_con_observacion:'Entregado con observación', entregado:'Entregado' };
     const LABEL_FINIQUITO = { pendiente:'Pendiente', firmado:'Firmado', inconformidad_abierta:'Inconformidad abierta' };
-    const LABEL_ENCUESTA = { pendiente:'Pendiente', enviada:'Enviada', respondida:'Respondida' };
+    const LABEL_ENCUESTA = { pendiente:'Pendiente', enviada:'Enviada', respondida:'Respondida', no_solicitar:'No se pidió (inconforme en la entrega)' };
     body = `
     <h3>Control de calidad</h3>
     <table class="kv"><tbody>
@@ -4162,6 +4171,7 @@ function abrirFormFiniquito(siniestroId){
           <option value="" ${!s.encuesta_estado?'selected':''}>Pendiente</option>
           <option value="enviada" ${s.encuesta_estado==='enviada'?'selected':''}>Enviada</option>
           <option value="respondida" ${s.encuesta_estado==='respondida'?'selected':''}>Respondida</option>
+          <option value="no_solicitar" ${s.encuesta_estado==='no_solicitar'?'selected':''}>No pedirla (cliente inconforme)</option>
         </select></div>
         <div class="field"><label>Calificación (1-5)</label><input id="ffin_calificacion" type="number" min="1" max="5" value="${s.encuesta_calificacion!=null?s.encuesta_calificacion:''}"></div>
       </div>

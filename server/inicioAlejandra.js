@@ -43,7 +43,7 @@ function codigoAvisoActual(db, s, hoy){
   const etapa = whatsappFaseA.etapaCicloPrincipalActual(db, s);
   if(!etapa) return null;
   if(etapa === 'postventa'){
-    if(s.encuesta_estado === 'respondida') return null;
+    if(s.encuesta_estado === 'respondida' || s.encuesta_estado === 'no_solicitar') return null; // 11-nov-2026: inconforme -> nada de encuesta
     const entrega = fecha10(s.fecha_entrega_real);
     const dias = Math.floor((Date.parse(hoy) - Date.parse(entrega)) / 86400000);
     return (dias >= 2 && dias <= LIMITE_POSTVENTA_DIAS) ? '5.12' : null;
@@ -77,9 +77,18 @@ function ultimoAvisoUTC(db, s){
   return candidatos.length ? candidatos[candidatos.length - 1] : null;
 }
 
+// 11-nov-2026 (encuesta GNP en la entrega). Roberto: "si el cliente quedó en desacuerdo con algo es mejor sin respuesta
+// a una mala calificación" y "No sería mejor pedirlo al momento de la entrega aquí en oficina?". En la entrega se
+// registra si el cliente GNP se va conforme: conforme -> encuesta_estado 'enviada' (se le pidió y se le recuerda a los
+// 2-7 días con el aviso 5.12); inconforme -> 'no_solicitar' (nunca se le pide ni se le recuerda; le aparece a Roberto).
+const RECORDATORIO_ENCUESTA_GNP = ' Además, GNP te envió a tu correo una breve encuesta sobre nuestro servicio (revisa también tu correo no deseado). Si ya la contestaste, muchas gracias.';
+function recordarEncuestaGnp(s, codigo){
+  return codigo === '5.12' && String(s.aseguradora || '').toUpperCase() === 'GNP' && s.encuesta_estado === 'enviada';
+}
 function datosMensaje(s, codigo){
   const tel = whatsappFaseA.normalizarTelefonoMX(s.cliente_telefono);
-  const texto = codigo ? bandeja.renderTexto(codigo, { nombre: s.cliente_nombre || '', vehiculo: s.vehiculo || '' }) : null;
+  let texto = codigo ? bandeja.renderTexto(codigo, { nombre: s.cliente_nombre || '', vehiculo: s.vehiculo || '' }) : null;
+  if(texto && recordarEncuestaGnp(s, codigo)) texto += RECORDATORIO_ENCUESTA_GNP;
   const plantilla = codigo && whatsappFaseA.PLANTILLAS[codigo];
   return {
     codigo, plantilla_nombre: plantilla ? plantilla.nombre : null,
@@ -158,7 +167,7 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
   const sinLlegar = codigo === '5.1' && vacio(s.fecha_admision); // la bienvenida va cuando la unidad ya llegó.
   if(codigo && !sinLlegar && !yaSeAviso(db, s.id, codigo)){
     const plantilla = whatsappFaseA.PLANTILLAS[codigo];
-    return { ...base, tipo:'aviso', orden:4, color:'ambar', motivo: QUE_AVISAR[codigo] || ('Avísale: ' + (plantilla ? plantilla.nombre.toLowerCase() : 'nuevo avance')), ...datosMensaje(s, codigo) };
+    return { ...base, tipo:'aviso', orden:4, color:'ambar', motivo: recordarEncuestaGnp(s, codigo) ? 'Pregúntale cómo le fue y recuérdale la encuesta de GNP' : QUE_AVISAR[codigo] || ('Avísale: ' + (plantilla ? plantilla.nombre.toLowerCase() : 'nuevo avance')), ...datosMensaje(s, codigo) };
   }
 
   // 5) SEGUIMIENTO (+3 días sin aviso).
