@@ -20,6 +20,7 @@ const ENCABEZADOS = {
   'etapa':'etapa', 'etapa actual':'etapa',
   'archivar':'archivar', 'archivada':'archivar', 'archivado':'archivar',
   'no autorizadas':'no_autorizadas', 'piezas no autorizadas':'no_autorizadas', 'componentes no autorizados':'no_autorizadas', 'no autorizado':'no_autorizadas', // 11-nov-2026
+  'perdida total':'perdida_total', 'pt':'perdida_total', // 11-nov-2026: SI = pérdida total (queda archivada como historial)
   'expediente':'expediente', 'expediente enviado':'expediente', 'expediente completo':'expediente', 'expediente completo enviado':'expediente', // 11-nov-2026 // 11-nov-2026: SI = archivar (p. ej. pérdida total)
   'revision':'revision', 'estado revision':'revision', 'pendiente':'revision',
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
@@ -266,7 +267,13 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
     }
     // 11-nov-2026 (Roberto: "archívalo"): ARCHIVAR = SI saca la unidad de las listas (pérdida total, cancelada…). Se puede reactivar.
     const archivarla = f.archivar && /^s/i.test(limpiar(f.archivar));
-    if(archivarla){
+    const esPT = f.perdida_total && /^s/i.test(limpiar(f.perdida_total));
+    if(esPT){
+      // 11-nov-2026 (Roberto): las pérdidas totales quedan como historial: estatus "Pérdida total" y archivadas.
+      if(!(actual && actual.estatus_general === 'Pérdida total')) nuevo.estatus_general = 'Pérdida total';
+      if(!(actual && actual.archivado)){ nuevo.archivado = 1; nuevo.archivado_en = new Date().toISOString().replace('T', ' ').slice(0, 19); }
+      r.avisos.push('Pérdida total: queda archivada como historial.');
+    } else if(archivarla){
       if(!actual) r.errores.push('No se puede archivar una unidad que no existe en el tablero.');
       else if(!actual.archivado){ nuevo.archivado = 1; nuevo.archivado_en = new Date().toISOString().replace('T', ' ').slice(0, 19); r.avisos.push('Se archiva.'); }
     } else if(actual && actual.archivado){ nuevo.archivado = 0; nuevo.archivado_en = null; r.avisos.push('Estaba archivada: se reactiva.'); }
@@ -326,6 +333,7 @@ function mostrar(campo, v){
   if(v == null || v === '') return '—';
   if(campo === 'estado_produccion') return ETIQUETA_ETAPA[v] || v;
   if(campo === 'archivado') return Number(v) ? 'Sí' : 'No (activa)';
+  if(campo === 'estatus_general') return String(v);
   if(campo === 'expediente_completo_enviado_en') return 'Enviado ' + String(v).slice(0, 10);
   if(campo === 'requiere_refacciones') return v === 'si' ? 'Sí' : v === 'no' ? 'No' : 'Sin definir';
   if(campo === 'aseguradora_ruta_refacciones') return ({ autosurtido:'Autosurtido', inpart:'Inpart', pago_danos:'Pago de daños', pendiente_confirmar:'Por confirmar' })[v] || v;

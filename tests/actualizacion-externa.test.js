@@ -105,3 +105,12 @@ test('EXT-REAUT: NO AUTORIZADAS deja la unidad parcial y abre la reautorización
   const v = await post('/api/externo/unidades/validar', { texto }, 'clave-de-prueba-larga-123456');
   assert.equal(v.data.filas[0].accion, 'sin_cambios');
 });
+
+test('EXT-PT: PERDIDA TOTAL = SI da de alta (o marca) la unidad como pérdida total, archivada como historial', async () => {
+  process.env.ACTUALIZACION_TOKEN = 'clave-de-prueba-larga-123456';
+  const texto = 'ASEGURADORA\tSINIESTRO\tVEHICULO\tPLACAS\tPERDIDA TOTAL\nInbursa\tEXT-PT-9\tVolkswagen Golf 2016 Negro\tYJP586C\tSI';
+  const c = await post('/api/externo/unidades/confirmar', { texto }, 'clave-de-prueba-larga-123456');
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  const s = db.prepare(`SELECT * FROM siniestros WHERE numero='EXT-PT-9'`).get();
+  assert.equal(s.estatus_general, 'Pérdida total'); assert.equal(s.archivado, 1); assert.equal(s.placas, 'YJP586C');
+});
