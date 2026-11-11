@@ -1258,6 +1258,61 @@ function danBuscarPiezas(){
   }, 250);
 }
 
+/* ===================== AVISOS PUSH EN EL CELULAR (11-nov-2026) ===================== */
+// Roberto (11-nov-2026): "Me pregunta Orlando como puede activar notificaciones push en su teléfono para que al
+// tener algo por hacer en automático le avise". Caja en su inicio: activar, probar o ver por qué no se puede.
+// El servidor decide para quién hay avisos (/api/push/estado); ver server/push.js.
+function claveAplicacion(b64){
+  const p = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + p).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+function cajaAvisos(html){ return `<div class="card" style="padding:10px 12px;margin:8px 0 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${html}</div>`; }
+async function pintarAvisosPush(){
+  const cont = document.getElementById('avisosPush');
+  if(!cont) return;
+  let est;
+  try { est = await api('GET', '/api/push/estado', null, { silent:true }); } catch(e){ return; }
+  if(!est || !est.disponible){ cont.innerHTML = ''; return; }
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const instalada = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if(!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)){
+    cont.innerHTML = cajaAvisos(ios && !instalada
+      ? '<span style="flex:1 1 220px;">🔔 Para recibir avisos en iPhone: en Safari toca <b>Compartir</b> → <b>Agregar a inicio</b>, abre SC Control desde ese ícono y aquí te aparecerá el botón.</span>'
+      : '<span class="subtle" style="flex:1 1 220px;">🔔 Este navegador no permite avisos. Abre el tablero en Chrome (Android) o Safari (iPhone).</span>');
+    return;
+  }
+  if(Notification.permission === 'denied'){
+    cont.innerHTML = cajaAvisos('<span style="flex:1 1 220px;">🔕 Bloqueaste los avisos. Actívalos en los ajustes del navegador para este sitio (Notificaciones → Permitir) y vuelve a entrar.</span>');
+    return;
+  }
+  let sub = null;
+  try { const reg = await navigator.serviceWorker.ready; sub = await reg.pushManager.getSubscription(); } catch(e){}
+  if(sub && Notification.permission === 'granted'){
+    cont.innerHTML = cajaAvisos('<span class="badge verde">🔔 Avisos activados en este celular</span><button class="btn small secondary" onclick="probarAvisosPush()">Probar</button>');
+    // Por si se borró en el servidor (o cambió de usuario): se vuelve a registrar sin preguntar.
+    api('POST', '/api/push/suscribir', { subscription: sub.toJSON() }, { silent:true }).catch(() => {});
+    return;
+  }
+  cont.innerHTML = cajaAvisos(`<span style="flex:1 1 220px;">Recibe un aviso en este celular cuando tengas algo por hacer.</span><button class="btn small" onclick="activarAvisosPush('${esc(est.clave_publica)}')">🔔 Activar avisos</button>`);
+}
+async function activarAvisosPush(clave){
+  try{
+    const permiso = await Notification.requestPermission();
+    if(permiso !== 'granted'){ toast('No se dieron permisos de avisos.', 'warn'); return pintarAvisosPush(); }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: claveAplicacion(clave) });
+    await api('POST', '/api/push/suscribir', { subscription: sub.toJSON() });
+    toast('Listo: te avisaremos en este celular.', 'success');
+    await probarAvisosPush(true);
+  }catch(e){ toast('No se pudieron activar los avisos: ' + (e.message || e), 'error'); }
+  pintarAvisosPush();
+}
+async function probarAvisosPush(silencioso){
+  try { await api('POST', '/api/push/prueba', {}); if(!silencioso) toast('Aviso de prueba enviado.', 'success'); } catch(e){}
+}
+
 /* ===================== VISTA: INICIO DE ORLANDO (6-nov-2026) ===================== */
 async function viewInicioOrlando(){
   const [d, apoyo, det] = await Promise.all([api('GET', '/api/inicio-orlando'), api('GET', '/api/inicio-orlando/calidad-pendiente?apoyo=1').catch(() => []),
@@ -1268,6 +1323,7 @@ async function viewInicioOrlando(){
   return `
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Orlando')} 👋</h2>
   <p class="subtle" style="margin-top:0;">Esto es lo que tienes que hacer, en este orden. Toca el botón de cada unidad.</p>
+  <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
   <div class="grid-cards">
     ${tarjetaNumeroInicio(n.revisar, 'Por revisar', n.revisar ? 'ambar' : 'verde', 'revisar')}
     ${tarjetaNumeroInicio(n.desarme, 'Esperando desarme', n.desarme ? 'azul' : 'verde', 'desarme')}

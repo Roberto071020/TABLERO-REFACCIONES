@@ -12,6 +12,7 @@ require('./backup').programarRespaldosAutomaticos(db); // item 11 del triage: re
 require('./whatsappScheduler').iniciarSchedulerWhatsApp(db); // punto 1 (quinta revisión, 3-sep-2026): barrido independiente, no-op en pruebas
 require('./reporteArranque').iniciarReporteArranque(db); // 4-nov-2026: correo diario 7:30 con el reporte de arranque; inerte sin REPORTE_ARRANQUE_CORREO + Gmail, no-op en pruebas
 require('./fotos').iniciarLimpiezaFotos(db); // 4-nov-2026: borra fotos de unidades entregadas hace +12 meses, o las más antiguas si el disco pasa de 85%; no-op en pruebas
+require('./push').iniciarAvisosPush(db); // 11-nov-2026: avisos push al celular de Orlando ("que al tener algo por hacer en automático le avise"); inerte sin VAPID_*, no-op en pruebas
 if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendientesExistentes(db); } // hallazgo de Daniela 26-ago-2026: limpieza unica de correos automaticos duplicados ya acumulados
 if(!process.env.TEST_DB_PATH){ require('./utils').corregirBorradoresAutomaticosExistentes(db); } // hallazgo de Daniela 27-ago-2026: corrige destinatario/copia/cuerpo de los borradores automaticos ya existentes
 if(!process.env.TEST_DB_PATH){ require('./utils').normalizarFechasCreacionPedidosExistentes(db); } // hallazgo real 27-ago-2026: normaliza fecha_creacion de pedidos importados en DD/MM/AAAA a ISO (la ventana operativa del 1-jun-2026 los ocultaba por error de formato)
@@ -113,6 +114,7 @@ app.use('/api/inicio-orlando', require('./routes/inicioOrlando')); // 6-nov-2026
 app.use('/api/asistencia', require('./routes/asistencia'));
 app.use('/api/detenidas', require('./routes/detenidas'));
 app.use('/api/llegada', require('./routes/llegada')); // 10-nov-2026: "Ya llegó" desde la pantalla de Beto // 10-nov-2026: unidades detenidas y a quién le toca // 9-nov-2026: registro de entrada del personal
+app.use('/api/push', require('./routes/push')); // 11-nov-2026: activar/probar avisos push en el celular
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto
 
 // ---- Frontend estático ----

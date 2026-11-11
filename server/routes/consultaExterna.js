@@ -15,7 +15,7 @@ const db = require('../db');
 const router = express.Router();
 
 const MAX_FILAS = 5000;
-const TABLAS_BLOQUEADAS = ['usuarios', 'sesiones', 'google_drive_tokens', 'whatsapp_config'];
+const TABLAS_BLOQUEADAS = ['usuarios', 'sesiones', 'google_drive_tokens', 'whatsapp_config', 'push_suscripciones']; // 11-nov-2026: claves de avisos de cada celular
 const PALABRAS_BLOQUEADAS = ['attach', 'detach', 'pragma', 'load_extension', 'vacuum'];
 
 let lectura = null;
