@@ -634,6 +634,7 @@ async function viewInicioBeto(){
   return `
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Beto')} 👋</h2>
   <p class="subtle" style="margin-top:0;">Tus unidades en el orden en que conviene trabajarlas.</p>
+  <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
   <div class="grid-cards">
     ${tarjeta(vencidas, 'Vencidas', vencidas ? 'rojo' : 'verde', 'vencidas')}
     ${tarjeta(porVencer, 'Vencen hoy o mañana', porVencer ? 'ambar' : 'verde', 'porVencer')}
@@ -720,6 +721,7 @@ async function viewInicioAlejandra(){
   return `
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Alejandra')} 👋</h2>
   <p class="subtle" style="margin-top:0;">Esto es lo que tienes que hacer hoy, en este orden. Toca el botón de cada unidad y sigue los pasos.</p>
+  <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
   <div class="grid-cards">
     ${tarjetaNum(n.entregas, 'Entregas de hoy', n.entregas ? 'rojo' : 'verde', 'entregar')}
     ${tarjetaNum(n.citas, 'Citas de hoy', 'azul', 'recibir')}
@@ -1185,6 +1187,7 @@ async function viewInicioDaniela(){
   return `
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre || 'Daniela').split(' ')[0])} 👋</h2>
   <p class="subtle" style="margin-top:0;">Aquí solo está lo que sigue pendiente de refacciones, en el orden en que conviene hacerlo. Si una unidad no aparece, sus refacciones están completas.</p>
+  <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
   <button class="btn" style="width:100%;margin-bottom:12px;" onclick="danLlegoPieza()">📦 Llegó una pieza</button>
   <div class="grid-cards">
     ${tarjetaNumeroInicio(n.por_recibir, 'Piezas por recibir', n.por_recibir ? 'azul' : 'verde', 'recibir')}
@@ -1273,6 +1276,8 @@ function danBuscarPiezas(){
 /* ===================== AVISOS PUSH EN EL CELULAR (11-nov-2026) ===================== */
 // Roberto (11-nov-2026): "Me pregunta Orlando como puede activar notificaciones push en su teléfono para que al
 // tener algo por hacer en automático le avise". Caja en su inicio: activar, probar o ver por qué no se puede.
+// 12-nov-2026: también en el inicio de Beto, Alejandra, Daniela y Roberto ("Los demás también me están pidiendo las
+// notificaciones push"); solo en horario laboral (L-V 9-7, sáb 9-2).
 // El servidor decide para quién hay avisos (/api/push/estado); ver server/push.js.
 function claveAplicacion(b64){
   const p = '='.repeat((4 - b64.length % 4) % 4);
@@ -1421,6 +1426,7 @@ async function viewInicioRoberto(){
   return `
   <h2 style="margin-bottom:4px;">Hola, ${esc(((currentUser && currentUser.nombre) || 'Roberto').split(' ')[0])} 👋</h2>
   <p class="subtle" style="margin-top:0;">Arriba lo que te toca a ti, en orden. Abajo, solo lo que está atorado en el equipo.</p>
+  <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
   <div class="grid-cards">
     ${tarjetaNumeroInicio(n.por_valuar, 'Por valuar', n.por_valuar ? 'ambar' : 'verde', 'por-valuar')}
     ${tarjetaNumeroInicio(n.esperando, 'Esperando a la aseguradora', 'azul', 'esperando')}

@@ -68,7 +68,89 @@ function pendientesOrlando(db){
   for(const c of d.complementos) lista.push({ clave:`comp-${c.id}`, titulo:'🛠️ Complemento por daño oculto', cuerpo:`${unidad(c)}: ${c.causa || ''}` });
   return lista;
 }
-const FUENTES = { orlando: pendientesOrlando };
+
+// ---- 12-nov-2026: avisos para todo el equipo. Roberto: "Los demás también me están pidiendo las notificaciones
+// push" -> aprobó la lista por persona ("Si, nada fuera de días u horarios laborales"). Igual que con Orlando, solo
+// lo NUEVO que le llega de otra persona.
+const RECIENTE = "datetime('now','-3 days')";
+// Expediente completo enviado por Roberto (autorizada, OT y proveedores asignados) -> Alejandra y Daniela.
+function expedientesCompletos(db, quien){
+  return db.prepare(`SELECT id AS siniestro_id, numero AS siniestro_numero, vehiculo, placas FROM siniestros
+    WHERE archivado = 0 AND expediente_completo_enviado_en IS NOT NULL AND expediente_completo_enviado_en != ''
+      AND replace(substr(expediente_completo_enviado_en,1,19),'T',' ') >= ${RECIENTE}`).all()
+    .map(x => ({ clave:`expc-${x.siniestro_id}`, titulo:'📂 Expediente completo', cuerpo:`${unidad(x)}: ${quien}` }));
+}
+function pendientesAlejandra(db){
+  const { calcularInicioAlejandra } = require('./inicioAlejandra');
+  const lista = [];
+  for(const t of calcularInicioAlejandra(db).tarjetas){
+    const u = unidad({ vehiculo: t.vehiculo, placas: t.placas, siniestro_numero: t.numero });
+    if(t.tipo === 'aviso' && t.codigo === '5.11') lista.push({ clave:`lista-${t.id}`, titulo:'✅ Unidad lista para entregar', cuerpo:`${u}: avísale al cliente que puede pasar por ella.` });
+    if(t.tipo === 'reingreso') lista.push({ clave:`reing-${t.tarea_id || t.id}`, titulo:'📅 Agendar reingreso', cuerpo:`${u}: ya llegaron sus piezas.` });
+  }
+  return lista.concat(expedientesCompletos(db, 'avísale al cliente y coordina su entrada a producción.'));
+}
+function pendientesDaniela(db){
+  const { calcularInicioDaniela } = require('./inicioDaniela');
+  const d = calcularInicioDaniela(db);
+  const lista = [];
+  for(const g of d.recibir){
+    const ids = g.piezas.map(z => z.id).sort((a, b) => a - b).join('.');
+    lista.push({ clave:`rec-${g.siniestro_id}-${ids}`, titulo:'📦 Piezas entregadas por el proveedor', cuerpo:`${unidad(g)}: ${g.piezas.length} pieza(s) por revisar.` });
+  }
+  for(const z of d.mal){
+    lista.push({ clave:`mal-${z.id}-${z.incidencia ? z.incidencia.id : z.estatus}`, titulo:'⚠️ Pieza mal surtida', cuerpo:`${z.descripcion || 'Pieza'} · ${unidad(z)}` });
+  }
+  return lista.concat(expedientesCompletos(db, 'da seguimiento a sus pedidos.'));
+}
+function pendientesBeto(db){
+  const { calcularPanoramaBeto } = require('./panoramaBeto');
+  const lista = [];
+  for(const x of calcularPanoramaBeto(db)){
+    if((x.prioridad === 3 || x.prioridad === 3.5) && !x.estado_produccion){
+      lista.push({ clave:`iniciar-${x.id}`, titulo:'🔧 Unidad lista para iniciar', cuerpo:`${unidad({ vehiculo:x.vehiculo, placas:x.placas, siniestro_numero:x.numero })}: ${x.motivo}` });
+    }
+  }
+  db.prepare(`SELECT s.id, s.numero AS siniestro_numero, s.vehiculo, s.placas,
+      (SELECT MAX(a.id) FROM auditoria a WHERE a.entidad_tipo='siniestro' AND a.entidad_id=s.id AND a.campo='estado_calidad' AND a.valor_nuevo='rechazado_a_retrabajo') AS aud
+    FROM siniestros s WHERE s.archivado = 0 AND s.estado_calidad = 'rechazado_a_retrabajo'`).all()
+    .forEach(x => lista.push({ clave:`calrech-${x.id}-${x.aud || 0}`, titulo:'↩️ Calidad: hay algo por corregir', cuerpo: unidad(x) }));
+  db.prepare(`SELECT c.id, c.causa, c.pieza_operacion, s.numero AS siniestro_numero, s.vehiculo, s.placas FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
+    WHERE c.tipo = 'dano_oculto' AND c.decision IN ('autorizado','parcial') AND s.archivado = 0
+      AND COALESCE(c.decision_en, c.actualizado_en) >= ${RECIENTE}`).all()
+    .forEach(c => lista.push({ clave:`compaut-${c.id}`, titulo:'👍 Complemento autorizado', cuerpo:`${unidad(c)}: ${c.pieza_operacion || c.causa || ''}` }));
+  return lista;
+}
+function pendientesRoberto(db){
+  const { calcularInicioRoberto, LIMITE_COMPLEMENTO } = require('./inicioRoberto');
+  const d = calcularInicioRoberto(db, { alertas: false });
+  const u = x => unidad({ vehiculo: x.vehiculo, placas: x.placas, siniestro_numero: x.numero });
+  const lista = [];
+  d.por_valuar.forEach(x => lista.push({ clave:`valuar-${x.id}`, titulo:'🧮 Expediente listo para valuar', cuerpo: u(x) }));
+  d.complementos.forEach(c => lista.push({ clave:`compd-${c.complemento_id}`, titulo:`💲 Complemento de más de $${LIMITE_COMPLEMENTO.toLocaleString('es-MX')}`, cuerpo:`${u(c)}: necesita tu decisión.` }));
+  d.reautorizaciones.forEach(c => {
+    if(c.horas_restantes < 0) lista.push({ clave:`reautv-${c.complemento_id}`, titulo:'🚨 Reautorización vencida', cuerpo:`${u(c)}: Orlando no mandó las fotos editadas.` });
+    else lista.push({ clave:`reaut6-${c.complemento_id}`, titulo:`⏰ Reautorización vence en ${c.horas_restantes} h`, cuerpo:`${u(c)}: ${c.pieza_operacion || ''}` });
+  });
+  db.prepare(`SELECT id, numero AS siniestro_numero, vehiculo, placas, encuesta_comentarios FROM siniestros
+    WHERE encuesta_estado = 'no_solicitar' AND fecha_entrega_real >= date('now','-15 days')`).all()
+    .forEach(x => lista.push({ clave:`inconf-${x.id}`, titulo:'😕 Cliente GNP inconforme en la entrega', cuerpo:`${unidad(x)}: ${String(x.encuesta_comentarios || '').replace(/^Inconforme en la entrega: /, '')}` }));
+  return lista;
+}
+const FUENTES = { orlando: pendientesOrlando, atencion_cliente: pendientesAlejandra, operativo: pendientesDaniela, beto: pendientesBeto,
+  admin: pendientesRoberto, jefe: pendientesRoberto };
+
+// ---- Horario laboral (12-nov-2026, Roberto: "nada fuera de días u horarios laborales"; eligió L-V 9-7, Sáb 9-2).
+// Fuera de horario no se manda nada; lo que surja se avisa al abrir (agrupado si son más de 3).
+// Veracruz = America/Mexico_City, UTC-6 todo el año (sin horario de verano desde 2022).
+const HORARIO = { 1:[9,19], 2:[9,19], 3:[9,19], 4:[9,19], 5:[9,19], 6:[9,14] }; // 0 = domingo: cerrado
+function enHorarioLaboral(fecha = new Date()){
+  const mx = new Date(fecha.getTime() - 6 * 3600000);
+  const h = HORARIO[mx.getUTCDay()];
+  if(!h) return false;
+  const hora = mx.getUTCHours() + mx.getUTCMinutes() / 60;
+  return hora >= h[0] && hora < h[1];
+}
 
 function disponiblePara(rol){ return configurado() && !!FUENTES[rol]; }
 
@@ -120,18 +202,22 @@ async function enviarAUsuario(db, usuarioId, aviso, enviar){
 function enviarReal(sub, payload){ return cliente().sendNotification(sub, payload, { TTL: 12 * 3600, urgency: 'high' }); }
 
 let corriendo = false;
-async function barrido(db, { enviar = enviarReal } = {}){
+async function barrido(db, { enviar = enviarReal, ahora = new Date() } = {}){
   if(corriendo) return { omitido: true };
+  if(!enHorarioLaboral(ahora)) return { fuera_de_horario: true };
   corriendo = true;
   const resultado = { usuarios: 0, avisos: 0 };
   try{
     const usuarios = db.prepare(`SELECT DISTINCT u.id, u.rol FROM usuarios u JOIN push_suscripciones p ON p.usuario_id = u.id WHERE u.activo = 1`).all();
+    const porRol = {}; // la misma lista sirve para todos los usuarios del mismo rol en este barrido
     for(const u of usuarios){
       const fuente = FUENTES[u.rol];
       if(!fuente) continue;
       resultado.usuarios++;
       const ya = new Set(db.prepare('SELECT clave FROM push_avisados WHERE usuario_id = ?').all(u.id).map(r => r.clave));
-      const nuevos = fuente(db).filter(p => !ya.has(p.clave));
+      let todos;
+      try{ todos = porRol[u.rol] || (porRol[u.rol] = fuente(db)); }catch(e){ console.error('[push] pendientes de', u.rol, e && e.message); continue; }
+      const nuevos = todos.filter(p => !ya.has(p.clave));
       if(!nuevos.length) continue;
       // Se marcan antes de enviar: si el envío falla no se reintenta en cada barrido (lo sigue viendo en pantalla).
       marcarAvisados(db, u.id, nuevos.map(p => p.clave));
@@ -155,4 +241,5 @@ function iniciarAvisosPush(db){
   return setInterval(() => barrido(db), INTERVALO_MS);
 }
 
-module.exports = { asegurarTablas, iniciarAvisosPush, barrido, enviarAUsuario, guardarSuscripcion, quitarSuscripcion, disponiblePara, configurado, pendientesOrlando, enviarReal };
+module.exports = { asegurarTablas, iniciarAvisosPush, barrido, enviarAUsuario, guardarSuscripcion, quitarSuscripcion, disponiblePara, configurado, enviarReal,
+  enHorarioLaboral, FUENTES, pendientesOrlando, pendientesAlejandra, pendientesDaniela, pendientesBeto, pendientesRoberto };
