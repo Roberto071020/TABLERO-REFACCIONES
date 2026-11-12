@@ -14,7 +14,18 @@ P.asegurarTablasPatio(db);
 F.asegurarEsquemaFotos(db);
 if(!fs.existsSync(F.UPLOAD_DIR)) fs.mkdirSync(F.UPLOAD_DIR, { recursive:true });
 
-const soloTecnico = requireRole('tecnico');
+// 12-nov-2026 (Roberto: "Si alguien no registra su entrada no tiene acceso a la información?" -> "modifica"): además del
+// bloqueo de la pantalla, el servidor no deja al técnico usar nada de patio sin su entrada del día. Mismo criterio que
+// /api/asistencia/estado: mientras Roberto no marque la ubicación del taller, nadie queda bloqueado.
+const A = require('../asistencia');
+function conEntrada(req, res, next){
+  const u = req.session.user;
+  if(!A.requiereRegistro(u.rol) || !A.leerTaller(db)) return next();
+  const r = db.prepare(`SELECT 1 FROM asistencia WHERE usuario_id = ? AND fecha = ?`).get(u.id, A.ahoraMX().fecha);
+  if(!r) return res.status(403).json({ error:'Primero registra tu entrada.', codigo:'SIN_ENTRADA' });
+  next();
+}
+const soloTecnico = [requireRole('tecnico'), conEntrada];
 const manejar = fn => (req, res) => {
   try{ res.json(fn(req)); }
   catch(e){ if(!e.status) console.error('[patio]', e); res.status(e.status || 500).json({ error: e.status ? e.message : 'No se pudo guardar. Intenta de nuevo.' }); }

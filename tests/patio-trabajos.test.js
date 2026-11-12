@@ -158,3 +158,15 @@ test('PT-7: la OT solo la abre el técnico asignado', async () => {
   assert.equal((await req('marcelo', 'GET', `/api/patio/${SID}/ot`)).status, 403);
   fs.unlinkSync(path.join(dir, 'ot-prueba-patio.pdf'));
 });
+
+test('PT-8: con la ubicación del taller marcada, sin entrada registrada el técnico no puede usar nada de patio', async () => {
+  require('../server/asistencia').guardarTaller(db, { lat: 19.17, lng: -96.13, precision: 10 });
+  // Adrián no registró entrada hoy.
+  for(const [m, url] of [['GET', '/api/patio/mis-trabajos'], ['POST', `/api/patio/${SID}/seguir`], ['GET', `/api/patio/${SID}/ot`]]){
+    const r = await req('adrian', m, url);
+    assert.equal(r.status, 403, url); assert.equal(r.data.codigo, 'SIN_ENTRADA');
+  }
+  // Marcelo sí la registró.
+  assert.equal((await req('marcelo', 'GET', '/api/patio/mis-trabajos')).status, 200);
+  db.prepare(`DELETE FROM configuracion WHERE clave='taller_ubicacion'`).run();
+});
