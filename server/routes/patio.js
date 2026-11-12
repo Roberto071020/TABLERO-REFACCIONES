@@ -33,7 +33,8 @@ const manejar = fn => (req, res) => {
 
 // ---------- Técnico ----------
 router.get('/mis-trabajos', requireAuth, soloTecnico, (req, res) => {
-  res.json({ trabajos: P.misTrabajos(db, req.session.user.id), motivos: P.MOTIVOS_PARO });
+  const puesto = (db.prepare('SELECT puesto FROM usuarios WHERE id = ?').get(req.session.user.id) || {}).puesto || null;
+  res.json({ trabajos: P.misTrabajos(db, req.session.user.id), motivos: P.MOTIVOS_PARO, puesto });
 });
 router.post('/:id/empece', requireAuth, soloTecnico, manejar(req =>
   P.empezar(db, { siniestroId: Number(req.params.id), usuario: req.session.user, registrarAuditoria, marcarHito: marcarHitoGeneradoAutomatico })));

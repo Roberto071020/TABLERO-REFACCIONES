@@ -663,6 +663,7 @@ async function viewInicioTecnico(){
     api('GET', '/api/asistencia/estado', null, { silent: true }).catch(() => null),
     api('GET', '/api/patio/mis-trabajos', null, { silent: true }).catch(() => ({ trabajos: [], motivos: {} }))]);
   PATIO.motivos = r.motivos || {};
+  if(r.puesto === 'Auxiliar de refacciones') return viewRevisionPiezas(e);
   const hoy = hoyLocalISO();
   const med = e && e.registrado && !e.retardo ? medallaDe(e.racha || 0) : null;
   const entrada = e && e.registrado ? `<span class="badge verde" style="font-size:14px;">✅ Entrada ${esc(e.hora)}</span>${med ? `<span title="${esc(med.nombre)}" style="font-size:26px;">${med.icono}</span>` : ''}
@@ -708,6 +709,87 @@ async function viewInicioTecnico(){
       <button class="btn secondary" style="width:100%;margin-top:6px;" onclick="render()">🔄 Actualizar</button>
     </div>`;
 }
+/* ---- Auxiliar de refacciones (12-nov-2026) ----
+   Roberto: él "apoya a Dani para revisar los componentes que van llegando" y le indica "cuando alguno llega roto o
+   equivocado". Ve todas las piezas pendientes por unidad, con buscador, y dos botones por pieza. "Llegó bien" la deja
+   en "Recibir piezas" de Daniela marcada como revisada (Daniela confirma). Lógica en server/revisionPiezas.js. */
+let REV = { unidades: [], tipos: {}, filtro: '' };
+async function viewRevisionPiezas(e){
+  const nombre = esc(((currentUser && currentUser.nombre) || '').split(' ')[0]);
+  const r = await api('GET', '/api/revision-piezas', null, { silent: true }).catch(() => ({ unidades: [], tipos: {} }));
+  REV.unidades = r.unidades || []; REV.tipos = r.tipos || {};
+  const med = e && e.registrado && !e.retardo ? medallaDe(e.racha || 0) : null;
+  const entrada = e && e.registrado ? `<span class="badge verde" style="font-size:14px;">✅ Entrada ${esc(e.hora)}</span>${med ? `<span style="font-size:26px;">${med.icono}</span>` : ''}` : '';
+  const total = REV.unidades.reduce((n, u) => n + u.piezas.length, 0);
+  return `<div style="max-width:560px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <h2 style="margin:0;">Hola, ${nombre} 👋</h2>${entrada}</div>
+      <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
+      <h3 style="margin:16px 0 6px;">📦 Piezas por revisar <span class="badge gris">${total}</span></h3>
+      <p class="subtle" style="margin:0 0 8px;">Cuando llegue el proveedor, busca la pieza y dile a Daniela cómo llegó.</p>
+      <input id="revBuscar" type="search" placeholder="🔍 Buscar placas, vehículo o pieza" value="${esc(REV.filtro)}" oninput="REV.filtro=this.value;pintarRevision()"
+        style="font-size:17px;padding:12px;width:100%;box-sizing:border-box;border-radius:12px;border:1px solid var(--border);">
+      <div id="revLista">${listaRevisionHtml()}</div>
+      <button class="btn secondary" style="width:100%;margin-top:6px;" onclick="render()">🔄 Actualizar</button>
+    </div>`;
+}
+function pintarRevision(){ const el = document.getElementById('revLista'); if(el) el.innerHTML = listaRevisionHtml(); }
+function listaRevisionHtml(){
+  const q = REV.filtro.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const unidades = REV.unidades.map(u => {
+    if(!q) return u;
+    const unidadCoincide = norm(u.placas + ' ' + u.vehiculo + ' ' + u.numero).includes(q);
+    const piezas = unidadCoincide ? u.piezas : u.piezas.filter(z => norm(z.descripcion + ' ' + (z.numero_parte || '') + ' ' + (z.proveedor || '')).includes(q));
+    return piezas.length ? { ...u, piezas } : null;
+  }).filter(Boolean);
+  if(!unidades.length) return `<div class="section" style="text-align:center;padding:22px;font-size:17px;">${q ? 'No encontré esa pieza o unidad.' : 'No hay piezas pendientes. 🎉'}</div>`;
+  const MAX = q ? 60 : 25;
+  return unidades.slice(0, MAX).map(u => `<div class="section" style="margin:12px 0;padding:14px;">
+      <b style="font-size:18px;">${esc(u.vehiculo || u.numero)}</b>
+      <div style="font-size:15px;margin-bottom:4px;"><b>${esc(u.placas || 'Sin placas')}</b> · ${esc(u.numero)}</div>
+      ${u.piezas.map(z => `<div style="border-top:1px solid var(--border);padding:10px 0;">
+        <div style="font-size:17px;font-weight:700;">${esc(z.descripcion)}</div>
+        <div class="subtle">${esc(z.proveedor || 'Proveedor sin capturar')}${z.numero_parte ? ' · N.P. ' + esc(z.numero_parte) : ''}${z.estatus === 'Entregada por proveedor' && !z.revisada ? ' · <b style="color:#1d4ed8;">el proveedor ya la entregó</b>' : ''}</div>
+        ${z.revisada ? `<div style="margin-top:6px;color:#15803d;font-weight:700;">✅ Revisada${z.revisada_por ? ' por ' + esc(z.revisada_por) : ''}: falta que Daniela la confirme</div>`
+          : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+          <button class="btn" style="${PT_BTN}font-size:17px;background:#16a34a;" onclick="revBien(${z.id}, this)">✅ Llegó bien</button>
+          <button class="btn" style="${PT_BTN}font-size:17px;background:#dc2626;" onclick="revMal(${z.id}, '${esc(z.descripcion).replace(/'/g, '&#39;')}')">⚠️ Llegó mal</button></div>`}
+      </div>`).join('')}
+    </div>`).join('') + (unidades.length > MAX ? `<p class="subtle" style="text-align:center;">Hay ${unidades.length - MAX} unidades más: búscalas por placas.</p>` : '');
+}
+async function revBien(id, boton){
+  if(boton) boton.disabled = true;
+  try{ await api('POST', `/api/revision-piezas/${id}/bien`); toast('Listo, Daniela la verá como revisada.', 'success'); render(); }
+  catch(e){ if(boton) boton.disabled = false; }
+}
+function revMal(id, nombre){
+  REV.pieza = id; REV.nombre = nombre;
+  showModal(`<h3 style="margin-top:0;">⚠️ ¿Qué pasó con la pieza?</h3>
+    <p style="font-size:16px;margin:4px 0 10px;"><b>${esc(nombre)}</b></p>
+    ${Object.entries(REV.tipos).map(([k, t]) => `<button class="btn secondary" style="${PT_BTN}display:block;text-align:left;margin:8px 0;" onclick="revMalTipo('${k}')">${t.icono} ${esc(t.etiqueta)}</button>`).join('')}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>`);
+}
+function revMalTipo(k){
+  const t = REV.tipos[k];
+  REV.tipo = k;
+  PATIO.fotos = []; PATIO.subiendo = 0; PATIO.para = 'pieza'; PATIO.urlFoto = `/api/revision-piezas/${REV.pieza}/foto`;
+  showModal(`<h3 style="margin-top:0;">${t.icono} ${esc(t.etiqueta)}</h3>
+    <p style="font-size:16px;margin:4px 0;"><b>${esc(REV.nombre)}</b></p>
+    <p style="font-size:16px;">Le avisamos a <b>Daniela</b> para que haga el reclamo.</p>
+    <input id="revNota" maxlength="200" placeholder="¿Qué tiene? (opcional)" style="font-size:17px;padding:12px;width:100%;box-sizing:border-box;">
+    <p style="font-size:16px;margin:12px 0 0;"><b>Toma foto de la pieza</b> para que Daniela la vea.</p>
+    ${patioCamaraHtml('Tomar foto')}
+    <div class="modal-actions"><button class="btn secondary" onclick="revMal(REV.pieza, REV.nombre)">← Atrás</button>
+      <button class="btn" id="ptEnviar" data-foto-obligatoria="1" disabled onclick="revEnviarMal()">Enviar aviso</button></div>`);
+}
+async function revEnviarMal(){
+  if(PATIO.subiendo) return toast('Espera a que termine de subir la foto.', 'error');
+  try{
+    await api('POST', `/api/revision-piezas/${REV.pieza}/mal`, { tipo: REV.tipo, nota: (document.getElementById('revNota') || {}).value || '', fotos: PATIO.fotos });
+    closeModal(); toast('Listo, ya le avisamos a Daniela.', 'success'); render();
+  }catch(e){}
+}
 function sumarDiasISO(iso, n){ const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
 async function patioPost(url, body, ok){
   try{ await api('POST', url, body || {}); closeModal(); if(ok) toast(ok, 'success'); render(); return true; }catch(e){ return false; }
@@ -742,7 +824,7 @@ async function patioFotoTomada(input){
     const fd = new FormData();
     fd.append('para', PATIO.para); fd.append('foto', c.foto, c.nombre);
     if(c.miniatura) fd.append('miniatura', c.miniatura, 'mini.jpg');
-    const res = await fetch(`/api/patio/${PATIO.siniestro}/foto`, { method:'POST', body: fd });
+    const res = await fetch(PATIO.urlFoto || `/api/patio/${PATIO.siniestro}/foto`, { method:'POST', body: fd });
     const d = await res.json().catch(() => ({}));
     if(!res.ok) throw new Error(d.error || 'No se pudo subir la foto.');
     PATIO.fotos.push(d.id); img.style.opacity = '1';
@@ -751,7 +833,7 @@ async function patioFotoTomada(input){
 }
 
 function patioTermine(id, nombre){
-  PATIO.fotos = []; PATIO.subiendo = 0; PATIO.siniestro = id; PATIO.para = 'trabajo';
+  PATIO.urlFoto = null; PATIO.fotos = []; PATIO.subiendo = 0; PATIO.siniestro = id; PATIO.para = 'trabajo';
   showModal(`<h3 style="margin-top:0;">✅ Terminé</h3>
     <p style="font-size:17px;margin:4px 0;"><b>${esc(nombre)}</b></p>
     <p style="font-size:16px;">Toma una foto del trabajo terminado. Beto la revisa y la pasa a la siguiente etapa.</p>
@@ -774,7 +856,7 @@ function patioMeDetuve(id, nombre){
 const PATIO_PREGUNTA = { falta_pieza:'¿Qué pieza falta?', pieza_mal:'¿Qué pieza llegó mal?', dano_oculto:'¿Qué encontraste?', falta_material:'¿Qué material falta?' };
 function patioMotivo(k){
   const m = PATIO.motivos[k];
-  PATIO.fotos = []; PATIO.subiendo = 0; PATIO.para = 'paro'; PATIO.motivo = k;
+  PATIO.urlFoto = null; PATIO.fotos = []; PATIO.subiendo = 0; PATIO.para = 'paro'; PATIO.motivo = k;
   showModal(`<h3 style="margin-top:0;">${m.icono} ${esc(m.etiqueta)}</h3>
     <p style="font-size:16px;margin:4px 0;"><b>${esc(PATIO.nombre)}</b></p>
     ${m.avisa ? `<p style="font-size:16px;">Le avisamos a <b>${esc(m.avisa)}</b>.</p>` : '<p style="font-size:16px;">Queda en pausa. Cuando regreses a ella, toca "Seguir".</p>'}
@@ -1464,7 +1546,7 @@ async function viewInicioDaniela(){
   ${seccionDetenidas(det.detenidas, 'Beto las detuvo porque falta una pieza o llegó mal. Consíguela o resuélvelo con el proveedor; cuando llegue, Beto la reanuda.')}
   ${seccionInicio('recibir', '1. Recibir piezas', 'El proveedor ya las entregó. Revísalas: si llegaron bien, márcalas; si no, registra qué pasó.', d.recibir,
     u => cajaInicio(`${encabezadoUnidad(u.siniestro_id, u.vehiculo, u.siniestro_numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
-      ${u.piezas.map(z => filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
+      ${u.piezas.map(z => (z.revisada_en ? `<div style="margin-top:6px;"><span class="badge verde" style="white-space:normal;">✅ Revisada por ${esc(String(z.revisada_por_nombre || '').split(' ')[0])}${horaLocal(z.revisada_en) ? ' a las ' + esc(horaLocal(z.revisada_en)) : ''}: llegó bien</span></div>` : '') + filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
   ${seccionInicio('vencidas', '2. Reclamar piezas vencidas', 'Ya pasó la fecha que prometió el proveedor. Escríbele y captura la nueva fecha.', d.vencidas, g => grupoProveedor(g, 'vencidas'))}
   ${seccionInicio('confirmar', '3. Confirmar fechas', 'El proveedor todavía no confirma cuándo las entrega. Pídele la fecha y captúrala.', d.confirmar, g => grupoProveedor(g, 'confirmar'))}
   ${seccionInicio('correos', '4. Aprobar correos', 'Correos que el sistema preparó para los proveedores. Nada se envía sin que lo revises.', d.correos,
@@ -1473,7 +1555,8 @@ async function viewInicioDaniela(){
       ${c.incompleto ? '<span class="badge rojo">Le falta el correo del proveedor</span> ' : ''}<button class="btn small" onclick="abrirRevisarCorreo(${c.id})">✉️ Revisar y enviar</button>`))}
   ${seccionInicio('mal', '5. Resolver mal surtidas y devoluciones', 'Piezas que llegaron mal o se devolvieron. Cuando el proveedor lo resuelva, ciérralo aquí.', d.mal,
     z => cajaInicio(`${encabezadoUnidad(z.siniestro_id, z.vehiculo, z.siniestro_numero, `${esc(z.proveedor || '')} · ${esc(z.estatus)}`)}
-      <div style="margin-bottom:8px;"><b>${esc(z.descripcion)}</b>${z.incidencia ? `<div class="subtle">${esc(z.incidencia.descripcion || z.incidencia.tipo)}${z.incidencia.fecha_compromiso ? ' · compromiso ' + esc(fechaCorta(z.incidencia.fecha_compromiso)) : ''}</div>` : ''}</div>
+      <div style="margin-bottom:8px;"><b>${esc(z.descripcion)}</b>${z.incidencia ? `<div class="subtle">${esc(z.incidencia.descripcion || z.incidencia.tipo)}${z.incidencia.fecha_compromiso ? ' · compromiso ' + esc(fechaCorta(z.incidencia.fecha_compromiso)) : ''}</div>` : ''}
+        ${z.incidencia && z.incidencia.fotos && z.incidencia.fotos.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">${z.incidencia.fotos.map(f => `<img src="/api/fotos/${Number(f)}/imagen?mini=1" alt="Foto de la pieza" onclick="verFotoEvidencia(${Number(f)})" style="width:72px;height:72px;object-fit:cover;border-radius:8px;cursor:pointer;">`).join('')}</div>` : ''}</div>
       ${z.incidencia ? `<button class="btn small" onclick="abrirFormResolverIncidencia(${z.incidencia.id})">✔ Ya se resolvió</button>` : `<button class="btn small" onclick="abrirFormIncidencia(${z.id})">Registrar qué pasó</button>`}`))}
   ${seccionInicio('sin-piezas', '6. Capturar piezas de pedidos nuevos', 'Pedidos que llegaron sin ninguna pieza capturada.', d.pedidos_sin_piezas,
     p => cajaInicio(`${encabezadoUnidad(p.siniestro_id, p.vehiculo, p.siniestro_numero, `Pedido ${esc(p.pedido_numero)} · ${esc(p.aseguradora || '')}`)}

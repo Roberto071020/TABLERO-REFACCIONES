@@ -41,12 +41,14 @@ function archivarCorreosSiToca(db){
 }
 
 function calcularInicioDaniela(db){
+  try{ require('./revisionPiezas').asegurarEsquema(db); }catch(e){}
   try{ archivarCorreosSiToca(db); }catch(e){ /* nunca debe impedir ver la pantalla */ }
   const hoy = hoyMX();
   const ventana = VENTANA_OPERATIVA_DESDE;
 
   const piezas = db.prepare(`
     SELECT z.id, z.descripcion, z.numero_parte, z.estatus, z.fecha_prometida, z.proveedor_id, z.pedido_id, z.fecha_recepcion,
+      z.revisada_en, (SELECT nombre FROM usuarios WHERE id = z.revisada_por) AS revisada_por_nombre, -- 12-nov-2026: revisión del auxiliar de refacciones
       p.numero AS pedido_numero, p.siniestro_id, s.numero AS siniestro_numero, s.vehiculo, s.placas, s.aseguradora,
       pv.razon_social AS proveedor, pv.telefono AS proveedor_telefono, pv.correo AS proveedor_correo
     FROM piezas z
@@ -56,8 +58,9 @@ function calcularInicioDaniela(db){
     WHERE s.archivado = 0 AND p.estatus_operativo NOT IN ('Cancelado','Cerrado') AND p.fecha_creacion >= ?
       AND z.estatus NOT IN ('Recibida físicamente','Cancelada')`).all(ventana);
   const incidencias = new Map();
-  for(const i of db.prepare(`SELECT id, pieza_id, tipo, descripcion, accion_solicitada, fecha_compromiso FROM incidencias WHERE estado IN ('abierta','en_proceso') ORDER BY id DESC`).all()){
-    if(!incidencias.has(i.pieza_id)) incidencias.set(i.pieza_id, i);
+  for(const i of db.prepare(`SELECT id, pieza_id, tipo, descripcion, accion_solicitada, fecha_compromiso, fotos FROM incidencias WHERE estado IN ('abierta','en_proceso') ORDER BY id DESC`).all()){
+    let fotos = []; try{ fotos = JSON.parse(i.fotos || '[]'); }catch(e){}
+    if(!incidencias.has(i.pieza_id)) incidencias.set(i.pieza_id, { ...i, fotos });
   }
 
   const recibir = [], mal = [], viejas = [];

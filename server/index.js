@@ -44,6 +44,8 @@ app.use('/api', (req, res, next) => {
   if(!u || u.rol !== 'tecnico') return next();
   // 12-nov-2026: ya ven sus trabajos asignados por Beto (/patio/, cada ruta revisa que la unidad sea suya) y activan avisos (/push/).
   if(req.path.startsWith('/patio/') || req.path.startsWith('/push/')) return next();
+  // 12-nov-2026: el auxiliar de refacciones revisa las piezas que llegan (la ruta revisa que sea él).
+  if(req.path === '/revision-piezas' || req.path.startsWith('/revision-piezas/')) return next();
   if(req.path.startsWith('/auth/') || req.path === '/asistencia/estado' || req.path === '/asistencia/entrada' || /^\/asistencia\/\d+\/foto$/.test(req.path)) return next();
   return res.status(403).json({ error:'Tu usuario por ahora solo registra la entrada.' });
 });
@@ -120,6 +122,7 @@ app.use('/api/asistencia', require('./routes/asistencia'));
 app.use('/api/detenidas', require('./routes/detenidas'));
 app.use('/api/llegada', require('./routes/llegada')); // 10-nov-2026: "Ya llegó" desde la pantalla de Beto // 10-nov-2026: unidades detenidas y a quién le toca // 9-nov-2026: registro de entrada del personal
 app.use('/api/push', require('./routes/push'));
+app.use('/api/revision-piezas', require('./routes/revisionPiezas')); // 12-nov-2026: el auxiliar de refacciones revisa lo que llega
 app.use('/api/patio', require('./routes/patio')); // 12-nov-2026: personal de patio -- Beto asigna, el técnico ve sus trabajos y reporta
 app.use('/api/calidad', require('./routes/calidad')); // 12-nov-2026: checklist de calidad digital por OT, desde el celular // 11-nov-2026: activar/probar avisos push en el celular
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto

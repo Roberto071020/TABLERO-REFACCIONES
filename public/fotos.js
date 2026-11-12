@@ -5,7 +5,7 @@
    Se apoya en funciones globales de app.js: showModal, closeModal, toast, esc, api, render, currentUser. */
 (function(){
   const ETIQUETAS = { recepcion:'Recepción', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación',
-    pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', paro:'Evidencia de patio (paro)', otra:'Otras' };
+    pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', paro:'Evidencia de patio (paro)', pieza_mal:'Pieza mal surtida', otra:'Otras' };
   const ORDEN = Object.keys(ETIQUETAS);
 
   // Estilos propios de la galería (se inyectan una sola vez).

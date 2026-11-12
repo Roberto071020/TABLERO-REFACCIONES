@@ -16,9 +16,9 @@ const UPLOAD_DIR = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'uploa
 
 // 6-nov-2026: 'reautorizacion' = fotos editadas que Orlando sube para pedir que se autoricen piezas no autorizadas.
 // 12-nov-2026: 'paro' = evidencia que toma el técnico de patio al detenerse por pieza mal surtida o daño oculto.
-const ETAPAS_FOTO = ['recepcion','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado','reautorizacion','paro','otra'];
+const ETAPAS_FOTO = ['recepcion','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado','reautorizacion','paro','pieza_mal','otra'];
 const ETIQUETA_ETAPA_FOTO = { recepcion:'Recepción', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación',
-  pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', paro:'Evidencia de patio (paro)', otra:'Otras' };
+  pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', paro:'Evidencia de patio (paro)', pieza_mal:'Pieza mal surtida', otra:'Otras' };
 
 // Etapas de producción que exigen al menos una foto ANTES de poder salir de ellas. Pulido y lavado quedan
 // opcionales (no dejan evidencia útil para la aseguradora); se pueden agregar aquí si se decide lo contrario.
