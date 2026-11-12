@@ -446,33 +446,113 @@ function mensajeRacha(n){
   if(n >= 2) return `🔥 ${n} días seguidos a tiempo. ¡No la rompas!`;
   return '🔥 Hoy empieza tu racha. ¡Mañana van 2!';
 }
+/* ---- Más festejo al llegar a tiempo (12-nov-2026) ----
+   Roberto: "les agradó el tema del confeti cuando llegan a tiempo y lo comentaron" -> "Ármalo si es que no tiene
+   contras": medallas por racha, sonido, voz que los saluda por su nombre, festejo especial al primero del día y
+   confeti que crece con la racha. Todo se genera en el celular (sin archivos de audio). En iPhone en modo
+   silencio no suena; la voz y el sonido siguen el volumen del celular. */
+const MEDALLAS = [
+  { dias:5, icono:'🥉', nombre:'medalla de bronce' },
+  { dias:10, icono:'🥈', nombre:'medalla de plata' },
+  { dias:20, icono:'🥇', nombre:'medalla de oro' },
+  { dias:30, icono:'🏆', nombre:'trofeo' },
+];
+const HITOS_RACHA = [5, 10, 20, 30, 50, 75, 100];
+function medallaDe(racha){ let m = null; for(const x of MEDALLAS) if(racha >= x.dias) m = x; return m; }
+// El sonido y la voz solo se permiten después de un toque de la persona: se "despiertan" con su primer toque
+// (el botón "Registrar mi entrada") y quedan listos para cuando llegue la respuesta del servidor.
+let AUDIO_FESTEJO = null;
+function despertarAudio(){
+  try{
+    if(!AUDIO_FESTEJO){ const C = window.AudioContext || window.webkitAudioContext; if(C) AUDIO_FESTEJO = new C(); }
+    if(AUDIO_FESTEJO && AUDIO_FESTEJO.state === 'suspended') AUDIO_FESTEJO.resume();
+    if(window.speechSynthesis && !despertarAudio.voz){ const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); despertarAudio.voz = true; }
+  }catch(e){}
+}
+document.addEventListener('pointerdown', despertarAudio, { passive:true });
+function sonarFestejo(tipo){
+  try{
+    const ctx = AUDIO_FESTEJO; if(!ctx) return;
+    if(ctx.state === 'suspended') ctx.resume();
+    // Notas (Hz, inicio en s, duración en s): arpegio alegre; más largo para medalla y primero del día.
+    const N = { C5:523.25, E5:659.25, G5:783.99, C6:1046.5, E6:1318.5, G6:1568 };
+    const melodias = {
+      normal:   [[N.C5,0,.14],[N.E5,.12,.14],[N.G5,.24,.14],[N.C6,.36,.35]],
+      primero:  [[N.G5,0,.12],[N.G5,.12,.12],[N.C6,.24,.25],[N.E6,.5,.12],[N.C6,.62,.12],[N.E6,.74,.12],[N.G6,.86,.5]],
+      medalla:  [[N.C5,0,.12],[N.E5,.1,.12],[N.G5,.2,.12],[N.C6,.3,.2],[N.G5,.52,.12],[N.C6,.64,.12],[N.E6,.76,.2],[N.C6,1.0,.12],[N.E6,1.12,.12],[N.G6,1.24,.7]],
+    };
+    const t0 = ctx.currentTime + 0.05;
+    for(const [f, ini, dur] of melodias[tipo] || melodias.normal){
+      for(const [onda, vol] of [['triangle', .22], ['sine', .1]]){
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = onda; o.frequency.value = f * (onda === 'sine' ? 2 : 1);
+        g.gain.setValueAtTime(0.0001, t0 + ini); g.gain.exponentialRampToValueAtTime(vol, t0 + ini + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + ini + dur);
+        o.connect(g); g.connect(ctx.destination); o.start(t0 + ini); o.stop(t0 + ini + dur + 0.05);
+      }
+    }
+  }catch(e){}
+}
+function hablar(texto){
+  try{
+    if(!window.speechSynthesis) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(texto);
+    const voces = speechSynthesis.getVoices();
+    u.voice = voces.find(v => /es[-_]MX/i.test(v.lang)) || voces.find(v => /^es/i.test(v.lang)) || null;
+    u.lang = (u.voice && u.voice.lang) || 'es-MX'; u.rate = 1; u.pitch = 1.05;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
 function mostrarFestejoEntrada(r){
   const nombre = esc(((currentUser && currentUser.nombre) || '').split(' ')[0]);
   const dia = Math.floor(Date.now() / 86400000);
   const frase = FRASES_ENTRADA[dia % FRASES_ENTRADA.length];
+  const racha = r.racha || 1;
+  const hito = HITOS_RACHA.includes(racha) ? (MEDALLAS.find(m => m.dias === racha) || { icono:'🏆', nombre:`racha de ${racha} días` }) : null;
+  const medalla = medallaDe(racha);
+  const icono = hito ? hito.icono : r.primero ? '👑' : '🎉';
+  const titulo = hito ? `¡Ganaste ${hito.dias ? 'la ' + hito.nombre : 'una ' + hito.nombre}!` : r.primero ? '¡Llegaste primero!' : '¡Llegaste a tiempo!';
+  const nombreVoz = ((currentUser && currentUser.nombre) || '').split(' ')[0];
+  const saludo = new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes';
+  const voz = hito ? `¡Felicidades, ${nombreVoz}! Ganaste ${hito.dias ? 'la ' + hito.nombre : 'una ' + hito.nombre}: ${racha} días seguidos a tiempo.`
+    : `¡${saludo}, ${nombreVoz}! ${r.primero ? 'Llegaste primero.' : 'Llegaste a tiempo.'}${racha >= 2 ? ` Llevas ${racha} días seguidos.` : ''}`;
   const capa = document.createElement('div');
   capa.id = 'festejoEntrada';
   capa.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.88);display:flex;align-items:center;justify-content:center;padding:16px;';
   capa.innerHTML = `<canvas id="confetiEntrada" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></canvas>
     <div style="position:relative;background:#fff;color:#0f172a;border-radius:18px;max-width:420px;width:100%;padding:28px 22px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.35);">
-      <div style="font-size:64px;line-height:1;">${r.primero ? '🥇' : '🎉'}</div>
-      <h2 style="margin:12px 0 4px;font-size:26px;">${r.primero ? '¡Llegaste primero!' : '¡Llegaste a tiempo!'}</h2>
-      <p style="font-size:18px;margin:0 0 14px;">Bien, ${nombre}. Entrada a las <b>${esc(r.hora)}</b>.</p>
-      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;font-size:17px;font-weight:600;margin-bottom:14px;">${esc(mensajeRacha(r.racha || 1))}</div>
+      <div class="festejo-icono" style="font-size:${hito ? 84 : 64}px;line-height:1;">${icono}</div>
+      <h2 style="margin:12px 0 4px;font-size:26px;">${titulo}</h2>
+      <p style="font-size:18px;margin:0 0 14px;">Bien, ${nombre}. Entrada a las <b>${esc(r.hora)}</b>.${hito && r.primero ? ' ¡Y llegaste primero! 👑' : ''}</p>
+      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;font-size:17px;font-weight:600;margin-bottom:14px;">${esc(mensajeRacha(racha))}
+        ${medalla && !hito ? `<div style="font-weight:500;font-size:15px;margin-top:6px;">Tienes tu ${medalla.icono} ${esc(medalla.nombre)}. ¡No la pierdas!</div>` : ''}
+        ${siguienteMedallaTexto(racha)}</div>
       <p style="font-style:italic;color:#475569;margin:0 0 20px;">“${esc(frase)}”</p>
       <button class="btn" style="font-size:18px;padding:12px 24px;width:100%;" onclick="cerrarFestejoEntrada()">Empezar el día 💪</button>
     </div>`;
   document.body.appendChild(capa);
-  lanzarConfeti(document.getElementById('confetiEntrada'));
+  // El confeti crece con la racha; medalla y primero del día llevan dorados y duran más.
+  const dorado = ['#f59e0b', '#fbbf24', '#fde68a', '#d97706', '#ffffff'];
+  lanzarConfeti(document.getElementById('confetiEntrada'), hito ? { cantidad: 420, duracion: 6500, colores: dorado.concat(['#2563eb', '#dc2626']) }
+    : r.primero ? { cantidad: 260, duracion: 5000, colores: dorado } : { cantidad: 140 + Math.min(racha, 30) * 6 });
+  sonarFestejo(hito ? 'medalla' : r.primero ? 'primero' : 'normal');
+  setTimeout(() => hablar(voz), hito ? 1900 : r.primero ? 1400 : 800);
+}
+function siguienteMedallaTexto(racha){
+  const sig = MEDALLAS.find(m => m.dias > racha);
+  if(!sig) return '';
+  const faltan = sig.dias - racha;
+  return `<div style="font-weight:500;font-size:14px;color:#9a3412;margin-top:6px;">Te ${faltan === 1 ? 'falta 1 día' : `faltan ${faltan} días`} para tu ${sig.icono} ${esc(sig.nombre)}.</div>`;
 }
 function cerrarFestejoEntrada(){ const c = document.getElementById('festejoEntrada'); if(c) c.remove(); render(); }
-function lanzarConfeti(canvas){
+function lanzarConfeti(canvas, op = {}){
   if(!canvas || !canvas.getContext) return;
   const ctx = canvas.getContext('2d'), W = canvas.width = window.innerWidth, H = canvas.height = window.innerHeight;
-  const colores = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#9333ea', '#06b6d4'];
-  const piezas = Array.from({ length: 140 }, () => ({ x: Math.random() * W, y: -20 - Math.random() * H * 0.6, w: 6 + Math.random() * 6, h: 8 + Math.random() * 8,
+  const colores = op.colores || ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#9333ea', '#06b6d4'];
+  const piezas = Array.from({ length: op.cantidad || 140 }, () => ({ x: Math.random() * W, y: -20 - Math.random() * H * 0.6, w: 6 + Math.random() * 6, h: 8 + Math.random() * 8,
     vy: 2 + Math.random() * 3.5, vx: -1.5 + Math.random() * 3, g: Math.random() * Math.PI, vg: -0.2 + Math.random() * 0.4, c: colores[Math.floor(Math.random() * colores.length)] }));
-  const fin = Date.now() + 3500;
+  const fin = Date.now() + (op.duracion || 3500);
   (function cuadro(){
     if(!document.body.contains(canvas)) return;
     ctx.clearRect(0, 0, W, H);
@@ -494,7 +574,7 @@ function seccionEntradasHoy(a){
       <span style="font-weight:600;">${esc(p.nombre)}${p.puesto ? ` <span class="subtle" style="font-weight:400;font-size:13px;">${esc(p.puesto)}</span>` : ''}</span>
       <span style="display:flex;gap:8px;align-items:center;">
         ${p.hora ? `<span class="badge ${p.retardo ? 'rojo' : 'verde'}">${esc(p.hora)}${p.retardo ? ' · retardo' : ''}</span>` : '<span class="badge gris">Sin registro</span>'}
-        ${p.racha >= 2 ? `<span title="Días seguidos a tiempo" style="font-size:13px;white-space:nowrap;">🔥${p.racha}</span>` : ''}
+        ${p.racha >= 2 ? `<span title="Días seguidos a tiempo" style="font-size:13px;white-space:nowrap;">${medallaDe(p.racha) ? medallaDe(p.racha).icono : '🔥'}${p.racha}</span>` : ''}
         ${p.con_foto ? `<span class="link" style="font-size:13px;" onclick="verFotoEntrada(${p.registro_id}, '${esc(p.nombre)}', '${esc(p.hora)}')">Ver foto</span>` : ''}
         <span class="link" style="font-size:13px;" title="Darle una contraseña nueva" onclick="robNuevaPassword(${p.usuario_id}, '${esc(p.nombre)}')">🔑</span>
       </span></div>`;
@@ -584,7 +664,8 @@ async function viewInicioTecnico(){
     api('GET', '/api/patio/mis-trabajos', null, { silent: true }).catch(() => ({ trabajos: [], motivos: {} }))]);
   PATIO.motivos = r.motivos || {};
   const hoy = hoyLocalISO();
-  const entrada = e && e.registrado ? `<span class="badge verde" style="font-size:14px;">✅ Entrada ${esc(e.hora)}</span>
+  const med = e && e.registrado && !e.retardo ? medallaDe(e.racha || 0) : null;
+  const entrada = e && e.registrado ? `<span class="badge verde" style="font-size:14px;">✅ Entrada ${esc(e.hora)}</span>${med ? `<span title="${esc(med.nombre)}" style="font-size:26px;">${med.icono}</span>` : ''}
       ${!e.retardo && e.racha ? `<span class="subtle" style="margin-left:6px;">${esc(mensajeRacha(e.racha))}</span>` : ''}` : '';
   const tarjetas = (r.trabajos || []).map(t => {
     const fecha = !t.fecha_entrega ? '<span class="badge gris">Sin fecha de entrega</span>'

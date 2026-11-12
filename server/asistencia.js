@@ -107,4 +107,31 @@ function entradasDeHoy(db){
     resumen: { a_tiempo: lista.filter(x => x.hora && !x.retardo).length, retardos: lista.filter(x => x.retardo).length, sin_registro: lista.filter(x => !x.hora).length } };
 }
 
-module.exports = { RADIO_M, HORA_ENTRADA, ahoraMX, requiereRegistro, leerTaller, guardarTaller, validarEntrada, guardarFoto, rutaFoto, esRetardo, entradasDeHoy, distanciaM, racha, esPrimeroDelDia };
+// 12-nov-2026 (Roberto: premiar a quienes llegan temprano). Lunes: quién llegó a tiempo TODOS los días que abrió el
+// taller la semana pasada (lunes a sábado). Solo se nombra a quien lo logró; nunca se exhibe a quien no.
+const MEDALLAS = [[30, '🏆'], [20, '🥇'], [10, '🥈'], [5, '🥉']];
+function iconoMedalla(racha){ const m = MEDALLAS.find(([d]) => racha >= d); return m ? m[1] : null; }
+function semanaPerfecta(db, hoyISO){
+  const d = new Date(hoyISO + 'T12:00:00Z');
+  if(d.getUTCDay() !== 1) return null;
+  const iso = n => new Date(d.getTime() + n * 86400000).toISOString().slice(0, 10);
+  const desde = iso(-7), hasta = iso(-2);
+  const dias = db.prepare(`SELECT COUNT(DISTINCT fecha) n FROM asistencia WHERE fecha BETWEEN ? AND ?`).get(desde, hasta).n;
+  if(!dias) return null;
+  const ph = ROLES_EXENTOS.map(() => '?').join(',');
+  const nombres = db.prepare(`SELECT u.nombre FROM usuarios u WHERE u.activo = 1 AND u.rol NOT IN (${ph})
+      AND (SELECT COUNT(*) FROM asistencia a WHERE a.usuario_id = u.id AND a.fecha BETWEEN ? AND ? AND a.retardo = 0) = ?
+    ORDER BY u.nombre`).all(...ROLES_EXENTOS, desde, hasta, dias).map(r => r.nombre);
+  return { desde, hasta, dias, nombres };
+}
+// Medallas vigentes (racha de días a tiempo hasta ayer), de la más alta a la más baja.
+function medallasVigentes(db, hoyISO){
+  const ayer = new Date(new Date(hoyISO + 'T12:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+  const ph = ROLES_EXENTOS.map(() => '?').join(',');
+  return db.prepare(`SELECT id, nombre FROM usuarios WHERE activo = 1 AND rol NOT IN (${ph}) ORDER BY nombre`).all(...ROLES_EXENTOS)
+    .map(u => ({ nombre: u.nombre, racha: racha(db, u.id, ayer) }))
+    .filter(x => iconoMedalla(x.racha)).map(x => ({ ...x, icono: iconoMedalla(x.racha) }))
+    .sort((a, b) => b.racha - a.racha || a.nombre.localeCompare(b.nombre));
+}
+
+module.exports = { semanaPerfecta, medallasVigentes, RADIO_M, HORA_ENTRADA, ahoraMX, requiereRegistro, leerTaller, guardarTaller, validarEntrada, guardarFoto, rutaFoto, esRetardo, entradasDeHoy, distanciaM, racha, esPrimeroDelDia };

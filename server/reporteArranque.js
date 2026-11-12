@@ -136,7 +136,9 @@ function calcularReporteArranque(db, ahora = new Date()){
     taller,
     falta_fecha_entrega: faltaFechaEntrega, sin_dato_refacciones: sinDatoRefacciones,
     aviso_espacio: (()=>{ try{ return require('./fotos').avisoEspacio(db); }catch(e){ return []; } })(),
-    complementos_pendientes: complementosPendientes, pendientes_calidad: pendientesCalidad
+    complementos_pendientes: complementosPendientes, pendientes_calidad: pendientesCalidad,
+    // 12-nov-2026 (Roberto: premiar a quienes llegan temprano): reconocimiento en el reporte que reenvía al grupo.
+    puntualidad: (()=>{ try{ const A = require('./asistencia'); return { semana: A.semanaPerfecta(db, hoy), medallas: A.medallasVigentes(db, hoy) }; }catch(e){ return null; } })()
   };
   datos.texto = textoWhatsApp(datos);
   return datos;
@@ -170,6 +172,12 @@ function textoWhatsApp(d){
     b.push(`Unidades autorizadas en proceso: *${d.en_proceso}*`);
   }
 
+  if(d.puntualidad){
+    const p = d.puntualidad, r = [];
+    if(p.semana && p.semana.nombres.length) r.push(`🏆 *Semana perfecta* (a tiempo los ${p.semana.dias} días):\n` + p.semana.nombres.map(n => `• ${n}`).join('\n'));
+    if(p.medallas && p.medallas.length) r.push(`🏅 *Rachas a tiempo:* ` + p.medallas.map(m => `${m.icono} ${m.nombre.split(' ')[0]} (${m.racha})`).join(' · '));
+    if(r.length) b.push(`*👏 RECONOCIMIENTO*\n` + r.join('\n'));
+  }
   if(d.vencidas.length) b.push(`*🔴 Vencidas (${d.vencidas.length})*\n` + lista(d.vencidas, u => ` – venció ${ddmm(u.fecha_entrega_prevista)}`));
   if(d.vencen_pronto.length) b.push(`*🟠 Vencen hoy o mañana (${d.vencen_pronto.length})*\n` + lista(d.vencen_pronto, u => ` – ${ddmm(u.fecha_entrega_prevista)}`));
   if(d.reingresos.length) b.push(`*🚗 Reingresos con cita (${d.reingresos.length})*\n` + lista(d.reingresos));
