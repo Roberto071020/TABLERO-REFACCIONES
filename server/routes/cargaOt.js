@@ -50,6 +50,21 @@ function buscar(q){
   return filas.filter(s => limpio(s.numero).includes(c) || (c.length >= 6 && c.includes(limpio(s.numero)) && limpio(s.numero).length >= 6)).slice(0, 10);
 }
 
+// 12-nov-2026: piezas de la OT para el checklist de calidad digital (server/calidadDigital.js). Roberto: "que ese
+// checklist se tuviera de manera digital dentro de SC Control". Claude las manda al cargar la OT; reemplaza la lista anterior.
+router.post('/ot-piezas', autorizado, (req, res)=>{
+  const calidad = require('../calidadDigital');
+  calidad.asegurarTablas(db);
+  const id = Number(req.body && req.body.siniestro_id);
+  const s = id ? db.prepare('SELECT id, numero, vehiculo FROM siniestros WHERE id = ?').get(id) : null;
+  if(!s) return res.status(404).json({ error:'No existe ese expediente en el tablero.' });
+  try{
+    const n = calidad.guardarPiezas(db, s.id, req.body.piezas, req.body.archivo_id);
+    registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:s.id, accion:'ot_piezas_cargadas', valor_nuevo:`${n} pieza(s) para el checklist de calidad`, usuario:USUARIO });
+    res.status(201).json({ siniestro:s, piezas:n, puntos: calidad.revisionDe(db, s.id).puntos.length });
+  }catch(e){ res.status(400).json({ error:e.message }); }
+});
+
 router.get('/buscar-siniestro', autorizado, (req, res)=>{
   const r = buscar(req.query.q).map(s => ({ ...s,
     ots: db.prepare(`SELECT id, nombre_original, creado_en FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='Orden de trabajo' AND eliminado=0 ORDER BY id`).all(s.id) }));

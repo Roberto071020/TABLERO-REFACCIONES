@@ -6,10 +6,13 @@
 //   - el inicio de Alejandra, Daniela y Orlando (solo las que llevan 1 día o más terminadas sin revisar,
 //     como apoyo para que no se queden detenidas).
 const HORAS_APOYO = 24;
+const { asegurarTablas, pendientesDeCorregir } = require('./calidadDigital');
+let tablasListas = false;
 
 function aMs(v){ if(!v) return NaN; const t = String(v); return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(t) ? t : t.replace(' ', 'T') + 'Z'); }
 
 function unidadesPorRevisarCalidad(db, { minHoras = 0 } = {}){
+  if(!tablasListas){ asegurarTablas(db); tablasListas = true; }
   const filas = db.prepare(`SELECT s.id, s.numero, s.vehiculo, s.placas, s.aseguradora, s.cliente_nombre, s.estado_calidad, s.fecha_entrega_prevista, s.actualizado_en
     FROM siniestros s
     WHERE s.archivado = 0 AND s.estatus_general != 'Cerrado' AND s.estado_produccion = 'terminado'
@@ -20,7 +23,9 @@ function unidadesPorRevisarCalidad(db, { minHoras = 0 } = {}){
     const a = db.prepare(`SELECT fecha FROM auditoria WHERE entidad_tipo='siniestro' AND entidad_id=? AND campo='estado_produccion' AND valor_nuevo='terminado' ORDER BY id DESC LIMIT 1`).get(s.id);
     const terminadoEn = (a && a.fecha) || s.actualizado_en;
     const horas = Math.max(0, Math.floor((ahora - aMs(terminadoEn)) / 3600000)) || 0;
-    const rechazados = db.prepare(`SELECT dimension, hallazgo FROM checklist_calidad WHERE siniestro_id=? AND resultado='rechazado'`).all(s.id);
+    // 12-nov-2026: si ya hay revisión digital por OT, lo pendiente sale de ahí (ver server/calidadDigital.js).
+    const digital = pendientesDeCorregir(db, s.id).map(r => ({ dimension: r.observacion || r.texto, hallazgo: r.observacion }));
+    const rechazados = digital.length ? digital : db.prepare(`SELECT dimension, hallazgo FROM checklist_calidad WHERE siniestro_id=? AND resultado='rechazado'`).all(s.id);
     return { ...s, terminado_en: terminadoEn, horas_terminada: horas, rechazados };
   }).filter(s => s.horas_terminada >= minHoras)
     .sort((x, y) => y.horas_terminada - x.horas_terminada);

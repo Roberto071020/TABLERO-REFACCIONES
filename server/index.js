@@ -114,7 +114,8 @@ app.use('/api/inicio-orlando', require('./routes/inicioOrlando')); // 6-nov-2026
 app.use('/api/asistencia', require('./routes/asistencia'));
 app.use('/api/detenidas', require('./routes/detenidas'));
 app.use('/api/llegada', require('./routes/llegada')); // 10-nov-2026: "Ya llegó" desde la pantalla de Beto // 10-nov-2026: unidades detenidas y a quién le toca // 9-nov-2026: registro de entrada del personal
-app.use('/api/push', require('./routes/push')); // 11-nov-2026: activar/probar avisos push en el celular
+app.use('/api/push', require('./routes/push'));
+app.use('/api/calidad', require('./routes/calidad')); // 12-nov-2026: checklist de calidad digital por OT, desde el celular // 11-nov-2026: activar/probar avisos push en el celular
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto
 
 // ---- Frontend estático ----

@@ -1085,15 +1085,6 @@ function encabezadoUnidad(id, vehiculo, numero, extra){
 function fechaCorta(f){ if(!f) return ''; const d = String(f).slice(0, 10).split('-'); return d.length === 3 ? `${d[2]}/${d[1]}` : f; }
 
 /* ===================== Revisión de calidad: responsable Beto, todos pueden (6-nov-2026) ===================== */
-const CAL_DIMENSIONES = [
-  ['Alcance', '¿Se hizo todo lo que dice la orden de trabajo?'],
-  ['Seguridad y función', '¿Luces, seguros, vidrios y todo lo que se tocó funciona?'],
-  ['Lámina/ajuste', '¿Las piezas quedaron alineadas, sin golpes ni huecos?'],
-  ['Pintura/acabado', '¿El color iguala y no hay escurridos, polvo ni rayas?'],
-  ['Armado', '¿Tornillos, clips, molduras y emblemas completos y firmes?'],
-  ['Presentación', '¿Está limpia por dentro y por fuera?'],
-  ['Documentación', '¿Están las fotos de cada etapa y la OT?'],
-];
 function seccionCalidad(lista, { apoyo = false } = {}){
   return seccionInicio(apoyo ? 'calidad-apoyo' : 'calidad', apoyo ? 'Apoyo: revisar calidad' : 'Revisar calidad',
     apoyo ? 'Llevan 1 día o más terminadas sin revisión de calidad. Si tienes un momento, revísala tú para que no se detenga la entrega.'
@@ -1104,54 +1095,66 @@ function seccionCalidad(lista, { apoyo = false } = {}){
         : `<span class="badge ${u.horas_terminada >= 24 ? 'rojo' : 'ambar'}">Terminada hace ${u.horas_terminada >= 24 ? Math.floor(u.horas_terminada / 24) + ' día(s)' : u.horas_terminada + ' h'}</span>`}</div>
       <button class="btn" onclick="abrirRevisionCalidad(${u.id})">🔍 Revisar calidad</button>`));
 }
+// 12-nov-2026: checklist de calidad digital por OT (antes 7 preguntas generales). Roberto: "que ese checklist se
+// tuviera de manera digital dentro de SC Control y se pudiera contestar ahí mismo desde el teléfono para no depender
+// de una hoja física que se llena a mano". Los puntos salen del servidor (server/calidadDigital.js): avisos de
+// seguridad, los 8 generales de la hoja impresa y uno por pieza de la OT.
 let CAL = null;
 async function abrirRevisionCalidad(id){
+  // Si salió a tomar una foto y regresa, conserva lo que ya había marcado.
+  if(CAL && CAL.id === id) return pintarRevisionCalidad();
   try{
-    const [s, filas] = await Promise.all([api('GET', '/api/siniestros/' + id), api('GET', '/api/checklist-calidad?siniestro_id=' + id)]);
-    const porDim = {};
-    filas.forEach(f => { porDim[f.dimension] = f; });
-    CAL = { id, s, porDim, resp: {}, hallazgo: {} };
-    CAL_DIMENSIONES.forEach(([d]) => { const f = porDim[d]; if(f && f.resultado === 'aprobado') CAL.resp[d] = 'bien'; });
+    const d = await api('GET', '/api/calidad/' + id);
+    const resp = {}, obs = {};
+    d.puntos.forEach(p => { if(p.resultado === 'cumple' || p.resultado === 'no_aplica') resp[p.clave] = p.resultado; if(p.observacion) obs[p.clave] = p.observacion; });
+    CAL = { id, s: d.siniestro, puntos: d.puntos, tieneOt: d.tiene_ot, resp, obs };
     pintarRevisionCalidad();
   }catch(e){}
 }
 function pintarRevisionCalidad(){
-  const { s, resp, hallazgo } = CAL;
+  const { s, puntos, tieneOt, resp, obs } = CAL;
+  const hechos = puntos.filter(p => resp[p.clave]).length;
+  let seccion = '';
+  const html = puntos.map((p, i) => {
+    const titulo = p.seccion !== seccion ? `<h4 style="margin:18px 0 6px;${p.critico ? 'color:var(--danger,#c00000);' : ''}">${p.critico ? '⚠️ ' : ''}${esc(p.seccion)}</h4>` : '';
+    seccion = p.seccion;
+    const r = resp[p.clave];
+    const b = (v, txt, cls) => `<button type="button" class="btn small ${r === v ? cls : 'secondary'}" onclick="calMarcar(${i}, '${v}')">${txt}</button>`;
+    return `${titulo}<div class="field" style="padding:8px 0;border-top:1px solid var(--border);">
+      <div style="margin-bottom:6px;${p.critico ? 'color:var(--danger,#c00000);font-weight:700;' : ''}">${esc(p.texto)}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${b('cumple', '✔ Cumple', '')}${b('no_cumple', '✖ No cumple', 'danger')}${b('no_aplica', 'No aplica', '')}</div>
+      ${r === 'no_cumple' ? `<textarea id="cal_o_${i}" placeholder="¿Qué hay que corregir?" style="margin-top:6px;">${esc(obs[p.clave] || '')}</textarea>
+        <button type="button" class="btn small secondary" style="margin-top:6px;" onclick="calFoto()">📷 Foto de lo que hay que corregir</button>` : ''}
+    </div>`;
+  }).join('');
   showModal(`
     <h3>Revisión de calidad</h3>
     <p class="subtle" style="margin-top:0;">${esc(s.vehiculo || '')} · ${esc(s.placas || '')} · ${esc(s.numero)}</p>
-    <p>Revisa la unidad punto por punto, en este orden:</p>
-    ${CAL_DIMENSIONES.map(([d, pregunta], i) => `<div class="field">
-      <label><b>${i + 1}.</b> ${esc(pregunta)}</label>
-      <div style="display:flex;gap:6px;">
-        <button type="button" class="btn ${resp[d] === 'bien' ? '' : 'secondary'}" onclick="calMarcar(${i}, 'bien')">✔ Bien</button>
-        <button type="button" class="btn ${resp[d] === 'mal' ? 'danger' : 'secondary'}" onclick="calMarcar(${i}, 'mal')">✖ Hay que corregir</button>
-      </div>
-      ${resp[d] === 'mal' ? `<textarea id="cal_h_${i}" placeholder="¿Qué hay que corregir?" style="margin-top:6px;">${esc(hallazgo[d] || '')}</textarea>` : ''}
-    </div>`).join('')}
-    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarRevisionCalidad()">Guardar revisión</button></div>`, true);
+    ${tieneOt ? '' : '<div class="badge ambar" style="white-space:normal;margin-bottom:8px;">Esta unidad no tiene las piezas de su OT en el tablero: revisa los puntos generales y lo que diga la OT.</div>'}
+    <p style="margin:0;">Revisa la unidad punto por punto. <b>${hechos} de ${puntos.length}</b> revisados.</p>
+    ${html}
+    <div class="modal-actions"><button class="btn secondary" onclick="CAL = null; closeModal()">Cancelar</button>
+      <button class="btn" onclick="guardarRevisionCalidad()">Guardar revisión</button></div>`, true);
 }
 function calGuardarTextos(){
-  CAL_DIMENSIONES.forEach(([d], i) => { const el = document.getElementById('cal_h_' + i); if(el) CAL.hallazgo[d] = el.value.trim(); });
+  CAL.puntos.forEach((p, i) => { const el = document.getElementById('cal_o_' + i); if(el) CAL.obs[p.clave] = el.value.trim(); });
 }
-function calMarcar(i, valor){ calGuardarTextos(); CAL.resp[CAL_DIMENSIONES[i][0]] = valor; pintarRevisionCalidad(); }
+function calMarcar(i, valor){ calGuardarTextos(); CAL.resp[CAL.puntos[i].clave] = valor; pintarRevisionCalidad(); }
+function calFoto(){
+  calGuardarTextos();
+  FotosSC.abrirSubirFotos(CAL.id, 'otra', { titulo:'Foto de lo que hay que corregir', alTerminar: () => pintarRevisionCalidad() });
+}
 async function guardarRevisionCalidad(){
   calGuardarTextos();
-  const { id, porDim, resp, hallazgo } = CAL;
-  const faltan = CAL_DIMENSIONES.filter(([d]) => !resp[d]).map(([d]) => d);
-  if(faltan.length){ toast('Falta revisar: ' + faltan.join(', ') + '.', 'error'); return; }
-  const malSinTexto = CAL_DIMENSIONES.filter(([d]) => resp[d] === 'mal' && !hallazgo[d]);
-  if(malSinTexto.length){ toast('Escribe qué hay que corregir en: ' + malSinTexto.map(([d]) => d).join(', ') + '.', 'error'); return; }
+  const { id, puntos, resp, obs } = CAL;
+  const faltan = puntos.filter(p => !resp[p.clave]).length;
+  if(faltan){ toast(`Faltan ${faltan} punto(s) por revisar.`, 'error'); return; }
+  if(puntos.some(p => resp[p.clave] === 'no_cumple' && !obs[p.clave])){ toast('Escribe qué hay que corregir en cada punto que no cumple.', 'error'); return; }
   try{
-    for(const [d] of CAL_DIMENSIONES){
-      const cuerpo = resp[d] === 'bien' ? { resultado:'aprobado' } : { resultado:'rechazado', hallazgo: hallazgo[d] };
-      if(porDim[d]) await api('PATCH', '/api/checklist-calidad/' + porDim[d].id, cuerpo);
-      else await api('POST', '/api/checklist-calidad', { siniestro_id: id, dimension: d, ...cuerpo });
-    }
-    const todoBien = CAL_DIMENSIONES.every(([d]) => resp[d] === 'bien');
-    await api('PATCH', '/api/siniestros/' + id, { estado_calidad: todoBien ? 'liberado' : 'rechazado_a_retrabajo' });
-    toast(todoBien ? '✅ Calidad liberada. Alejandra ya puede avisarle al cliente.' : 'Quedó para corregir. Beto lo verá en su pantalla.', 'success', 6000);
-    closeModal(); render();
+    const r = await api('POST', '/api/calidad/' + id, { respuestas: puntos.map(p => ({ clave: p.clave, resultado: resp[p.clave], observacion: obs[p.clave] || '' })) });
+    await api('PATCH', '/api/siniestros/' + id, { estado_calidad: r.todo_bien ? 'liberado' : 'rechazado_a_retrabajo' });
+    toast(r.todo_bien ? '✅ Calidad liberada. Alejandra ya puede avisarle al cliente.' : 'Quedó para corregir. Beto lo verá en su pantalla.', 'success', 6000);
+    CAL = null; closeModal(); render();
   }catch(e){}
 }
 
@@ -2701,6 +2704,9 @@ async function viewSiniestro(id){
     const puedeEntregaDetalle = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
     const puedeFiniquito = currentUser && ['atencion_cliente','admin','jefe'].includes(currentUser.rol);
     const checklist = await api('GET','/api/checklist-calidad?siniestro_id='+id);
+    const revDigital = await api('GET','/api/calidad/'+id).catch(()=>({ puntos: [], tiene_ot:false })); // 12-nov-2026: checklist digital por OT
+    const contestados = revDigital.puntos.filter(p => p.resultado);
+    const LABEL_DIG = { cumple:['Cumple','verde'], no_cumple:['No cumple','rojo'], no_aplica:['No aplica','gris'] };
     const valesLista = await api('GET','/api/vales-pendientes?siniestro_id='+id+'&estado=todos').catch(()=>[]);
     const LABEL_CAL = { en_inspeccion:'En inspección', rechazado_a_retrabajo:'Rechazado a retrabajo', reinspeccion:'Reinspección', liberado:'Liberado' };
     const LABEL_RES = { pendiente:'Pendiente', aprobado:'Aprobado', rechazado:'Rechazado' };
@@ -2714,8 +2720,20 @@ async function viewSiniestro(id){
     </tbody></table>
     ${puedeCalidad?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="abrirFormEstadoCalidad(${id})">Actualizar estado de calidad</button></div>`:''}
 
-    <h4 style="margin-top:16px;">Checklist (7 dimensiones)</h4>
-    ${checklist.length===0?'<div class="empty">Sin rubros capturados todavía.</div>':`
+    <h4 style="margin-top:16px;">Checklist de calidad ${revDigital.tiene_ot ? '(por OT)' : '(puntos generales; sin piezas de la OT)'}</h4>
+    ${!contestados.length ? '<div class="empty">Todavía no se revisa.</div>' : `
+    <p class="subtle" style="margin:0 0 6px;">Revisó ${esc(contestados[0].inspector_nombre || '—')} · ${esc(String(contestados[0].fecha || '').slice(0,16))}</p>
+    <table><thead><tr><th>Punto</th><th>Resultado</th><th>Qué corregir</th></tr></thead><tbody>
+    ${revDigital.puntos.map(p=>`<tr>
+      <td style="${p.critico?'color:var(--danger,#c00000);font-weight:700;':''}">${esc(p.texto)}</td>
+      <td>${p.resultado?`<span class="badge ${LABEL_DIG[p.resultado][1]}">${LABEL_DIG[p.resultado][0]}</span>`:'—'}</td>
+      <td>${esc(p.observacion||'')}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+    ${puedeChecklist?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirRevisionCalidad(${id})">🔍 Revisar calidad</button></div>`:''}
+
+    ${checklist.length===0?'':`<h4 style="margin-top:16px;">Checklist anterior (7 dimensiones)</h4>`}
+    ${checklist.length===0?'':`
     <table><thead><tr><th>Dimensión</th><th>Resultado</th><th>Hallazgo</th><th>Inspector</th><th></th></tr></thead><tbody>
     ${checklist.map(c=>`<tr>
       <td>${esc(c.dimension)}</td>
@@ -2725,7 +2743,6 @@ async function viewSiniestro(id){
       <td>${puedeChecklist?`<button class="btn small secondary" onclick="abrirFormEditarChecklistCalidad(${c.id})">Editar</button>`:''}</td>
     </tr>`).join('')}
     </tbody></table>`}
-    ${puedeChecklist?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoChecklistCalidad(${id})">+ Agregar rubro</button></div>`:''}
 
     <h3 style="margin-top:20px;">Entrega</h3>
     <table class="kv"><tbody>
