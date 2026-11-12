@@ -550,32 +550,163 @@ const MOTIVOS_DETENIDO = {
   falta_material: { etiqueta:'Falta material', quien:'Roberto' },
   otro: { etiqueta:'Otro', quien:'Roberto' },
 };
+// 12-nov-2026: foto de evidencia que tomó el técnico de patio al detenerse (pieza mal surtida / daño oculto).
+function verFotoEvidencia(id){
+  showModal(`<h3 style="margin-top:0;">Evidencia de patio</h3><img alt="Evidencia" src="/api/fotos/${Number(id)}/imagen" style="width:100%;border-radius:8px;">
+    <div class="modal-actions"><a class="btn secondary" href="/api/fotos/${Number(id)}/descargar">⬇ Descargar</a><button class="btn" onclick="closeModal()">Cerrar</button></div>`);
+}
 const diasTexto = n => n === 0 ? 'desde hoy' : n === 1 ? 'hace 1 día' : `hace ${n} días`;
 function seccionDetenidas(lista, ayuda){
   if(!lista || !lista.length) return '';
   return `<div id="sec-detenidas" style="margin-top:18px;"><h3 style="margin:0 0 2px;">⛔ Unidades detenidas que esperan algo de ti <span class="badge rojo">${lista.length}</span></h3>
     <p class="subtle" style="margin:0 0 6px;">${ayuda}</p>
     ${lista.map(d => cajaInicio(`${encabezadoUnidad(d.id, d.vehiculo, d.numero, [d.placas, d.aseguradora].filter(Boolean).map(esc).join(' · '))}
-      <span class="badge rojo" style="white-space:normal;">${esc(d.motivo_etiqueta)}${d.nota ? ': ' + esc(d.nota) : ''} · ${diasTexto(d.dias)}</span>`)).join('')}</div>`;
+      <span class="badge rojo" style="white-space:normal;">${esc(d.motivo_etiqueta)}${d.nota ? ': ' + esc(d.nota) : ''} · ${diasTexto(d.dias)}</span>
+      ${d.fotos && d.fotos.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">${d.fotos.map(f => `<img src="/api/fotos/${Number(f)}/imagen?mini=1" alt="Evidencia" onclick="verFotoEvidencia(${Number(f)})" style="width:72px;height:72px;object-fit:cover;border-radius:8px;cursor:pointer;">`).join('')}</div>` : ''}`)).join('')}</div>`;
 }
 
-/* ===================== INICIO DEL PERSONAL DE PATIO (9-nov-2026) =====================
-   Por ahora solo confirma su entrada del día. Más adelante aquí verán las unidades que Beto les asigne. */
+/* ===================== INICIO DEL PERSONAL DE PATIO (9-nov-2026; trabajos 12-nov-2026) =====================
+   Roberto (12-nov-2026): "necesito que para el personal en patio sea muy sencillo de utilizar". Una sola pantalla:
+   sus unidades (las que le asignó Beto) en tarjetas grandes, cada una con UN botón grande según cómo va:
+   ▶ Empecé · ✅ Terminé (con foto) · ⏸ Me detuve (elige la razón con un toque) · ▶ Seguir. Lógica en server/patio.js. */
+let PATIO = { motivos: {}, fotos: [], subiendo: 0 };
+const PT_BTN = 'width:100%;font-size:19px;padding:15px 12px;border-radius:12px;font-weight:700;';
+function horaLocal(utc){ if(!utc) return ''; const d = new Date(String(utc).replace(' ', 'T') + 'Z'); return isNaN(d) ? '' : d.toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' }); }
+function fechaBonita(f){
+  if(!f) return '';
+  const d = new Date(String(f).slice(0, 10) + 'T12:00:00');
+  return isNaN(d) ? f : d.toLocaleDateString('es-MX', { weekday:'short', day:'numeric', month:'short' }).replace('.', '');
+}
 async function viewInicioTecnico(){
   const nombre = esc(((currentUser && currentUser.nombre) || '').split(' ')[0]);
-  let e = null;
-  try{ e = await api('GET', '/api/asistencia/estado', null, { silent: true }); }catch(err){}
-  const registro = e && e.registrado
-    ? `<div style="font-size:56px;line-height:1;">✅</div>
-       <h2 style="margin:10px 0 4px;">Entrada registrada</h2>
-       <p style="font-size:18px;margin:0 0 12px;">Hoy llegaste a las <b>${esc(e.hora)}</b>.</p>
-       ${!e.retardo && e.racha ? `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;font-size:17px;font-weight:600;">${esc(mensajeRacha(e.racha))}</div>` : ''}`
-    : `<p style="font-size:17px;">Hoy todavía no registras tu entrada.</p>`;
-  return `<div class="section" style="max-width:480px;margin:24px auto;text-align:center;padding:26px;">
-      <h2 style="margin-top:0;">Hola, ${nombre} 👋</h2>
-      ${registro}
-      <p class="subtle" style="margin-top:18px;">Pronto aquí vas a ver las unidades que te asigne Beto.</p>
+  const [e, r] = await Promise.all([
+    api('GET', '/api/asistencia/estado', null, { silent: true }).catch(() => null),
+    api('GET', '/api/patio/mis-trabajos', null, { silent: true }).catch(() => ({ trabajos: [], motivos: {} }))]);
+  PATIO.motivos = r.motivos || {};
+  const hoy = hoyLocalISO();
+  const entrada = e && e.registrado ? `<span class="badge verde" style="font-size:14px;">✅ Entrada ${esc(e.hora)}</span>
+      ${!e.retardo && e.racha ? `<span class="subtle" style="margin-left:6px;">${esc(mensajeRacha(e.racha))}</span>` : ''}` : '';
+  const tarjetas = (r.trabajos || []).map(t => {
+    const fecha = !t.fecha_entrega ? '<span class="badge gris">Sin fecha de entrega</span>'
+      : t.vencida ? `<span class="badge rojo" style="font-size:14px;">⚠️ Vencida: ${esc(fechaBonita(t.fecha_entrega))}</span>`
+      : t.fecha_entrega === hoy ? '<span class="badge rojo" style="font-size:14px;">Se entrega HOY</span>'
+      : `<span class="badge ${t.fecha_entrega <= sumarDiasISO(hoy, 1) ? 'ambar' : 'verde'}" style="font-size:14px;">Entrega ${esc(fechaBonita(t.fecha_entrega))}</span>`;
+    const nom = esc(t.vehiculo).replace(/'/g, '&#39;');
+    let estado = '', botones = '';
+    if(t.accion === 'empezar'){
+      estado = `<div style="font-size:16px;margin:8px 0;">${esc(t.texto)}</div>`;
+      botones = `<button class="btn" style="${PT_BTN}background:#16a34a;" onclick="patioEmpece(${t.siniestro_id})">▶ Empecé</button>`;
+    } else if(t.accion === 'trabajando'){
+      estado = `<div style="font-size:16px;margin:8px 0;color:#15803d;font-weight:700;">🔧 Trabajando ${esc(t.etapa_etiqueta)}${t.desde ? ' desde las ' + esc(horaLocal(t.desde)) : ''}</div>`;
+      botones = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <button class="btn" style="${PT_BTN}background:#2563eb;" onclick="patioTermine(${t.siniestro_id}, '${nom}')">✅ Terminé</button>
+        <button class="btn" style="${PT_BTN}background:#d97706;" onclick="patioMeDetuve(${t.siniestro_id}, '${nom}')">⏸ Me detuve</button></div>`;
+    } else if(t.accion === 'seguir'){
+      estado = `<div style="font-size:16px;margin:8px 0;color:#b45309;font-weight:700;">⏸ ${esc(t.texto)}</div>`;
+      botones = `<button class="btn" style="${PT_BTN}background:#16a34a;" onclick="patioSeguir(${t.siniestro_id})">▶ Seguir</button>`;
+    } else {
+      const color = t.accion === 'detenida' ? '#b91c1c' : t.accion === 'espera_beto' ? '#1d4ed8' : '#6b7280';
+      const icono = t.accion === 'detenida' ? '⛔' : t.accion === 'espera_beto' ? '👀' : '⏳';
+      estado = `<div style="font-size:16px;margin:8px 0;color:${color};font-weight:600;">${icono} ${esc(t.texto)}</div>`;
+    }
+    return `<div class="section" style="margin:12px 0;padding:16px;${t.vencida ? 'border:2px solid #dc2626;' : ''}">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+        <b style="font-size:19px;">${esc(t.vehiculo)}</b>${fecha}</div>
+      <div style="font-size:15px;margin-top:2px;"><b>${esc(t.placas || 'Sin placas')}</b> · ${esc(t.area_etiqueta)}</div>
+      ${estado}
+      ${botones}
+      ${t.tiene_ot ? `<a class="btn secondary" style="display:block;text-align:center;margin-top:8px;font-size:16px;padding:10px;" href="/api/patio/${t.siniestro_id}/ot" target="_blank">📄 Ver orden de trabajo</a>` : ''}
     </div>`;
+  }).join('');
+  return `<div style="max-width:520px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;">
+        <h2 style="margin:0;">Hola, ${nombre} 👋</h2>${entrada}</div>
+      <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
+      <h3 style="margin:16px 0 0;">Mis trabajos <span class="badge gris">${(r.trabajos || []).length}</span></h3>
+      ${tarjetas || `<div class="section" style="text-align:center;padding:24px;font-size:17px;">Todavía no tienes unidades asignadas.<br><span class="subtle">Cuando Beto te asigne una, aparece aquí.</span></div>`}
+      <button class="btn secondary" style="width:100%;margin-top:6px;" onclick="render()">🔄 Actualizar</button>
+    </div>`;
+}
+function sumarDiasISO(iso, n){ const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+async function patioPost(url, body, ok){
+  try{ await api('POST', url, body || {}); closeModal(); if(ok) toast(ok, 'success'); render(); return true; }catch(e){ return false; }
+}
+const patioEmpece = id => patioPost(`/api/patio/${id}/empece`, null, '¡Listo! Empezaste.');
+const patioSeguir = id => patioPost(`/api/patio/${id}/seguir`, null, 'Listo, sigues trabajando.');
+
+// Fotos: se suben en cuanto se toman (comprimidas en el celular) y se guardan sus ids para el aviso.
+function patioCamaraHtml(texto){
+  return `<label class="btn" style="${PT_BTN}display:block;text-align:center;background:#0f766e;margin:10px 0 6px;">📷 ${texto}
+      <input type="file" accept="image/*" capture="environment" hidden onchange="patioFotoTomada(this)"></label>
+    <div id="ptFotos" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+    <div id="ptFotosTxt" class="subtle" style="margin-top:4px;"></div>`;
+}
+function patioPintarFotos(){
+  const n = PATIO.fotos.length;
+  const txt = document.getElementById('ptFotosTxt');
+  if(txt) txt.textContent = PATIO.subiendo ? 'Subiendo foto…' : n ? `${n} foto${n === 1 ? '' : 's'} lista${n === 1 ? '' : 's'}. Puedes tomar otra.` : '';
+  const b = document.getElementById('ptEnviar');
+  if(b && b.dataset.fotoObligatoria === '1') b.disabled = !n || PATIO.subiendo > 0;
+}
+async function patioFotoTomada(input){
+  const file = input.files && input.files[0]; input.value = '';
+  if(!file) return;
+  const cont = document.getElementById('ptFotos');
+  const img = document.createElement('img');
+  img.src = URL.createObjectURL(file); img.style.cssText = 'width:72px;height:72px;object-fit:cover;border-radius:8px;opacity:.5;';
+  if(cont) cont.appendChild(img);
+  PATIO.subiendo++; patioPintarFotos();
+  try{
+    const c = await FotosSC.comprimir(file);
+    const fd = new FormData();
+    fd.append('para', PATIO.para); fd.append('foto', c.foto, c.nombre);
+    if(c.miniatura) fd.append('miniatura', c.miniatura, 'mini.jpg');
+    const res = await fetch(`/api/patio/${PATIO.siniestro}/foto`, { method:'POST', body: fd });
+    const d = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(d.error || 'No se pudo subir la foto.');
+    PATIO.fotos.push(d.id); img.style.opacity = '1';
+  }catch(e){ img.remove(); toast(e.message + ' Vuelve a tomarla.', 'error', 6000); }
+  PATIO.subiendo--; patioPintarFotos();
+}
+
+function patioTermine(id, nombre){
+  PATIO.fotos = []; PATIO.subiendo = 0; PATIO.siniestro = id; PATIO.para = 'trabajo';
+  showModal(`<h3 style="margin-top:0;">✅ Terminé</h3>
+    <p style="font-size:17px;margin:4px 0;"><b>${esc(nombre)}</b></p>
+    <p style="font-size:16px;">Toma una foto del trabajo terminado. Beto la revisa y la pasa a la siguiente etapa.</p>
+    ${patioCamaraHtml('Tomar foto')}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" id="ptEnviar" data-foto-obligatoria="1" disabled onclick="patioEnviarTermine()">✅ Listo, terminé</button></div>`);
+}
+function patioEnviarTermine(){
+  if(PATIO.subiendo) return toast('Espera a que termine de subir la foto.', 'error');
+  patioPost(`/api/patio/${PATIO.siniestro}/termine`, { fotos: PATIO.fotos }, '¡Bien! Ya le avisamos a Beto.');
+}
+
+function patioMeDetuve(id, nombre){
+  PATIO.siniestro = id; PATIO.nombre = nombre;
+  showModal(`<h3 style="margin-top:0;">⏸ ¿Por qué te detuviste?</h3>
+    <p style="font-size:16px;margin:4px 0 10px;"><b>${esc(nombre)}</b></p>
+    ${Object.entries(PATIO.motivos).map(([k, m]) => `<button class="btn secondary" style="${PT_BTN}display:block;text-align:left;margin:8px 0;" onclick="patioMotivo('${k}')">${m.icono} ${esc(m.etiqueta)}</button>`).join('')}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>`);
+}
+const PATIO_PREGUNTA = { falta_pieza:'¿Qué pieza falta?', pieza_mal:'¿Qué pieza llegó mal?', dano_oculto:'¿Qué encontraste?', falta_material:'¿Qué material falta?' };
+function patioMotivo(k){
+  const m = PATIO.motivos[k];
+  PATIO.fotos = []; PATIO.subiendo = 0; PATIO.para = 'paro'; PATIO.motivo = k;
+  showModal(`<h3 style="margin-top:0;">${m.icono} ${esc(m.etiqueta)}</h3>
+    <p style="font-size:16px;margin:4px 0;"><b>${esc(PATIO.nombre)}</b></p>
+    ${m.avisa ? `<p style="font-size:16px;">Le avisamos a <b>${esc(m.avisa)}</b>.</p>` : '<p style="font-size:16px;">Queda en pausa. Cuando regreses a ella, toca "Seguir".</p>'}
+    ${PATIO_PREGUNTA[k] ? `<input id="ptNota" maxlength="160" placeholder="${PATIO_PREGUNTA[k]} (opcional)" style="font-size:17px;padding:12px;width:100%;box-sizing:border-box;">` : ''}
+    ${m.foto ? `<p style="font-size:16px;margin:12px 0 0;"><b>Toma foto del problema</b> para que ${esc(m.avisa)} lo vea.</p>${patioCamaraHtml('Tomar foto')}` : ''}
+    <div class="modal-actions"><button class="btn secondary" onclick="patioMeDetuve(PATIO.siniestro, PATIO.nombre)">← Atrás</button>
+      <button class="btn" id="ptEnviar" data-foto-obligatoria="${m.foto ? 1 : 0}" ${m.foto ? 'disabled' : ''} onclick="patioEnviarParo()">${m.avisa ? 'Enviar aviso' : 'Listo'}</button></div>`);
+}
+function patioEnviarParo(){
+  if(PATIO.subiendo) return toast('Espera a que termine de subir la foto.', 'error');
+  const nota = (document.getElementById('ptNota') || {}).value || '';
+  const m = PATIO.motivos[PATIO.motivo];
+  patioPost(`/api/patio/${PATIO.siniestro}/me-detuve`, { motivo: PATIO.motivo, nota, fotos: PATIO.fotos }, m.avisa ? `Listo, ya le avisamos a ${m.avisa}.` : 'Listo, queda en pausa.');
 }
 
 /* ===================== VISTA: INICIO DE BETO (5-nov-2026) =====================
@@ -586,7 +717,9 @@ async function viewInicioTecnico(){
 async function viewInicioBeto(){
   // 6-nov-2026: las unidades que Beto marca como Terminadas ya no desaparecen sin más -- le quedan en
   // "Revisar calidad" (él es el responsable; los demás pueden apoyar).
-  const [cola, calidad] = await Promise.all([api('GET','/api/reportes/panorama-beto'), api('GET','/api/inicio-orlando/calidad-pendiente').catch(()=>[])]);
+  const [cola, calidad, patio] = await Promise.all([api('GET','/api/reportes/panorama-beto'), api('GET','/api/inicio-orlando/calidad-pendiente').catch(()=>[]),
+    api('GET','/api/patio/beto', null, { silent:true }).catch(() => null)]); // 12-nov-2026: personal de patio
+  PATIO_BETO = patio;
   const hoy = new Date().toISOString().slice(0,10);
   const LABEL = { programado:'Sin iniciar', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación', pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', detenido:'Detenido', terminado:'Terminado' };
   const vencidas = cola.filter(x => x.fecha_entrega_prevista && x.fecha_entrega_prevista < hoy).length;
@@ -625,7 +758,9 @@ async function viewInicioBeto(){
         return m ? `<div style="margin-bottom:10px;"><span class="badge rojo" style="white-space:normal;">⛔ Detenida: ${esc(m.etiqueta)}${x.detenido_nota ? ' — ' + esc(x.detenido_nota) : ''}${dias !== null ? ' · ' + diasTexto(dias) : ''} · ya le avisó a ${esc(m.quien)}</span></div>`
           : `<div style="margin-bottom:10px;"><span class="badge rojo" style="white-space:normal;">⛔ Detenida sin motivo: toca "Resolver" e indica por qué</span></div>`;
       })() : `<div style="margin-bottom:10px;"><span class="badge ${colorMotivo(x)}">${esc(motivo)}</span> <b style="margin-left:4px;">${esc(LABEL[x.estado_produccion] || 'Sin iniciar')}</b></div>`}
+      ${patioLineaBeto(x.id)}
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${patio ? `<button class="btn small secondary" onclick="betoAsignar(${x.id}, '${esc(x.vehiculo || x.numero).replace(/'/g, '&#39;')}')">👷 Asignar</button>` : ''}
         ${x.ot_archivo_id ? `<a class="btn small secondary" href="/api/archivos/${x.ot_archivo_id}/descargar?ver=1" target="_blank">📄 Ver OT</a><button class="btn small secondary" onclick="FotosSC.compartirOt(${x.ot_archivo_id}, '${esc(x.numero)}')">📤 WhatsApp</button>` : '<span class="badge gris">Sin OT</span>'}
         ${!x.fecha_entrega_prevista && !x.en_transito ? `<button class="btn small secondary" onclick="abrirFormFechaEntrega(${x.id})">📅 Poner fecha</button>` : ''}
         ${x.en_transito || x.reingreso_citado ? `<button class="btn small" onclick="betoYaLlego(${x.id}, '${esc(x.vehiculo || x.numero)}')">🚗 Ya llegó</button>` : sinIniciar ? `<button class="btn small" onclick="abrirFormEtapaProduccion(${x.id})">▶ Iniciar reparación</button>` : sig ? `<button class="btn small" onclick="avanzarEtapaProduccion(${x.id},'${x.estado_produccion || ''}')">→ ${esc(LABEL[sig])}</button>` : `<button class="btn small ghost" onclick="abrirFormEtapaProduccion(${x.id})">Resolver</button>`}
@@ -640,6 +775,7 @@ async function viewInicioBeto(){
     ${tarjeta(porVencer, 'Vencen hoy o mañana', porVencer ? 'ambar' : 'verde', 'porVencer')}
     ${tarjeta(listas, 'Listas para iniciar', 'verde', 'listas')}
     ${tarjeta(reingresos, 'Reingresos por llegar', 'azul', 'reingresos')}
+    ${patio ? `<div class="card ${patio.llegaron < patio.total ? 'ambar' : 'verde'}" onclick="betoVerPatio()"><div class="num">${patio.llegaron} de ${patio.total}</div><div class="label">Patio hoy</div></div>` : ''}
   </div>
   ${filtro ? '' : seccionCalidad(calidad)}
   <div id="beto-unidades">
@@ -651,6 +787,55 @@ async function viewInicioBeto(){
   </div>`;
 }
 let BETO_FILTRO = null;
+/* ---- Personal de patio en la pantalla de Beto (12-nov-2026) ----
+   Roberto: Beto asigna hojalatero/pintor/mecánico y ve cómo va cada uno ("Terminé" lo confirma él pasando la
+   unidad a la siguiente etapa). Ve quién llegó HOY (solo el día: el historial de retardos sigue siendo de Roberto). */
+let PATIO_BETO = null;
+function patioLineaBeto(sid){
+  const lista = PATIO_BETO && PATIO_BETO.por_siniestro[sid];
+  if(!lista || !lista.length) return '';
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 10px;">${lista.map(a => {
+    const t = a.trabajo;
+    if(!t) return `<span class="badge gris" style="white-space:normal;">👷 ${esc(a.corto)} · ${esc(a.area_etiqueta)}</span>`;
+    if(t.estado === 'en_curso') return `<span class="badge verde" style="white-space:normal;">🔧 ${esc(a.corto)} trabajando ${esc(t.etapa_etiqueta)}</span>`;
+    if(t.estado === 'terminado') return `<span class="badge azul" style="white-space:normal;">✅ ${esc(a.corto)} terminó ${esc(t.etapa_etiqueta)}: revísala y pásala</span>`;
+    return `<span class="badge ambar" style="white-space:normal;">⏸ ${esc(a.corto)}: ${esc(t.motivo_etiqueta || 'en pausa')}${t.nota ? ' — ' + esc(t.nota) : ''}</span>`;
+  }).join('')}</div>`;
+}
+const PATIO_AREAS = [['hojalateria','Hojalatero'], ['pintura','Pintor'], ['mecanica','Mecánico']];
+function betoAsignar(sid, nombre){
+  const actuales = (PATIO_BETO.por_siniestro[sid] || []);
+  const opciones = area => {
+    const actual = (actuales.find(a => a.area === area) || {}).usuario_id;
+    const gente = PATIO_BETO.personal.filter(p => p.area === area).sort((a, b) => (b.llego - a.llego) || a.nombre.localeCompare(b.nombre));
+    return `<option value="">— Nadie —</option>` + gente.map(p => `<option value="${p.id}" ${p.id === actual ? 'selected' : ''}>${esc(p.nombre)}${p.llego ? '' : ' · no ha llegado'}</option>`).join('');
+  };
+  showModal(`<h3 style="margin-top:0;">👷 ¿Quién la trabaja?</h3>
+    <p style="margin:0 0 10px;"><b>${esc(nombre)}</b></p>
+    ${PATIO_AREAS.map(([area, puesto]) => `<div class="field"><label>${puesto}</label><select id="asig_${area}" style="font-size:16px;">${opciones(area)}</select></div>`).join('')}
+    <p class="subtle">El hojalatero también hace el armado y el pintor la preparación y el pulido. Les llega en su celular.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="betoGuardarAsignacion(${sid})">Guardar</button></div>`);
+}
+async function betoGuardarAsignacion(sid){
+  const actuales = (PATIO_BETO.por_siniestro[sid] || []);
+  try{
+    for(const [area] of PATIO_AREAS){
+      const nuevo = Number(document.getElementById('asig_' + area).value) || null;
+      const antes = (actuales.find(a => a.area === area) || {}).usuario_id || null;
+      if(nuevo !== antes) await api('POST', '/api/patio/asignar', { siniestro_id: sid, area, usuario_id: nuevo });
+    }
+    closeModal(); toast('Listo, quedó asignada.', 'success'); render();
+  }catch(e){}
+}
+function betoVerPatio(){
+  const p = PATIO_BETO.personal;
+  const fila = x => `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:16px;"><span>${esc(x.nombre)} <span class="subtle">${esc(x.puesto || '')}</span></span><b>${x.hora ? esc(x.hora) : ''}</b></div>`;
+  const llegaron = p.filter(x => x.llego).sort((a, b) => a.hora.localeCompare(b.hora)), faltan = p.filter(x => !x.llego);
+  showModal(`<h3 style="margin-top:0;">Patio hoy: ${llegaron.length} de ${p.length}</h3>
+    ${faltan.length ? `<h4 style="margin:10px 0 2px;color:#b91c1c;">No han llegado (${faltan.length})</h4>${faltan.map(fila).join('')}` : '<p>✅ Ya llegaron todos.</p>'}
+    ${llegaron.length ? `<h4 style="margin:14px 0 2px;color:#15803d;">Llegaron (${llegaron.length})</h4>${llegaron.map(fila).join('')}` : ''}
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>`);
+}
 // "Ya llegó" (10-nov-2026): Beto registra que una unidad circulando o citada ya está en el patio, para poder trabajarla.
 function betoYaLlego(id, nombre){
   showModal(`<h3>¿Ya llegó al taller?</h3>
@@ -3717,12 +3902,13 @@ async function guardarEdicionOt(otId){
 // Flujo de reparación (31-ago-2026), punto 7 autorizado por Roberto: catálogo fijo de técnicos por área
 // (en vez de texto libre), y el mismo hojalatero pasa a armado / el mismo pintor pasa a pulido de forma
 // automática (sugerida, siempre editable por si de verdad lo hizo alguien más).
+// 12-nov-2026 (Roberto): Fernando y Antonio "ya no trabajan" -> se quitan; se agrega Pedro (hojalatero con usuario).
 const TECNICOS_POR_AREA = {
   'Mecánica': ['Jesús Palomares','Proveedor externo'],
-  'Hojalatería': ['Marcelo','José','Vicente','Fernando','Fidel','Jaime'],
-  'Armado': ['Marcelo','José','Vicente','Fernando','Fidel','Jaime'],
-  'Pintura': ['Adrián','Gerardo','Antonio','Ángel','Marco','Ramiro'],
-  'Pulido': ['Adrián','Gerardo','Antonio','Ángel','Marco','Ramiro'],
+  'Hojalatería': ['Marcelo','José','Vicente','Fidel','Jaime','Pedro'],
+  'Armado': ['Marcelo','José','Vicente','Fidel','Jaime','Pedro'],
+  'Pintura': ['Adrián','Gerardo','Ángel','Marco','Ramiro'],
+  'Pulido': ['Adrián','Gerardo','Ángel','Marco','Ramiro'],
   'Lavado': []
 };
 const AREA_HEREDA_TECNICO_DE = { 'Armado':'Hojalatería', 'Pulido':'Pintura' };

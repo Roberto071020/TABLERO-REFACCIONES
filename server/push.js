@@ -137,8 +137,14 @@ function pendientesRoberto(db){
     .forEach(x => lista.push({ clave:`inconf-${x.id}`, titulo:'😕 Cliente GNP inconforme en la entrega', cuerpo:`${unidad(x)}: ${String(x.encuesta_comentarios || '').replace(/^Inconforme en la entrega: /, '')}` }));
   return lista;
 }
-const FUENTES = { orlando: pendientesOrlando, atencion_cliente: pendientesAlejandra, operativo: pendientesDaniela, beto: pendientesBeto,
-  admin: pendientesRoberto, jefe: pendientesRoberto };
+// 12-nov-2026 (personal de patio, ver server/patio.js): lo que reporta el técnico le llega a quien le toca
+// (Daniela: pieza; Orlando: daño oculto; Beto: "terminé" y falta material) y al técnico, cuando Beto le asigna una unidad.
+const P = require('./patio');
+const conPatio = (fuente, extra) => db => { let l = fuente(db); try{ l = l.concat(extra(db)); }catch(e){} return l; };
+function pendientesTecnico(db, usuario){ try{ return P.pushTecnico(db, usuario); }catch(e){ return []; } }
+pendientesTecnico.porUsuario = true; // la lista cambia por persona, no por rol
+const FUENTES = { orlando: conPatio(pendientesOrlando, P.pushOrlando), atencion_cliente: pendientesAlejandra, operativo: conPatio(pendientesDaniela, P.pushDaniela),
+  beto: conPatio(pendientesBeto, P.pushBeto), admin: pendientesRoberto, jefe: pendientesRoberto, tecnico: pendientesTecnico };
 
 // ---- Horario laboral (12-nov-2026, Roberto: "nada fuera de días u horarios laborales"; eligió L-V 9-7, Sáb 9-2).
 // Fuera de horario no se manda nada; lo que surja se avisa al abrir (agrupado si son más de 3).
@@ -163,7 +169,7 @@ function marcarAvisados(db, usuarioId, claves){
 function marcarBase(db, usuario){
   const fuente = FUENTES[usuario.rol];
   if(!fuente) return;
-  marcarAvisados(db, usuario.id, fuente(db).map(p => p.clave));
+  marcarAvisados(db, usuario.id, fuente(db, usuario).map(p => p.clave));
 }
 
 function guardarSuscripcion(db, usuario, sub, dispositivo){
@@ -216,7 +222,7 @@ async function barrido(db, { enviar = enviarReal, ahora = new Date() } = {}){
       resultado.usuarios++;
       const ya = new Set(db.prepare('SELECT clave FROM push_avisados WHERE usuario_id = ?').all(u.id).map(r => r.clave));
       let todos;
-      try{ todos = porRol[u.rol] || (porRol[u.rol] = fuente(db)); }catch(e){ console.error('[push] pendientes de', u.rol, e && e.message); continue; }
+      try{ todos = fuente.porUsuario ? fuente(db, u) : (porRol[u.rol] || (porRol[u.rol] = fuente(db))); }catch(e){ console.error('[push] pendientes de', u.rol, e && e.message); continue; }
       const nuevos = todos.filter(p => !ya.has(p.clave));
       if(!nuevos.length) continue;
       // Se marcan antes de enviar: si el envío falla no se reintenta en cada barrido (lo sigue viendo en pantalla).

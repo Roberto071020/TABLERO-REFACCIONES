@@ -14,6 +14,15 @@ const SIN_MOTIVO = { etiqueta:'Sin motivo registrado', quien:'Beto', para:'beto'
 
 function aMs(v){ if(!v) return NaN; const t = String(v); return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(t) ? t : t.replace(' ', 'T') + 'Z'); }
 
+// 12-nov-2026 (Roberto): si la detuvo un técnico de patio con fotos (pieza mal surtida, daño oculto), la evidencia
+// le llega a quien la tiene que destrabar junto con el aviso.
+function evidencia(db, s){
+  try{
+    const e = require('./patio').evidenciaParo(db, s.id);
+    return e && e.motivo === s.detenido_motivo ? e.fotos : [];
+  }catch(x){ return []; }
+}
+
 // Todas las unidades activas detenidas, de la que lleva más días a la que menos.
 function listarDetenidas(db){
   const filas = db.prepare(`SELECT id, numero, vehiculo, placas, aseguradora, detenido_motivo, detenido_nota, detenido_desde, actualizado_en
@@ -28,7 +37,8 @@ function listarDetenidas(db){
     const m = MOTIVOS[s.detenido_motivo] || SIN_MOTIVO;
     const dias = Math.max(0, Math.floor((ahora - aMs(desde)) / 86400000)) || 0;
     return { id: s.id, numero: s.numero, vehiculo: s.vehiculo, placas: s.placas, aseguradora: s.aseguradora,
-      motivo: s.detenido_motivo || null, motivo_etiqueta: m.etiqueta, nota: s.detenido_nota || null, quien: m.quien, para: m.para, desde, dias };
+      motivo: s.detenido_motivo || null, motivo_etiqueta: m.etiqueta, nota: s.detenido_nota || null, quien: m.quien, para: m.para, desde, dias,
+      fotos: evidencia(db, s) };
   }).sort((a, b) => b.dias - a.dias);
 }
 

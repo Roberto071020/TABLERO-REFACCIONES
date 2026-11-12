@@ -462,6 +462,8 @@ router.patch('/:id', requireAuth, (req, res)=>{
       nuevo.archivado, nuevo.archivado_en,
       req.params.id);
   auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+  // 12-nov-2026 (personal de patio): al pasar Beto la unidad a otra etapa queda confirmado el "Terminé" del técnico.
+  try{ require('../patio').alCambiarEtapa(db, anterior, nuevo); }catch(e){ console.error('[patio] alCambiarEtapa', e.message); }
   if(req._detenido){
     const d = req._detenido;
     db.prepare(`UPDATE siniestros SET detenido_motivo = ?, detenido_nota = ?, detenido_desde = CASE WHEN ? = 1 OR detenido_desde IS NULL THEN datetime('now') ELSE detenido_desde END WHERE id = ?`)
