@@ -26,6 +26,9 @@ const app = express();
 // HMAC de Meta (X-Hub-Signature-256), que se calcula sobre los bytes exactos recibidos, no sobre el objeto
 // ya parseado. No cambia nada del comportamiento existente para el resto de las rutas.
 app.use(express.json({ limit: '2mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
+// 12-nov-2026: acceso completo de Claude (Roberto: "haz lo necesario para que puedas realizar todo lo que yo te pida sin
+// restricciones"). Va ANTES de la sesión a propósito: usa su propia clave (CLAUDE_TOKEN), no cookies. Ver server/routes/accesoClaude.js.
+app.use('/api/externo/claude', require('./routes/accesoClaude'));
 app.use(session({
   store: new SqliteSessionStore(db), // corrige "Sesión expirada" tras cada reinicio (antes: MemoryStore)
   secret: process.env.SESSION_SECRET || 'cambia-este-secreto-en-produccion',
