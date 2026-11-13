@@ -15,6 +15,8 @@ const DECISIONES = ['pendiente','autorizado','rechazado','parcial'];
 const ESTADOS = ['detectado','documentando','enviado','en_autorizacion','autorizado','rechazado','incorporado_a_ot'];
 const TIPOS = ['dano_oculto','no_autorizado_inicial'];
 const HORAS_PLAZO_REAUTORIZACION = 24;
+// 13-nov-2026 (Roberto: "como es una reincidencia te pediría que tenga 12 horas").
+const HORAS_PLAZO_REINCIDENCIA = 12;
 
 function marcarVencido(c){
   const vencido = c.tipo === 'no_autorizado_inicial' && c.decision === 'pendiente' && c.fecha_limite && c.fecha_limite < new Date().toISOString();
@@ -112,6 +114,30 @@ router.patch('/:id', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
     .run(nuevo.causa, nuevo.fecha, nuevo.pieza_operacion, nuevo.archivo_id||null, nuevo.importe, nuevo.folio, nuevo.decision, nuevo.impacto_dias, nuevo.estado, nuevo.ot_id||null, decisionEn, req.params.id);
   auditarCambios(db, { entidad_tipo:'complemento', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
   res.json(marcarVencido(db.prepare(`SELECT c.*, u.nombre as autor_nombre FROM complementos c LEFT JOIN usuarios u ON u.id=c.autor_id WHERE c.id=?`).get(req.params.id)));
+});
+
+// 13-nov-2026 (Roberto: "actívale ese pendiente de nuevo a Orlando" / "como es una reincidencia te pediría
+// que tenga 12 horas"): reactiva una reautorización (piezas no autorizadas) que sigue sin resolverse. Regresa
+// a la lista de Orlando marcada como REINCIDENCIA, con un plazo nuevo de 12 h contado desde ahora. Solo
+// Roberto (admin/jefe) puede hacerlo. Opcional: "nota" se agrega a la causa para que Orlando vea qué falta.
+router.post('/:id/reincidencia', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  const anterior = db.prepare('SELECT * FROM complementos WHERE id = ?').get(req.params.id);
+  if(!anterior) return res.status(404).json({ error:'Complemento no encontrado.' });
+  if(anterior.tipo !== 'no_autorizado_inicial') return res.status(400).json({ error:'Solo aplica a reautorizaciones por piezas no autorizadas.' });
+  if(anterior.decision !== 'pendiente') return res.status(400).json({ error:'Esta reautorización ya tiene respuesta de la aseguradora.' });
+  const limite = new Date(Date.now() + HORAS_PLAZO_REINCIDENCIA*3600*1000).toISOString();
+  const nota = req.body && req.body.nota ? String(req.body.nota).trim() : '';
+  const causa = nota ? `${anterior.causa || ''}${anterior.causa ? ' · ' : ''}${nota}` : anterior.causa;
+  db.prepare(`UPDATE complementos SET estado='documentando', reincidencia=1, fecha_limite=?, causa=?, actualizado_en=datetime('now') WHERE id=?`)
+    .run(limite, causa, anterior.id);
+  const nuevo = db.prepare('SELECT * FROM complementos WHERE id = ?').get(anterior.id);
+  auditarCambios(db, { entidad_tipo:'complemento', entidad_id:anterior.id, anterior, nuevo, usuario:req.session.user });
+  db.prepare(`INSERT INTO tareas (siniestro_id,tipo,descripcion,fecha_limite,estado,origen,disparador,creado_por)
+    VALUES (?,?,?,?,'pendiente','automatica','reautorizacion_reincidencia',?)`)
+    .run(anterior.siniestro_id, 'aviso',
+      `REINCIDENCIA: la reautorización de ${anterior.pieza_operacion} sigue sin resolverse. Plazo de ${HORAS_PLAZO_REINCIDENCIA}h, antes de ${limite.slice(0,16).replace('T',' ')}.${nota ? ' ' + nota : ''}`,
+      limite.slice(0,10), req.session.user.id);
+  res.json(marcarVencido(db.prepare(`SELECT c.*, u.nombre as autor_nombre FROM complementos c LEFT JOIN usuarios u ON u.id=c.autor_id WHERE c.id=?`).get(anterior.id)));
 });
 
 module.exports = router;

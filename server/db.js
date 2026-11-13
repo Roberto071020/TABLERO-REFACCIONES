@@ -1040,6 +1040,11 @@ if(!tieneColumna('siniestros', 'expediente_completo_enviado_en')){
 if(!tieneColumna('complementos', 'decision_en')){
   db.exec(`ALTER TABLE complementos ADD COLUMN decision_en TEXT;`);
 }
+// 13-nov-2026 (Roberto: "como es una reincidencia te pediría que tenga 12 horas"): una reautorización que
+// Orlando dio por enviada pero no se resolvió se reactiva como REINCIDENCIA, con plazo de 12 h.
+if(!tieneColumna('complementos', 'reincidencia')){
+  db.exec(`ALTER TABLE complementos ADD COLUMN reincidencia INTEGER NOT NULL DEFAULT 0;`);
+}
 
 // MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): tipo de reparación lo captura Orlando durante su
 // revisión técnica (no Alejandra en el alta), con 6 valores fijos del taller.

@@ -21,7 +21,7 @@ function calcularInicioOrlando(db){
   const ahora = Date.now();
   const base = 's.id AS siniestro_id, s.numero AS siniestro_numero, s.vehiculo, s.placas, s.aseguradora, s.cliente_nombre';
 
-  const reautorizar = db.prepare(`SELECT c.id, c.pieza_operacion, c.causa, c.fecha_limite, c.estado, c.creado_en, ${base}
+  const reautorizar = db.prepare(`SELECT c.id, c.pieza_operacion, c.causa, c.fecha_limite, c.estado, c.creado_en, c.reincidencia, ${base}
     FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
     WHERE c.tipo = 'no_autorizado_inicial' AND c.decision = 'pendiente' AND c.estado IN ('detectado','documentando') AND s.archivado = 0
     ORDER BY c.fecha_limite ASC`).all().map(c => {

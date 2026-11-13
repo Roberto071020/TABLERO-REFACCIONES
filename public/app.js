@@ -1699,7 +1699,9 @@ async function viewInicioOrlando(){
   ${seccionDetenidas(det.detenidas, 'Beto encontró daño oculto. Documéntalo como complemento con sus fotos para que se pueda autorizar.')}
   ${seccionInicio('reautorizar', '🚨 Fotos editadas para reautorizar', `La aseguradora no autorizó estas piezas. Tienes ${d.horas_reautorizacion} horas para mandar las fotos editadas.`, d.reautorizar,
     c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c))}
-      <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || c.causa || '')}</div>
+      <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || '')}</div>
+      ${c.reincidencia ? `<div style="margin-bottom:8px;"><span class="badge rojo">🔁 Reincidencia: plazo de 12 h</span></div>` : ''}
+      ${c.causa && c.causa !== 'Piezas no autorizadas por la aseguradora' ? `<div class="subtle" style="margin-bottom:8px;">${esc(c.causa)}</div>` : ''}
       <div style="margin-bottom:10px;">${c.horas_restantes == null ? '' : c.horas_restantes < 0 ? `<span class="badge rojo">Venció hace ${-c.horas_restantes} h — avísale a Roberto</span>` : `<span class="badge ${c.horas_restantes <= 6 ? 'rojo' : 'ambar'}">Te quedan ${c.horas_restantes} h</span>`}
         <span class="badge ${c.fotos_editadas ? 'verde' : 'gris'}">${c.fotos_editadas} foto(s) subidas</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -4225,6 +4227,18 @@ async function guardarEdicionOperacion(operacionId){
   }catch(e){}
 }
 
+// 13-nov-2026 (Roberto: "como es una reincidencia te pediría que tenga 12 horas"): regresa la
+// reautorización a la lista de Orlando con plazo de 12 h desde ahora.
+async function robReincidencia(id, nombre){
+  const ok = await confirmDialog(`¿Reactivar la reautorización de ${nombre} como REINCIDENCIA? Orlando tendrá 12 horas desde ahora.`, {titulo:'Reincidencia', textoOk:'Reactivar (12 h)'});
+  if(!ok) return;
+  try{
+    await api('POST', '/api/complementos/' + id + '/reincidencia', {});
+    toast('Reactivada: Orlando tiene 12 horas.', 'success');
+    render();
+  }catch(e){}
+}
+
 // Proceso_Completo_Servicio_Cristian.docx (sección 7): solicitud de reautorización por piezas no
 // autorizadas -- exclusiva de admin/jefe (Roberto), plazo de 24h calculado por el backend.
 // 6-nov-2026: buscar el expediente por número de siniestro o placas sin salir de Valuación (las unidades ya
@@ -5515,12 +5529,13 @@ async function viewValuacion(){
   </div>
   ${puedeReaut && reauts.length ? `<div class="section" style="margin-top:12px;">
     <h3 style="margin-top:0;">Reautorizaciones en curso (${reauts.length})</h3>
-    <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Piezas no autorizadas</th><th>Plazo</th></tr></thead><tbody>
+    <table><thead><tr><th>Siniestro</th><th>Vehículo</th><th>Piezas no autorizadas</th><th>Plazo</th><th></th></tr></thead><tbody>
     ${reauts.map(c => { const h = horasRestantes(c); return `<tr>
       <td><span class="link" onclick="goSiniestro(${c.siniestro_id})">${esc(c.siniestro_numero || '')}</span></td>
       <td>${esc(c.vehiculo || '')} ${esc(c.placas || '')}</td>
       <td>${esc(c.pieza_operacion || c.causa || '')}</td>
-      <td>${c.estado === 'enviado' ? '<span class="badge verde">✔ Orlando ya envió las fotos</span>' : h == null ? '—' : h < 0 ? `<span class="badge rojo">Vencida hace ${-h} h</span>` : `<span class="badge ${h <= 6 ? 'ambar' : 'verde'}">Quedan ${h} h</span>`}</td>
+      <td>${c.reincidencia ? '<span class="badge rojo">🔁 Reincidencia</span> ' : ''}${c.estado === 'enviado' ? '<span class="badge verde">✔ Orlando ya envió las fotos</span>' : h == null ? '—' : h < 0 ? `<span class="badge rojo">Vencida hace ${-h} h</span>` : `<span class="badge ${h <= 6 ? 'ambar' : 'verde'}">Quedan ${h} h</span>`}</td>
+      <td><button class="btn small secondary" onclick="robReincidencia(${c.id}, '${esc(c.vehiculo || c.siniestro_numero || '')}')">🔁 Reincidencia (12 h)</button></td>
     </tr>`; }).join('')}
     </tbody></table></div>` : ''}
   <p class="subtle">Expedientes con checklist documental listo, pendientes de resolver su valuación y autorización. La ruta de refacciones (Inpart/autosurtido/pago de daños) se recalcula sola según la aseguradora y las piezas autorizadas.</p>
