@@ -121,6 +121,22 @@ function calcularInicioDaniela(db){
     WHERE z.estatus = 'Recibida físicamente' AND z.fecha_recepcion >= datetime('now', ?)
     ORDER BY z.fecha_recepcion DESC LIMIT 200`).all(`-${DIAS_YA_LLEGARON} days`);
 
+  // 13-nov-2026 (Orlando, aprobado por Roberto): reautorizaciones que Orlando no puede regresar sin algo de Daniela.
+  const reautorizaciones = db.prepare(`SELECT c.id, c.pieza_operacion, c.con_daniela_nota, c.con_daniela_desde, s.id AS siniestro_id, s.numero AS siniestro_numero,
+      s.vehiculo, s.placas, s.aseguradora
+    FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
+    WHERE c.tipo = 'no_autorizado_inicial' AND c.decision = 'pendiente' AND c.con_daniela = 1 AND s.archivado = 0
+    ORDER BY c.con_daniela_desde ASC`).all();
+  // 13-nov-2026 (Orlando): "si son autosurtidos, que pueda colocar las piezas que requiero para que Daniela las consiga".
+  const autosurtido = db.prepare(`SELECT s.id AS siniestro_id, s.numero AS siniestro_numero, s.vehiculo, s.placas, s.aseguradora,
+      (SELECT COUNT(*) FROM autosurtido_piezas a WHERE a.siniestro_id = s.id) AS piezas,
+      (SELECT GROUP_CONCAT(a.pieza, ', ') FROM autosurtido_piezas a WHERE a.siniestro_id = s.id) AS lista
+    FROM siniestros s
+    WHERE s.archivado = 0 AND s.tipo_reparacion = 'AUTO_SURTIDO' AND COALESCE(s.enviado_propietario, 0) = 1
+      AND COALESCE(s.autosurtido_cotizado_en, '') = '' AND COALESCE(s.autosurtido_reingreso_en, '') = ''
+      AND (s.fecha_entrega_real IS NULL OR s.fecha_entrega_real = '')
+    ORDER BY s.enviado_propietario_fecha ASC`).all();
+
   const revisa = {
     vales: db.prepare(`SELECT COUNT(*) n FROM vales_pendientes WHERE estado='pendiente'`).get().n,
     discrepancias: db.prepare(`SELECT COUNT(*) n FROM discrepancias_proveedor WHERE estado='abierta'`).get().n,
@@ -136,9 +152,11 @@ function calcularInicioDaniela(db){
     mal_surtidas: mal.length,
     pedidos_sin_piezas: pedidosSinPiezas.length,
     vencidas_viejas: viejas.length,
+    reautorizaciones: reautorizaciones.length,
+    autosurtido: autosurtido.length,
   };
   return { hoy, numeros, recibir: [...recibirPorUnidad.values()], vencidas, confirmar, correos, mal,
-    pedidos_sin_piezas: pedidosSinPiezas, viejas: viejas.sort((a, b) => b.dias_vencida - a.dias_vencida), ya_llegaron: yaLlegaron, revisa };
+    pedidos_sin_piezas: pedidosSinPiezas, reautorizaciones, autosurtido, viejas: viejas.sort((a, b) => b.dias_vencida - a.dias_vencida), ya_llegaron: yaLlegaron, revisa };
 }
 
 module.exports = { calcularInicioDaniela, archivarCorreosViejos, archivarCorreosSiToca, DIAS_VENCIDA_VIEJA, DIAS_CORREO_VIEJO, CERRADAS };

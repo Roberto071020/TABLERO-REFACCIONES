@@ -19,7 +19,8 @@ const HORAS_PLAZO_REAUTORIZACION = 24;
 const HORAS_PLAZO_REINCIDENCIA = 12;
 
 function marcarVencido(c){
-  const vencido = c.tipo === 'no_autorizado_inicial' && c.decision === 'pendiente' && c.fecha_limite && c.fecha_limite < new Date().toISOString();
+  // 13-nov-2026: mientras esté con Daniela no se cuenta como vencida.
+  const vencido = c.tipo === 'no_autorizado_inicial' && c.decision === 'pendiente' && !c.con_daniela && c.fecha_limite && c.fecha_limite < new Date().toISOString();
   return { ...c, vencido };
 }
 
@@ -138,6 +139,35 @@ router.post('/:id/reincidencia', requireAuth, requireRole('admin','jefe'), (req,
       `REINCIDENCIA: la reautorización de ${anterior.pieza_operacion} sigue sin resolverse. Plazo de ${HORAS_PLAZO_REINCIDENCIA}h, antes de ${limite.slice(0,16).replace('T',' ')}.${nota ? ' ' + nota : ''}`,
       limite.slice(0,10), req.session.user.id);
   res.json(marcarVencido(db.prepare(`SELECT c.*, u.nombre as autor_nombre FROM complementos c LEFT JOIN usuarios u ON u.id=c.autor_id WHERE c.id=?`).get(anterior.id)));
+});
+
+// 13-nov-2026 (Orlando, aprobado por Roberto): la reautorización depende de Daniela (p. ej. confirmar algo con el
+// proveedor antes de regresar el expediente). Orlando la pasa a Daniela con una observación y su reloj se detiene;
+// cuando Daniela responde, regresa a Orlando con las horas que le quedaban (mínimo 1 h).
+router.post('/:id/con-daniela', requireAuth, requireRole('orlando','admin','jefe'), (req, res)=>{
+  const c = db.prepare('SELECT * FROM complementos WHERE id = ?').get(req.params.id);
+  if(!c) return res.status(404).json({ error:'Complemento no encontrado.' });
+  if(c.tipo !== 'no_autorizado_inicial' || c.decision !== 'pendiente') return res.status(400).json({ error:'Solo aplica a reautorizaciones pendientes.' });
+  if(c.con_daniela) return res.status(400).json({ error:'Ya está con Daniela.' });
+  const nota = String((req.body && req.body.nota) || '').trim().slice(0, 300);
+  if(!nota) return res.status(400).json({ error:'Escribe qué necesitas de Daniela.' });
+  const horas = c.fecha_limite ? Math.max(0, (Date.parse(c.fecha_limite) - Date.now()) / 3600000) : null;
+  db.prepare(`UPDATE complementos SET con_daniela=1, con_daniela_nota=?, con_daniela_desde=?, horas_al_pausar=?, actualizado_en=datetime('now') WHERE id=?`)
+    .run(nota, new Date().toISOString(), horas, c.id);
+  registrarAuditoria(db, { entidad_tipo:'complemento', entidad_id:c.id, accion:'pasa_a_daniela', campo:'con_daniela', valor_anterior:'0', valor_nuevo:nota, usuario:req.session.user });
+  res.json(marcarVencido(db.prepare('SELECT * FROM complementos WHERE id = ?').get(c.id)));
+});
+router.post('/:id/daniela-listo', requireAuth, requireRole('operativo','admin','jefe'), (req, res)=>{
+  const c = db.prepare('SELECT * FROM complementos WHERE id = ?').get(req.params.id);
+  if(!c) return res.status(404).json({ error:'Complemento no encontrado.' });
+  if(!c.con_daniela) return res.status(400).json({ error:'Esta reautorización no está esperando a Daniela.' });
+  const respuesta = String((req.body && req.body.respuesta) || '').trim().slice(0, 300);
+  const horas = Math.max(1, Number(c.horas_al_pausar) || 0);
+  const limite = new Date(Date.now() + horas * 3600000).toISOString();
+  const causa = respuesta ? `${c.causa || ''}${c.causa ? ' · ' : ''}Daniela: ${respuesta}` : c.causa;
+  db.prepare(`UPDATE complementos SET con_daniela=0, fecha_limite=?, causa=?, actualizado_en=datetime('now') WHERE id=?`).run(limite, causa, c.id);
+  registrarAuditoria(db, { entidad_tipo:'complemento', entidad_id:c.id, accion:'regresa_de_daniela', campo:'fecha_limite', valor_anterior:c.fecha_limite, valor_nuevo:limite, usuario:req.session.user });
+  res.json(marcarVencido(db.prepare('SELECT * FROM complementos WHERE id = ?').get(c.id)));
 });
 
 module.exports = router;

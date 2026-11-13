@@ -32,7 +32,8 @@ function calcularInicioRoberto(db, { alertas: conAlertas = true } = {}){
 
   const reautorizaciones = db.prepare(`SELECT c.id AS complemento_id, c.pieza_operacion, c.fecha_limite, c.estado, ${base}
     FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
-    WHERE c.tipo='no_autorizado_inicial' AND c.decision='pendiente' AND c.estado IN ('detectado','documentando') AND s.archivado = 0`).all()
+    WHERE c.tipo='no_autorizado_inicial' AND c.decision='pendiente' AND c.estado IN ('detectado','documentando') AND s.archivado = 0
+      AND COALESCE(c.con_daniela, 0) = 0`).all() // 13-nov-2026: con Daniela no corre el reloj de Orlando
     .map(c => ({ ...c, horas_restantes: c.fecha_limite ? Math.round((aMs(c.fecha_limite) - ahora) / 3600000) : null }))
     .filter(c => c.horas_restantes !== null && c.horas_restantes <= HORAS_ALERTA_REAUTORIZACION)
     .sort((a, b) => a.horas_restantes - b.horas_restantes);

@@ -21,13 +21,14 @@ function calcularInicioOrlando(db){
   const ahora = Date.now();
   const base = 's.id AS siniestro_id, s.numero AS siniestro_numero, s.vehiculo, s.placas, s.aseguradora, s.cliente_nombre';
 
-  const reautorizar = db.prepare(`SELECT c.id, c.pieza_operacion, c.causa, c.fecha_limite, c.estado, c.creado_en, c.reincidencia, ${base}
+  const reautorizar = db.prepare(`SELECT c.id, c.pieza_operacion, c.causa, c.fecha_limite, c.estado, c.creado_en, c.reincidencia, c.con_daniela, c.con_daniela_nota, c.con_daniela_desde, ${base}
     FROM complementos c JOIN siniestros s ON s.id = c.siniestro_id
     WHERE c.tipo = 'no_autorizado_inicial' AND c.decision = 'pendiente' AND c.estado IN ('detectado','documentando') AND s.archivado = 0
     ORDER BY c.fecha_limite ASC`).all().map(c => {
       const fotos = db.prepare(`SELECT COUNT(*) n FROM archivos WHERE entidad_tipo='siniestro' AND entidad_id=? AND tipo='foto' AND etapa='reautorizacion' AND eliminado=0 AND creado_en >= ?`)
         .get(c.siniestro_id, String(c.creado_en)).n;
-      return { ...c, horas_restantes: c.fecha_limite ? Math.round((aMs(c.fecha_limite) - ahora) / 3600000) : null, fotos_editadas: fotos };
+      // 13-nov-2026: con Daniela el reloj está detenido (horas_restantes = null).
+      return { ...c, horas_restantes: c.fecha_limite && !c.con_daniela ? Math.round((aMs(c.fecha_limite) - ahora) / 3600000) : null, fotos_editadas: fotos };
     });
 
   const revisar = db.prepare(`SELECT ${base}, s.estado_revision_tecnica, s.fecha_hora_disponible_revision, s.ingreso_tipo
@@ -52,9 +53,21 @@ function calcularInicioOrlando(db){
     FROM siniestros s
     WHERE s.archivado = 0 AND s.estatus_general != 'Cerrado' AND s.estado_revision_tecnica = 'revision_terminada'
       AND COALESCE(s.enviado_propietario, 0) = 0 AND (s.valuacion_fecha_envio IS NULL OR s.valuacion_fecha_envio = '')
+      -- 13-nov-2026 (Orlando): "para que no me afecte en el indicador los autosurtidos para envío a valuación, ya que
+      -- esos se valúan al ingreso de la unidad a reparar" -> autosurtido sin reingreso no va a captura.
+      AND NOT (COALESCE(s.tipo_reparacion,'') = 'AUTO_SURTIDO' AND COALESCE(s.autosurtido_reingreso_en,'') = '')
       AND ${SIN_AVANZAR}
     ORDER BY s.revision_tecnica_terminada_en ASC`).all()
     .map(s => ({ ...s, paso: !s.excel_capturado ? 'excel' : !s.fotos_completas ? 'fotos' : 'enviar' }));
+
+  // 13-nov-2026 (Orlando): "que me permita editar los expedientes ya que estén revisados por si cambia de tipo de
+  // reparación" -> sus revisiones de los últimos 15 días que todavía no se entregan.
+  const revisadas = db.prepare(`SELECT ${base}, s.tipo_reparacion, s.revision_tecnica_terminada_en
+    FROM siniestros s
+    WHERE s.archivado = 0 AND s.estatus_general != 'Cerrado' AND s.estado_revision_tecnica = 'revision_terminada'
+      AND s.revision_tecnica_terminada_en >= datetime('now','-15 days')
+      AND (s.fecha_entrega_real IS NULL OR s.fecha_entrega_real = '')
+    ORDER BY s.revision_tecnica_terminada_en DESC`).all();
 
   const numeros = {
     reautorizar: reautorizar.length,
@@ -63,7 +76,7 @@ function calcularInicioOrlando(db){
     complementos: complementos.length + reautorizar.length,
     por_enviar: captura.length,
   };
-  return { numeros, reautorizar, revisar, desarme, complementos, captura, horas_reautorizacion: HORAS_REAUTORIZACION };
+  return { numeros, reautorizar, revisar, desarme, complementos, captura, revisadas, horas_reautorizacion: HORAS_REAUTORIZACION };
 }
 
 module.exports = { calcularInicioOrlando };

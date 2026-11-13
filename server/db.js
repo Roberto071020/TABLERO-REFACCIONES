@@ -1045,6 +1045,12 @@ if(!tieneColumna('complementos', 'decision_en')){
 if(!tieneColumna('complementos', 'reincidencia')){
   db.exec(`ALTER TABLE complementos ADD COLUMN reincidencia INTEGER NOT NULL DEFAULT 0;`);
 }
+// 13-nov-2026 (Orlando, aprobado por Roberto): "no depende de mí en ese momento... se requiere intervención previa
+// por parte de Daniela... que se pueda colocar la observación de que está del lado de Daniela y no me cuente el tiempo
+// a mí". Mientras con_daniela=1 el reloj de la reautorización se detiene; horas_al_pausar guarda lo que le quedaba.
+for(const [col, tipo] of [['con_daniela','INTEGER NOT NULL DEFAULT 0'], ['con_daniela_nota','TEXT'], ['con_daniela_desde','TEXT'], ['horas_al_pausar','REAL']]){
+  if(!tieneColumna('complementos', col)) db.exec(`ALTER TABLE complementos ADD COLUMN ${col} ${tipo};`);
+}
 
 // MODIFICACIONES DE TABLERO ALEJANDRA (28-ago-2026): tipo de reparación lo captura Orlando durante su
 // revisión técnica (no Alejandra en el alta), con 6 valores fijos del taller.

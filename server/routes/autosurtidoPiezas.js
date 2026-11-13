@@ -14,6 +14,9 @@ const router = express.Router();
 // Quién puede capturar/editar piezas de autosurtido: Vanessa y Orlando (Orlando absorbe temporalmente la
 // captura de Vanessa, mismo criterio que el resto del expediente digital), más admin/jefe.
 const ROLES_EDICION = ['vanessa','orlando','admin','jefe'];
+// 13-nov-2026: Daniela (operativo) no agrega piezas (eso lo hace Orlando), pero sí completa costo, tiempo de entrega y
+// proveedor de las que él puso, para conseguirlas.
+const ROLES_COMPLETAR = [...ROLES_EDICION, 'operativo'];
 
 function requisitosCompletos(fila){
   return !!(fila.pieza && String(fila.pieza).trim()
@@ -47,7 +50,7 @@ router.post('/', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
   res.status(201).json({ ...fila, requisitada: requisitosCompletos(fila) });
 });
 
-router.patch('/:id', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
+router.patch('/:id', requireAuth, requireRole(...ROLES_COMPLETAR), (req, res)=>{
   const anterior = db.prepare('SELECT * FROM autosurtido_piezas WHERE id = ?').get(req.params.id);
   if(!anterior) return res.status(404).json({ error:'Pieza no encontrada.' });
   if(req.body.proveedor_origen && !['Radec','Grimex','Agencia','Mercado Libre','Otro'].includes(req.body.proveedor_origen)){

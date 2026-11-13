@@ -59,6 +59,7 @@ function pendientesOrlando(db){
   const d = calcularInicioOrlando(db);
   const lista = [];
   for(const c of d.reautorizar){
+    if(c.con_daniela) continue; // 13-nov-2026: está con Daniela, no le toca a Orlando
     lista.push({ clave:`reaut-${c.id}`, titulo:'🚨 Fotos editadas para reautorizar', cuerpo:`${unidad(c)}: ${c.pieza_operacion || c.causa || ''}. Tienes ${d.horas_reautorizacion} h.` });
     if(c.horas_restantes != null && c.horas_restantes >= 0 && c.horas_restantes <= HORAS_URGENTE_REAUT && !c.fotos_editadas){
       lista.push({ clave:`reaut-${c.id}-urgente`, titulo:`⏰ Quedan ${c.horas_restantes} h para la reautorización`, cuerpo:`${unidad(c)}: faltan las fotos editadas.` });

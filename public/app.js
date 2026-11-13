@@ -1556,6 +1556,15 @@ async function viewInicioDaniela(){
     ${tarjetaNumeroInicio(n.correos, 'Correos por aprobar', n.correos ? 'ambar' : 'verde', 'correos')}
   </div>
   ${seccionDetenidas(det.detenidas, 'Beto las detuvo porque falta una pieza o llegó mal. Consíguela o resuélvelo con el proveedor; cuando llegue, Beto la reanuda.')}
+  ${seccionInicio('dan-reaut', '⏸ Reautorizaciones que esperan tu respuesta', 'Orlando no puede regresar el expediente hasta que resuelvas esto. Su reloj está detenido.', d.reautorizaciones || [],
+    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, [c.placas, c.aseguradora].filter(Boolean).map(esc).join(' · '))}
+      <div style="margin-bottom:6px;"><b>Piezas:</b> ${esc(c.pieza_operacion || '')}</div>
+      <div style="margin-bottom:10px;"><b>Orlando necesita:</b> ${esc(c.con_daniela_nota || '')}${c.con_daniela_desde ? ` <span class="subtle">· desde ${esc(fechaCorta(String(c.con_daniela_desde).slice(0, 10)))}</span>` : ''}</div>
+      <button class="btn" onclick="danReautListo(${c.id})">✔ Ya quedó, regresar a Orlando</button>`))}
+  ${seccionInicio('dan-auto', '🛒 Autosurtido: conseguir piezas', 'Orlando ya puso las piezas que se necesitan. Completa costo, tiempo de entrega y proveedor.', d.autosurtido || [],
+    a => cajaInicio(`${encabezadoUnidad(a.siniestro_id, a.vehiculo, a.siniestro_numero, [a.placas, a.aseguradora].filter(Boolean).map(esc).join(' · '))}
+      <div style="margin-bottom:10px;"><b>${a.piezas} pieza(s):</b> ${esc(a.lista || '')}</div>
+      <button class="btn small" onclick="goSiniestro(${a.siniestro_id})">🛒 Abrir para cotizar</button>`))}
   ${seccionInicio('recibir', '1. Recibir piezas', 'El proveedor ya las entregó. Revísalas: si llegaron bien, márcalas; si no, registra qué pasó.', d.recibir,
     u => cajaInicio(`${encabezadoUnidad(u.siniestro_id, u.vehiculo, u.siniestro_numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
       ${u.piezas.map(z => (z.no_llego ? `<div style="margin-top:6px;"><span class="badge rojo" style="white-space:normal;">🚫 El auxiliar reporta que NO ha llegado aunque el proveedor la marcó entregada: avisa a la aseguradora</span></div>` : '') + (z.revisada_en ? `<div style="margin-top:6px;"><span class="badge verde" style="white-space:normal;">✅ Revisada por ${esc(String(z.revisada_por_nombre || '').split(' ')[0])}${horaLocal(z.revisada_en) ? ' a las ' + esc(horaLocal(z.revisada_en)) : ''}: llegó bien</span></div>` : '') + filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
@@ -1714,11 +1723,13 @@ async function viewInicioOrlando(){
       <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || '')}</div>
       ${c.reincidencia ? `<div style="margin-bottom:8px;"><span class="badge rojo">🔁 Reincidencia: plazo de 12 h</span></div>` : ''}
       ${c.causa && c.causa !== 'Piezas no autorizadas por la aseguradora' ? `<div class="subtle" style="margin-bottom:8px;">${esc(c.causa)}</div>` : ''}
-      <div style="margin-bottom:10px;">${c.horas_restantes == null ? '' : c.horas_restantes < 0 ? `<span class="badge rojo">Venció hace ${-c.horas_restantes} h — avísale a Roberto</span>` : `<span class="badge ${c.horas_restantes <= 6 ? 'rojo' : 'ambar'}">Te quedan ${c.horas_restantes} h</span>`}
+      ${c.con_daniela ? `<div style="margin-bottom:8px;"><span class="badge azul" style="white-space:normal;">⏸ Con Daniela: ${esc(c.con_daniela_nota || '')}</span><div class="subtle">Tu reloj está detenido hasta que Daniela responda.</div></div>` : ''}
+      <div style="margin-bottom:10px;">${c.con_daniela || c.horas_restantes == null ? '' : c.horas_restantes < 0 ? `<span class="badge rojo">Venció hace ${-c.horas_restantes} h — avísale a Roberto</span>` : `<span class="badge ${c.horas_restantes <= 6 ? 'rojo' : 'ambar'}">Te quedan ${c.horas_restantes} h</span>`}
         <span class="badge ${c.fotos_editadas ? 'verde' : 'gris'}">${c.fotos_editadas} foto(s) subidas</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn" onclick="FotosSC.abrirSubirFotos(${c.siniestro_id}, 'reautorizacion', { titulo:'Fotos editadas para reautorizar' })">📷 Subir fotos editadas</button>
         ${c.fotos_editadas ? `<button class="btn secondary" onclick="orlComplementoEnviado(${c.id}, true)">✔ Ya se enviaron</button>` : ''}
+        ${c.con_daniela ? '' : `<button class="btn secondary" onclick="orlConDaniela(${c.id})">⏸ Depende de Daniela</button>`}
       </div>`))}
   ${seccionInicio('revisar', '1. Revisar unidades nuevas', 'Ya las recibió Alejandra. Empieza por la que lleva más tiempo esperando.', d.revisar,
     x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
@@ -1738,6 +1749,10 @@ async function viewInicioOrlando(){
     x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
       <div style="margin-bottom:10px;"><span class="badge ambar">${PASO[x.paso][0]}</span> <span class="subtle">Paso ${x.paso === 'excel' ? 1 : x.paso === 'fotos' ? 2 : 3} de 3</span></div>
       <button class="btn" onclick="orlSiguientePaso(${x.siniestro_id}, '${x.paso}')">${PASO[x.paso][1]}</button>`))}
+  ${seccionInicio('revisadas', 'Mis revisiones recientes', 'Si cambió el tipo de reparación, corrígelo aquí (últimos 15 días).', d.revisadas || [],
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+      <div style="margin-bottom:10px;"><span class="badge ${x.tipo_reparacion ? 'azul' : 'rojo'}">${esc(TIPO_REP[x.tipo_reparacion] || 'Sin tipo de reparación')}</span></div>
+      <button class="btn small secondary" onclick="orlElegirTipo(${x.siniestro_id}, '${esc(x.vehiculo || x.siniestro_numero)}', false)">✏️ Cambiar tipo de reparación</button>`), { cerrada: true })}
   ${seccionCalidad(apoyo, { apoyo:true })}
   ${!(n.revisar + n.desarme + n.complementos + n.por_enviar) ? '<div class="empty" style="margin-top:12px;">🎉 No tienes pendientes por ahora.</div>' : ''}`;
 }
@@ -1756,7 +1771,65 @@ function orlRevisar(id, nombre){
 async function orlCambioRevision(id, estado, mensaje){
   try{ await api('PATCH', '/api/siniestros/' + id, { estado_revision_tecnica: estado }); toast(mensaje, 'success'); closeModal(); render(); }catch(e){}
 }
-function orlTerminarRevision(id){ return orlCambioRevision(id, 'revision_terminada', 'Revisión terminada. Ahora te sale en "Captura y envío a Roberto".'); }
+// 13-nov-2026 (Orlando, aprobado por Roberto): "cada que termino una revisión, me ponga el tipo de reparación, para que
+// no me afecte en el indicador los autosurtidos para envío a valuación... y si son autosurtidos, que pueda colocar las
+// piezas que requiero para que Daniela las consiga". También sirve para corregir el tipo después ("por si cambia").
+const TIPO_REP = { TRADICIONAL:'Tradicional', EXPRES:'Exprés', AUTO_SURTIDO:'Autosurtido', BDEO:'BDEO', PDD:'PDD', CE:'CE' };
+function orlTerminarRevision(id){ return orlElegirTipo(id, '', true); }
+function orlElegirTipo(id, nombre, terminar){
+  showModal(`<h3 style="margin-top:0;">${terminar ? 'Revisión terminada' : 'Cambiar tipo de reparación'}${nombre ? ' · ' + esc(nombre) : ''}</h3>
+    <p style="margin:4px 0 10px;"><b>¿Qué tipo de reparación es?</b></p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      ${Object.entries(TIPO_REP).map(([k, t]) => `<button class="btn secondary" onclick="orlTipoElegido(${id}, '${k}', ${terminar})">${esc(t)}</button>`).join('')}
+    </div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>`);
+}
+function orlTipoElegido(id, tipo, terminar){
+  if(tipo !== 'AUTO_SURTIDO') return orlGuardarTipo(id, tipo, terminar, []);
+  showModal(`<h3 style="margin-top:0;">Autosurtido</h3>
+    <p style="margin:4px 0;">Escribe las piezas que se necesitan, <b>una por renglón</b>. Le llegan a <b>Daniela</b> para que las consiga.</p>
+    <p class="subtle" style="margin:0 0 8px;">No cuenta en tu indicador de envío a valuación: se valúa cuando la unidad reingresa.</p>
+    <textarea id="orlPiezasAuto" rows="6" style="width:100%;box-sizing:border-box;font-size:16px;" placeholder="Fascia delantera&#10;Faro izquierdo"></textarea>
+    <div class="modal-actions"><button class="btn secondary" onclick="orlElegirTipo(${id}, '', ${terminar})">← Atrás</button>
+      <button class="btn" onclick="orlGuardarTipo(${id}, 'AUTO_SURTIDO', ${terminar}, document.getElementById('orlPiezasAuto').value.split('\n'))">Guardar y mandar a Daniela</button></div>`);
+}
+async function orlGuardarTipo(id, tipo, terminar, piezas){
+  piezas = (piezas || []).map(p => String(p).trim()).filter(Boolean);
+  try{
+    await api('PATCH', '/api/siniestros/' + id, terminar ? { estado_revision_tecnica:'revision_terminada', tipo_reparacion: tipo } : { tipo_reparacion: tipo });
+    if(tipo === 'AUTO_SURTIDO' && piezas.length){
+      for(const pieza of piezas) await api('POST', '/api/autosurtido-piezas', { siniestro_id: id, pieza });
+      await api('PATCH', '/api/siniestros/' + id, { enviado_propietario: 1, enviado_propietario_fecha: hoyLocalISO() });
+    }
+    toast(tipo === 'AUTO_SURTIDO' ? (piezas.length ? 'Listo: Daniela ya tiene las piezas.' : 'Guardado como autosurtido.')
+      : terminar ? 'Revisión terminada. Ahora te sale en "Captura y envío a Roberto".' : 'Tipo de reparación actualizado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+// 13-nov-2026: la reautorización depende de Daniela -> se detiene el reloj de Orlando.
+function orlConDaniela(id){
+  showModal(`<h3 style="margin-top:0;">⏸ Depende de Daniela</h3>
+    <p style="margin:4px 0 8px;">¿Qué necesitas de Daniela para poder regresar el expediente? Tu reloj se detiene hasta que ella responda.</p>
+    <textarea id="orlNotaDaniela" rows="3" maxlength="300" style="width:100%;box-sizing:border-box;font-size:16px;" placeholder="Ej. confirmar con el proveedor que la tapa no incluye las molduras"></textarea>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" onclick="orlEnviarConDaniela(${id})">Pasar a Daniela</button></div>`);
+}
+async function orlEnviarConDaniela(id){
+  const nota = (document.getElementById('orlNotaDaniela') || {}).value || '';
+  if(!nota.trim()) return toast('Escribe qué necesitas de Daniela.', 'error');
+  try{ await api('POST', `/api/complementos/${id}/con-daniela`, { nota }); toast('Listo: Daniela ya lo tiene y tu reloj está detenido.', 'success'); closeModal(); render(); }catch(e){}
+}
+async function danReautListo(id){
+  showModal(`<h3 style="margin-top:0;">✔ Ya quedó</h3>
+    <p style="margin:4px 0 8px;">¿Qué le respondes a Orlando? (opcional)</p>
+    <textarea id="danRespReaut" rows="3" maxlength="300" style="width:100%;box-sizing:border-box;font-size:16px;"></textarea>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" onclick="danReautEnviar(${id})">Regresar a Orlando</button></div>`);
+}
+async function danReautEnviar(id){
+  try{ await api('POST', `/api/complementos/${id}/daniela-listo`, { respuesta: (document.getElementById('danRespReaut') || {}).value || '' });
+    toast('Listo: regresó a Orlando.', 'success'); closeModal(); render(); }catch(e){}
+}
 function orlPedirDesarme(id){ return orlCambioRevision(id, 'requiere_desarme', 'Marcada para desarme. Avísale a Beto.'); }
 function orlEmpezarRevision(id){ return orlCambioRevision(id, 'en_revision', 'Quedó como empezada.'); }
 async function orlComplementoEnviado(id, esReautorizacion){
@@ -2846,7 +2919,7 @@ async function viewSiniestro(id){
         <td>${esc(p.tiempo_entrega||'—')}</td>
         <td>${esc(p.proveedor_nombre||'—')}${p.proveedor_origen?` (${esc(p.proveedor_origen)})`:''}${p.proveedor_link?` · <a class="link" href="${esc(p.proveedor_link)}" target="_blank">link</a>`:''}</td>
         <td>${!p.requisitada?'<span class="badge ambar">Falta completar</span>':'<span class="badge verde">Completa</span>'}</td>
-        <td>${puedeCaptura?`<button class="btn small secondary" onclick="abrirFormEditarPiezaAutosurtido(${p.id},${id})">Editar</button> <button class="btn small ghost" onclick="eliminarPiezaAutosurtido(${p.id},${id})">Eliminar</button>`:''}</td>
+        <td>${puedeCaptura?`<button class="btn small secondary" onclick="abrirFormEditarPiezaAutosurtido(${p.id},${id})">Editar</button> <button class="btn small ghost" onclick="eliminarPiezaAutosurtido(${p.id},${id})">Eliminar</button>`:puedeDanielaAutosurtido?`<button class="btn small secondary" onclick="abrirFormEditarPiezaAutosurtido(${p.id},${id})">Completar</button>`:''}</td>
       </tr>`).join('')}
     </tbody></table>
     ${puedeCaptura?`<div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevaPiezaAutosurtido(${id})">+ Agregar pieza</button></div>`:''}
