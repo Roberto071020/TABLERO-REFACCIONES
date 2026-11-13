@@ -26,6 +26,7 @@ router.get('/reporte-arranque', (req, res)=>{
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   if(!claveValida(token)) return res.status(401).json({ error:'Clave inválida.' });
   const r = calcularReporteArranque(db);
+  require('../avisoReportes').enviarAvisoReportes(db).catch(() => {}); // 13-nov-2026
   const formato = req.query.formato;
   if(formato === 'texto') return res.type('text/plain; charset=utf-8').send(r.texto);
   res.json(r);
@@ -38,6 +39,7 @@ router.get('/corte-tarde', (req, res)=>{
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   if(!claveValida(token)) return res.status(401).json({ error:'Clave inválida.' });
   const r = require('../corteTarde').calcularCorteTarde(db);
+  require('../avisoReportes').enviarAvisoReportes(db).catch(() => {}); // 13-nov-2026
   if(req.query.formato === 'texto') return res.type('text/plain; charset=utf-8').send(r.texto);
   res.json(r);
 });

@@ -53,9 +53,12 @@
     $('rdAcciones').classList.add('hidden');
   }
 
+  // 13-nov-2026: ?tipo=corte muestra el corte de las 3 (lo abre el aviso de SC Control).
+  var esCorte = /[?&]tipo=corte\b/.test(location.search);
+  if(esCorte){ document.title = 'Corte de las 3 · Servicio Cristian'; document.querySelector('.rd-head h1').textContent = 'Corte de las 3'; }
   function cargar(){
     $('rdFecha').textContent = 'Cargando…';
-    fetch('/api/reportes/arranque-dia', { credentials: 'same-origin' })
+    fetch(esCorte ? '/api/reportes/corte-dia' : '/api/reportes/arranque-dia', { credentials: 'same-origin' })
       .then(function(r){
         if(r.status === 401){ throw { login: true }; }
         if(!r.ok){ throw new Error('HTTP ' + r.status); }
@@ -73,7 +76,7 @@
       .catch(function(e){
         $('rdFecha').textContent = '';
         if(e && e.login){
-          mostrarAviso('Primero inicia sesión en el tablero. <a href="/">Ir a iniciar sesión</a> y luego regresa a esta página.');
+          mostrarAviso('Primero inicia sesión en el tablero. <a href="/">Ir a iniciar sesión</a> y luego vuelve a tocar el aviso.');
         } else {
           mostrarAviso('No se pudo cargar el reporte. Revisa tu conexión y toca "Actualizar".');
           $('rdAcciones').classList.remove('hidden');

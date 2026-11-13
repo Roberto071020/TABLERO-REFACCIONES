@@ -189,7 +189,7 @@ function quitarSuscripcion(db, usuarioId, endpoint){
 // Manda un aviso a todos los celulares del usuario. `enviar` se puede reemplazar en pruebas.
 async function enviarAUsuario(db, usuarioId, aviso, enviar){
   const subs = db.prepare('SELECT * FROM push_suscripciones WHERE usuario_id = ?').all(usuarioId);
-  const payload = JSON.stringify({ titulo: aviso.titulo, cuerpo: aviso.cuerpo, tag: aviso.tag || aviso.clave || 'sc', url: '/' });
+  const payload = JSON.stringify({ titulo: aviso.titulo, cuerpo: aviso.cuerpo, tag: aviso.tag || aviso.clave || 'sc', url: aviso.url || '/' }); // url: 13-nov-2026, el aviso del reporte abre su página
   let enviados = 0;
   for(const s of subs){
     try{

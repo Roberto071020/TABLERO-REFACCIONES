@@ -604,6 +604,10 @@ router.get('/panorama-beto', requireAuth, (req, res)=>{
 router.get('/arranque-dia', requireAuth, (req, res)=>{
   res.json(calcularReporteArranque(db));
 });
+// 13-nov-2026: el aviso del corte de las 3 abre /reporte-dia.html?tipo=corte, que lee de aquí.
+router.get('/corte-dia', requireAuth, (req, res)=>{
+  res.json(require('../corteTarde').calcularCorteTarde(db));
+});
 
 /* ===================== Propuesta de Alejandra: pantalla "Pendientes de hoy" (27-ago-2026) =====================
    Documento "SEGUIMIENTO TABLERO ALE.docx". Tres secciones sobre datos YA existentes (nada se
