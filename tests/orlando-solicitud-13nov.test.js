@@ -15,7 +15,7 @@ const { calcularInicioOrlando } = require('../server/inicioOrlando');
 const { calcularInicioDaniela } = require('../server/inicioDaniela');
 const { calcularInicioRoberto } = require('../server/inicioRoberto');
 
-const PORT = 3994;
+const PORT = 3962;
 let server; const ses = {};
 async function req(q, method, url, body){
   const h = { 'Content-Type':'application/json' }; if(ses[q]) h.Cookie = ses[q];
@@ -77,4 +77,18 @@ test('ORL-2: "Depende de Daniela" detiene el reloj y al regresar conserva las ho
   assert.ok(horas > 4.8 && horas <= 5.01, 'regresa con ~5 h: ' + horas);
   assert.match(r.data.causa, /Daniela: No incluye molduras/);
   assert.equal(calcularInicioOrlando(db).reautorizar.find(x => x.id === c.data.id).con_daniela, 0);
+});
+
+test('ORL-3: "No está terminada" regresa la unidad a Beto como detenida con el motivo', async () => {
+  const { listarDetenidas } = require('../server/detenidas');
+  const s = sin('NT-1', { estado_produccion:'terminado' });
+  assert.equal((await req('dan', 'POST', `/api/inicio-orlando/calidad-pendiente/${s}/no-terminada`, { nota:'' })).status, 400);
+  const r = await req('dan', 'POST', `/api/inicio-orlando/calidad-pendiente/${s}/no-terminada`, { nota:'Falta la programación' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const u = db.prepare('SELECT estado_produccion, detenido_motivo, detenido_nota FROM siniestros WHERE id=?').get(s);
+  assert.equal(u.estado_produccion, 'detenido'); assert.equal(u.detenido_motivo, 'no_terminada');
+  assert.match(u.detenido_nota, /programación \(reporta Daniela\)/);
+  const d = listarDetenidas(db).find(x => x.id === s);
+  assert.equal(d.quien, 'Beto');
+  assert.equal((await req('dan', 'POST', `/api/inicio-orlando/calidad-pendiente/${s}/no-terminada`, { nota:'x' })).status, 400, 'ya no está terminada');
 });

@@ -31,7 +31,7 @@ const timezonePlugin = require('dayjs/plugin/timezone');
 dayjs.extend(utcPlugin); dayjs.extend(timezonePlugin);
 const TZ = 'America/Mexico_City';
 
-const PORT = 3997;
+const PORT = 3963; // 13-nov-2026: antes 3997, el mismo de whatsapp-bandeja-manual-visual; si esa prueba dejaba su servidor vivo, esta le pegaba a otra base y fallaba.
 const BASE = 'http://localhost:' + PORT;
 let server;
 let cookie = '';

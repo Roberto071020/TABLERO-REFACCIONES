@@ -13,7 +13,7 @@ process.env.TEST_DB_PATH = TEST_DB;
 const app = require('../server/index');
 const db = require('../server/db');
 const { calcularInicioDaniela } = require('../server/inicioDaniela');
-const PORT = 3993;
+const PORT = 3961;
 let server; let cookie = '';
 async function req(method, url, body){
   const h = {}; if(cookie) h.Cookie = cookie;

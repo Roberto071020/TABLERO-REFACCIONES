@@ -13,7 +13,7 @@ const app = require('../server/index');
 const db = require('../server/db');
 const { calcularInicioOrlando } = require('../server/inicioOrlando');
 
-const PORT = 3991;
+const PORT = 3960;
 const BASE = 'http://localhost:' + PORT;
 let server, cookie = '';
 async function req(method, url, body){

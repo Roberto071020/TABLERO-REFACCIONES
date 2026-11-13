@@ -629,6 +629,7 @@ const MOTIVOS_DETENIDO = {
   espera_autorizacion: { etiqueta:'Espera autorización', quien:'Roberto' },
   falta_material: { etiqueta:'Falta material', quien:'Roberto' },
   otro: { etiqueta:'Otro', quien:'Roberto' },
+  no_terminada: { etiqueta:'No estaba terminada', quien:'Beto' }, // 13-nov-2026
 };
 // 12-nov-2026: foto de evidencia que tomó el técnico de patio al detenerse (pieza mal surtida / daño oculto).
 function verFotoEvidencia(id){
@@ -1438,11 +1439,14 @@ function seccionInicio(id, titulo, ayuda, items, renderItem, { max = 10, cerrada
   return `<div id="sec-${id}" style="margin-top:18px;"><h3 style="margin:0 0 2px;">${titulo} <span class="badge gris">${items.length}</span></h3>${cuerpo}</div>`;
 }
 function cajaInicio(contenido){ return `<div class="section" style="margin:8px 0;padding:14px;">${contenido}</div>`; }
-function encabezadoUnidad(id, vehiculo, numero, extra){
+// 13-nov-2026 (Orlando, aprobado por Roberto): "que todos los cambios... lleven fecha y no. siniestro" -> todas las
+// tarjetas de los inicios muestran el número de siniestro y, cuando se conoce, la fecha del último movimiento.
+function encabezadoUnidad(id, vehiculo, numero, extra, fecha){
+  const linea = [extra, vehiculo && numero ? `<b>Sin. ${esc(numero)}</b>` : '', fecha ? `🕒 ${esc(fechaCorta(String(fecha).slice(0, 10)))}` : ''].filter(Boolean).join(' · ');
   return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
       <span style="font-weight:700;font-size:16px;">${esc(vehiculo || ('Siniestro ' + numero))}</span>
       <span class="link" style="font-size:13px;white-space:nowrap;" onclick="goSiniestro(${id})">Ver expediente</span>
-    </div>${extra ? `<div class="subtle" style="margin:2px 0 6px;">${extra}</div>` : ''}`;
+    </div>${linea ? `<div class="subtle" style="margin:2px 0 6px;">${linea}</div>` : ''}`;
 }
 function fechaCorta(f){ if(!f) return ''; const d = String(f).slice(0, 10).split('-'); return d.length === 3 ? `${d[2]}/${d[1]}` : f; }
 
@@ -1455,7 +1459,21 @@ function seccionCalidad(lista, { apoyo = false } = {}){
       <div style="margin-bottom:10px;">${u.rechazados && u.rechazados.length
         ? `<span class="badge rojo" style="white-space:normal;">Por corregir: ${esc(u.rechazados.map(r => r.dimension).join(', '))}</span>`
         : `<span class="badge ${u.horas_terminada >= 24 ? 'rojo' : 'ambar'}">Terminada hace ${u.horas_terminada >= 24 ? Math.floor(u.horas_terminada / 24) + ' día(s)' : u.horas_terminada + ' h'}</span>`}</div>
-      <button class="btn" onclick="abrirRevisionCalidad(${u.id})">🔍 Revisar calidad</button>`));
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn" onclick="abrirRevisionCalidad(${u.id})">🔍 Revisar calidad</button>
+      <button class="btn secondary" onclick="calNoTerminada(${u.id}, '${esc(u.vehiculo || u.numero)}')">⛔ No está terminada</button></div>`));
+}
+// 13-nov-2026 (Orlando, aprobado por Roberto): regresar a Beto una unidad marcada como terminada que no lo está.
+function calNoTerminada(id, nombre){
+  showModal(`<h3 style="margin-top:0;">⛔ ${esc(nombre)} no está terminada</h3>
+    <p style="margin:4px 0 8px;">¿Qué le falta? Se le regresa a <b>Beto</b> como detenida.</p>
+    <input id="calNoTermNota" maxlength="200" placeholder="Ej. falta la programación" style="font-size:16px;padding:12px;width:100%;box-sizing:border-box;">
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" onclick="calNoTerminadaEnviar(${id})">Regresar a Beto</button></div>`);
+}
+async function calNoTerminadaEnviar(id){
+  const nota = (document.getElementById('calNoTermNota') || {}).value || '';
+  if(!nota.trim()) return toast('Escribe qué le falta.', 'error');
+  try{ await api('POST', `/api/inicio-orlando/calidad-pendiente/${id}/no-terminada`, { nota }); toast('Listo: Beto ya la ve como detenida.', 'success'); closeModal(); render(); }catch(e){}
 }
 // 12-nov-2026: checklist de calidad digital por OT (antes 7 preguntas generales). Roberto: "que ese checklist se
 // tuviera de manera digital dentro de SC Control y se pudiera contestar ahí mismo desde el teléfono para no depender
@@ -1719,7 +1737,7 @@ async function viewInicioOrlando(){
   </div>
   ${seccionDetenidas(det.detenidas, 'Beto encontró daño oculto. Documéntalo como complemento con sus fotos para que se pueda autorizar.')}
   ${seccionInicio('reautorizar', '🚨 Fotos editadas para reautorizar', `La aseguradora no autorizó estas piezas. Tienes ${d.horas_reautorizacion} horas para mandar las fotos editadas.`, d.reautorizar,
-    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c))}
+    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c), c.actualizado_en || c.creado_en)}
       <div style="margin-bottom:8px;"><b>Piezas:</b> ${esc(c.pieza_operacion || '')}</div>
       ${c.reincidencia ? `<div style="margin-bottom:8px;"><span class="badge rojo">🔁 Reincidencia: plazo de 12 h</span></div>` : ''}
       ${c.causa && c.causa !== 'Piezas no autorizadas por la aseguradora' ? `<div class="subtle" style="margin-bottom:8px;">${esc(c.causa)}</div>` : ''}
@@ -1732,25 +1750,25 @@ async function viewInicioOrlando(){
         ${c.con_daniela ? '' : `<button class="btn secondary" onclick="orlConDaniela(${c.id})">⏸ Depende de Daniela</button>`}
       </div>`))}
   ${seccionInicio('revisar', '1. Revisar unidades nuevas', 'Ya las recibió Alejandra. Empieza por la que lleva más tiempo esperando.', d.revisar,
-    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.fecha_hora_disponible_revision)}
       <div style="margin-bottom:10px;">${x.estado_revision_tecnica === 'en_revision' ? '<span class="badge azul">Ya la empezaste</span>' : `<span class="badge ${x.dias_esperando >= 1 ? 'rojo' : 'ambar'}">${x.dias_esperando >= 1 ? `Esperando hace ${x.dias_esperando} día(s)` : 'Llegó hoy'}</span>`}</div>
       <button class="btn" onclick="orlRevisar(${x.siniestro_id}, '${esc(x.vehiculo || x.siniestro_numero)}')">🔍 ${x.estado_revision_tecnica === 'en_revision' ? 'Continuar revisión' : 'Revisar'}</button>`))}
   ${seccionInicio('desarme', '2. Terminar las que esperaban desarme', 'Cuando ya estén desarmadas, termina la revisión.', d.desarme,
-    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.actualizado_en)}
       <button class="btn" onclick="orlTerminarRevision(${x.siniestro_id})">✔ Ya se desarmó: revisión terminada</button>`))}
   ${seccionInicio('complementos', '3. Hacer complementos', 'Daños ocultos que salieron en la reparación. Documéntalos con fotos y envíalos.', d.complementos,
-    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c))}
+    c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c), c.creado_en)}
       <div style="margin-bottom:10px;"><b>Hallazgo:</b> ${esc(c.causa || '')}${c.pieza_operacion ? ' · ' + esc(c.pieza_operacion) : ''}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn secondary" onclick="FotosSC.abrirSubirFotos(${c.siniestro_id}, 'otra', { titulo:'Fotos del complemento' })">📷 Fotos del daño</button>
         <button class="btn" onclick="orlComplementoEnviado(${c.id}, false)">✔ Complemento enviado</button>
       </div>`))}
   ${seccionInicio('captura', '4. Captura y envío a Roberto', 'Lo que antes hacía Vanessa: cada unidad te dice su siguiente paso.', d.captura,
-    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.revision_tecnica_terminada_en)}
       <div style="margin-bottom:10px;"><span class="badge ambar">${PASO[x.paso][0]}</span> <span class="subtle">Paso ${x.paso === 'excel' ? 1 : x.paso === 'fotos' ? 2 : 3} de 3</span></div>
       <button class="btn" onclick="orlSiguientePaso(${x.siniestro_id}, '${x.paso}')">${PASO[x.paso][1]}</button>`))}
   ${seccionInicio('revisadas', 'Mis revisiones recientes', 'Si cambió el tipo de reparación, corrígelo aquí (últimos 15 días).', d.revisadas || [],
-    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x))}
+    x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.revision_tecnica_terminada_en)}
       <div style="margin-bottom:10px;"><span class="badge ${x.tipo_reparacion ? 'azul' : 'rojo'}">${esc(TIPO_REP[x.tipo_reparacion] || 'Sin tipo de reparación')}</span></div>
       <button class="btn small secondary" onclick="orlElegirTipo(${x.siniestro_id}, '${esc(x.vehiculo || x.siniestro_numero)}', false)">✏️ Cambiar tipo de reparación</button>`), { cerrada: true })}
   ${seccionCalidad(apoyo, { apoyo:true })}

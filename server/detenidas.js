@@ -9,6 +9,9 @@ const MOTIVOS = {
   espera_autorizacion: { etiqueta:'Espera autorización',  quien:'Roberto', para:'roberto' },
   falta_material:      { etiqueta:'Falta material',       quien:'Roberto', para:'roberto' },
   otro:                { etiqueta:'Otro',                 quien:'Roberto', para:'roberto' },
+  // 13-nov-2026 (Orlando, aprobado por Roberto): "hay carros marcados como terminados que aún no lo están, la Trax tiene
+  // el problema de la programación" -> quien revisa calidad la regresa a Beto con el motivo.
+  no_terminada:        { etiqueta:'No estaba terminada',  quien:'Beto',    para:'beto' },
 };
 const SIN_MOTIVO = { etiqueta:'Sin motivo registrado', quien:'Beto', para:'beto' };
 
