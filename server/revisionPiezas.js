@@ -6,6 +6,14 @@
 //                       confirma con su botón de siempre ("Daniela confirma").
 //   - ⚠️ Llegó mal   -> rota / equivocada / incompleta, foto obligatoria y nota opcional. Se registra la
 //                       incidencia (igual que cuando Daniela usa "Llegó mal") con las fotos, y le llega a Daniela.
+// 13-nov-2026 (Roberto: "que pueda saber si la unidad está en piso o tránsito (para que sepa cuándo puede comparar
+// piezas físicamente)" y "que tenga la opción de marcar que no ha llegado la pieza ya que muchas veces el proveedor
+// la da como entregada antes de tiempo y eso también lo debemos avisar a las compañías de seguros"):
+//   - Cada unidad trae su ubicación (Piso / Tránsito).
+//   - 🚫 No ha llegado -> solo para piezas que el proveedor marcó "Entregada por proveedor". Se registra como
+//                         discrepancia con proveedor (no_llego=1, la misma que ya usa Daniela) y le aparece a ella.
+//                         Cuando llega de verdad y Adrián toca ✅ Llegó bien, la discrepancia se cierra sola con la
+//                         fecha real de llegada (queda de respaldo para la aseguradora).
 const { VENTANA_OPERATIVA_DESDE, registrarAuditoria } = require('./utils');
 
 const PUESTO = 'Auxiliar de refacciones';
@@ -34,7 +42,8 @@ function nombreCorto(n){ const p = String(n || '').trim().split(/\s+/); return p
 // Piezas que todavía no se reciben ni se reportan mal, agrupadas por unidad.
 function piezasPendientes(db){
   const filas = db.prepare(`
-    SELECT z.id, z.descripcion, z.numero_parte, z.estatus, z.fecha_prometida, z.revisada_en,
+    SELECT z.id, z.descripcion, z.numero_parte, z.estatus, z.fecha_prometida, z.revisada_en, s.ubicacion,
+      (SELECT d.creado_en FROM discrepancias_proveedor d WHERE d.pieza_id = z.id AND d.no_llego = 1 AND d.estado = 'abierta' ORDER BY d.id DESC LIMIT 1) AS no_llego_en,
       (SELECT nombre FROM usuarios WHERE id = z.revisada_por) AS revisada_por_nombre,
       p.siniestro_id, s.numero AS siniestro_numero, s.vehiculo, s.placas, pv.razon_social AS proveedor
     FROM piezas z JOIN pedidos p ON p.id = z.pedido_id JOIN siniestros s ON s.id = p.siniestro_id
@@ -44,9 +53,10 @@ function piezasPendientes(db){
       AND NOT EXISTS (SELECT 1 FROM incidencias i WHERE i.pieza_id = z.id AND i.estado IN ('abierta','en_proceso'))`).all(VENTANA_OPERATIVA_DESDE);
   const porUnidad = new Map();
   for(const z of filas){
-    if(!porUnidad.has(z.siniestro_id)) porUnidad.set(z.siniestro_id, { siniestro_id: z.siniestro_id, numero: z.siniestro_numero, vehiculo: z.vehiculo, placas: z.placas, piezas: [] });
+    if(!porUnidad.has(z.siniestro_id)) porUnidad.set(z.siniestro_id, { siniestro_id: z.siniestro_id, numero: z.siniestro_numero, vehiculo: z.vehiculo, placas: z.placas, ubicacion: z.ubicacion || '', piezas: [] });
     porUnidad.get(z.siniestro_id).piezas.push({ id: z.id, descripcion: z.descripcion, numero_parte: z.numero_parte, proveedor: z.proveedor, estatus: z.estatus,
-      fecha_prometida: z.fecha_prometida, revisada: !!z.revisada_en, revisada_por: z.revisada_por_nombre ? nombreCorto(z.revisada_por_nombre) : null });
+      fecha_prometida: z.fecha_prometida, revisada: !!z.revisada_en, revisada_por: z.revisada_por_nombre ? nombreCorto(z.revisada_por_nombre) : null,
+      no_llego: !!z.no_llego_en, no_llego_en: z.no_llego_en || null });
   }
   // Primero lo que el proveedor ya entregó y falta revisar; luego por fecha prometida más cercana.
   const clave = u => {
@@ -71,7 +81,26 @@ function llegoBien(db, { piezaId, usuario }){
   db.prepare(`UPDATE piezas SET estatus = 'Entregada por proveedor', revisada_por = ?, revisada_en = datetime('now'), actualizado_en = datetime('now') WHERE id = ?`).run(usuario.id, z.id);
   registrarAuditoria(db, { entidad_tipo:'pieza', entidad_id: z.id, accion:'revisada_auxiliar', campo:'estatus', valor_anterior: z.estatus,
     valor_nuevo: 'Entregada por proveedor (revisada: llegó bien)', usuario });
+  // Si estaba reportada como "no ha llegado", ya llegó: se cierra la discrepancia con la fecha real de llegada.
+  const hoy = new Date(Date.now() - 6 * 3600000).toISOString().slice(0, 10);
+  for(const d of db.prepare(`SELECT id FROM discrepancias_proveedor WHERE pieza_id = ? AND no_llego = 1 AND estado = 'abierta'`).all(z.id)){
+    db.prepare(`UPDATE discrepancias_proveedor SET estado = 'resuelta', fecha_real_llegada = ?, actualizado_en = datetime('now') WHERE id = ?`).run(hoy, d.id);
+    registrarAuditoria(db, { entidad_tipo:'discrepancia_proveedor', entidad_id: d.id, accion:'resuelta', campo:'fecha_real_llegada', valor_nuevo: hoy + ' (llegó, revisada por auxiliar)', usuario });
+  }
   return { ok: true };
+}
+
+function noHaLlegado(db, { piezaId, usuario }){
+  const z = cargarPieza(db, piezaId);
+  if(z.estatus !== 'Entregada por proveedor') throw error('Solo se marca cuando el proveedor ya la dio como entregada.');
+  if(z.revisada_en) throw error('Esta pieza ya se revisó como recibida.');
+  if(db.prepare(`SELECT 1 FROM discrepancias_proveedor WHERE pieza_id = ? AND no_llego = 1 AND estado = 'abierta'`).get(z.id)) throw error('Ya está reportada como "no ha llegado".');
+  const marcado = String(z.actualizado_en || '').slice(0, 10);
+  const descripcion = `${z.descripcion}: el proveedor la marcó como entregada pero no ha llegado al taller. Reporta ${nombreCorto(usuario.nombre)}.`;
+  const info = db.prepare(`INSERT INTO discrepancias_proveedor (siniestro_id, pieza_id, proveedor_id, descripcion, fecha_marcado_entregado, fecha_real_llegada, no_llego, correo_enviado_en, correo_texto, estado, creado_por)
+    VALUES (?,?,?,?,?,'',1,'','','abierta',?)`).run(z.siniestro_id, z.id, z.proveedor_id || null, descripcion, marcado, usuario.id);
+  registrarAuditoria(db, { entidad_tipo:'discrepancia_proveedor', entidad_id: info.lastInsertRowid, accion:'alta', usuario, valor_nuevo: descripcion });
+  return { ok: true, discrepancia_id: Number(info.lastInsertRowid) };
 }
 
 function llegoMal(db, { piezaId, usuario, tipo, nota, fotos }){
@@ -96,4 +125,4 @@ function llegoMal(db, { piezaId, usuario, tipo, nota, fotos }){
   return { ok: true, incidencia_id: Number(info.lastInsertRowid) };
 }
 
-module.exports = { PUESTO, TIPOS_MAL, asegurarEsquema, esAuxiliar, piezasPendientes, llegoBien, llegoMal, nombreCorto };
+module.exports = { PUESTO, TIPOS_MAL, asegurarEsquema, esAuxiliar, piezasPendientes, llegoBien, llegoMal, noHaLlegado, nombreCorto };

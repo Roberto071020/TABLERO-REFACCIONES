@@ -29,6 +29,8 @@ const manejar = fn => (req, res) => {
 
 router.get('/', requireAuth, soloAuxiliar, (req, res) => res.json({ unidades: R.piezasPendientes(db), tipos: R.TIPOS_MAL }));
 router.post('/:id/bien', requireAuth, soloAuxiliar, manejar(req => R.llegoBien(db, { piezaId: Number(req.params.id), usuario: req.session.user })));
+// 13-nov-2026: el proveedor la dio por entregada pero no ha llegado -> discrepancia para Daniela (y la aseguradora).
+router.post('/:id/no-llego', requireAuth, soloAuxiliar, manejar(req => R.noHaLlegado(db, { piezaId: Number(req.params.id), usuario: req.session.user })));
 router.post('/:id/mal', requireAuth, soloAuxiliar, manejar(req => R.llegoMal(db, { piezaId: Number(req.params.id), usuario: req.session.user,
   tipo: req.body && req.body.tipo, nota: req.body && req.body.nota, fotos: req.body && req.body.fotos })));
 

@@ -748,19 +748,31 @@ function listaRevisionHtml(){
   return unidades.slice(0, MAX).map(u => `<div class="section" style="margin:12px 0;padding:14px;">
       <b style="font-size:18px;">${esc(u.vehiculo || u.numero)}</b>
       <div style="font-size:15px;margin-bottom:4px;"><b>${esc(u.placas || 'Sin placas')}</b> · ${esc(u.numero)}</div>
+      ${/piso/i.test(u.ubicacion) ? '<div style="margin:4px 0 6px;"><span class="badge verde" style="font-size:14px;white-space:normal;">🟢 En piso: puedes comparar las piezas</span></div>'
+        : /tr[aá]nsito/i.test(u.ubicacion) ? '<div style="margin:4px 0 6px;"><span class="badge ambar" style="font-size:14px;white-space:normal;">🚚 En tránsito: la unidad no está, guarda la pieza</span></div>' : ''}
       ${u.piezas.map(z => `<div style="border-top:1px solid var(--border);padding:10px 0;">
         <div style="font-size:17px;font-weight:700;">${esc(z.descripcion)}</div>
-        <div class="subtle">${esc(z.proveedor || 'Proveedor sin capturar')}${z.numero_parte ? ' · N.P. ' + esc(z.numero_parte) : ''}${z.estatus === 'Entregada por proveedor' && !z.revisada ? ' · <b style="color:#1d4ed8;">el proveedor ya la entregó</b>' : ''}</div>
+        <div class="subtle">${esc(z.proveedor || 'Proveedor sin capturar')}${z.numero_parte ? ' · N.P. ' + esc(z.numero_parte) : ''}${z.estatus === 'Entregada por proveedor' && !z.revisada && !z.no_llego ? ' · <b style="color:#1d4ed8;">el proveedor ya la entregó</b>' : ''}</div>
+        ${z.no_llego ? `<div style="margin-top:6px;color:#b91c1c;font-weight:700;">🚫 Reportada: no ha llegado${z.no_llego_en ? ' (' + esc(fechaCorta(String(z.no_llego_en).slice(0, 10))) + ')' : ''}. Daniela ya está enterada.</div>` : ''}
         ${z.revisada ? `<div style="margin-top:6px;color:#15803d;font-weight:700;">✅ Revisada${z.revisada_por ? ' por ' + esc(z.revisada_por) : ''}: falta que Daniela la confirme</div>`
           : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
           <button class="btn" style="${PT_BTN}font-size:17px;background:#16a34a;" onclick="revBien(${z.id}, this)">✅ Llegó bien</button>
-          <button class="btn" style="${PT_BTN}font-size:17px;background:#dc2626;" onclick="revMal(${z.id}, '${esc(z.descripcion).replace(/'/g, '&#39;')}')">⚠️ Llegó mal</button></div>`}
+          <button class="btn" style="${PT_BTN}font-size:17px;background:#dc2626;" onclick="revMal(${z.id}, '${esc(z.descripcion).replace(/'/g, '&#39;')}')">⚠️ Llegó mal</button>
+          ${z.estatus === 'Entregada por proveedor' && !z.no_llego ? `<button class="btn secondary" style="${PT_BTN}font-size:17px;grid-column:1 / -1;" onclick="revNoLlego(${z.id}, '${esc(z.descripcion).replace(/'/g, '&#39;')}', this)">🚫 No ha llegado</button>` : ''}</div>`}
       </div>`).join('')}
     </div>`).join('') + (unidades.length > MAX ? `<p class="subtle" style="text-align:center;">Hay ${unidades.length - MAX} unidades más: búscalas por placas.</p>` : '');
 }
 async function revBien(id, boton){
   if(boton) boton.disabled = true;
   try{ await api('POST', `/api/revision-piezas/${id}/bien`); toast('Listo, Daniela la verá como revisada.', 'success'); render(); }
+  catch(e){ if(boton) boton.disabled = false; }
+}
+// 13-nov-2026 (Roberto): el proveedor la dio por entregada antes de tiempo -> discrepancia para Daniela.
+async function revNoLlego(id, nombre, boton){
+  const ok = await confirmDialog(`¿${nombre} todavía no llega al taller aunque el proveedor la marcó como entregada? Le avisamos a Daniela.`, { titulo:'🚫 No ha llegado', textoOk:'Sí, no ha llegado' });
+  if(!ok) return;
+  if(boton) boton.disabled = true;
+  try{ await api('POST', `/api/revision-piezas/${id}/no-llego`); toast('Listo, Daniela ya sabe que no ha llegado.', 'success'); render(); }
   catch(e){ if(boton) boton.disabled = false; }
 }
 function revMal(id, nombre){
@@ -1546,7 +1558,7 @@ async function viewInicioDaniela(){
   ${seccionDetenidas(det.detenidas, 'Beto las detuvo porque falta una pieza o llegó mal. Consíguela o resuélvelo con el proveedor; cuando llegue, Beto la reanuda.')}
   ${seccionInicio('recibir', '1. Recibir piezas', 'El proveedor ya las entregó. Revísalas: si llegaron bien, márcalas; si no, registra qué pasó.', d.recibir,
     u => cajaInicio(`${encabezadoUnidad(u.siniestro_id, u.vehiculo, u.siniestro_numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
-      ${u.piezas.map(z => (z.revisada_en ? `<div style="margin-top:6px;"><span class="badge verde" style="white-space:normal;">✅ Revisada por ${esc(String(z.revisada_por_nombre || '').split(' ')[0])}${horaLocal(z.revisada_en) ? ' a las ' + esc(horaLocal(z.revisada_en)) : ''}: llegó bien</span></div>` : '') + filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
+      ${u.piezas.map(z => (z.no_llego ? `<div style="margin-top:6px;"><span class="badge rojo" style="white-space:normal;">🚫 El auxiliar reporta que NO ha llegado aunque el proveedor la marcó entregada: avisa a la aseguradora</span></div>` : '') + (z.revisada_en ? `<div style="margin-top:6px;"><span class="badge verde" style="white-space:normal;">✅ Revisada por ${esc(String(z.revisada_por_nombre || '').split(' ')[0])}${horaLocal(z.revisada_en) ? ' a las ' + esc(horaLocal(z.revisada_en)) : ''}: llegó bien</span></div>` : '') + filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
   ${seccionInicio('vencidas', '2. Reclamar piezas vencidas', 'Ya pasó la fecha que prometió el proveedor. Escríbele y captura la nueva fecha.', d.vencidas, g => grupoProveedor(g, 'vencidas'))}
   ${seccionInicio('confirmar', '3. Confirmar fechas', 'El proveedor todavía no confirma cuándo las entrega. Pídele la fecha y captúrala.', d.confirmar, g => grupoProveedor(g, 'confirmar'))}
   ${seccionInicio('correos', '4. Aprobar correos', 'Correos que el sistema preparó para los proveedores. Nada se envía sin que lo revises.', d.correos,

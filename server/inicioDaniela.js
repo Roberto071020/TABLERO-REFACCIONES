@@ -63,6 +63,7 @@ function calcularInicioDaniela(db){
     if(!incidencias.has(i.pieza_id)) incidencias.set(i.pieza_id, { ...i, fotos });
   }
 
+  const noLlego = new Set(db.prepare(`SELECT pieza_id FROM discrepancias_proveedor WHERE no_llego = 1 AND estado = 'abierta' AND pieza_id IS NOT NULL`).all().map(r => r.pieza_id));
   const recibir = [], mal = [], viejas = [];
   const vencidasPorProv = new Map(), confirmarPorProv = new Map();
   const agrupar = (mapa, z, extra) => {
@@ -74,7 +75,8 @@ function calcularInicioDaniela(db){
   for(const z of piezas){
     const inc = incidencias.get(z.id);
     if(inc || z.estatus === 'Incorrecta/dañada' || z.estatus === 'Devuelta'){ mal.push({ ...z, incidencia: inc || null }); continue; }
-    if(z.estatus === 'Entregada por proveedor'){ recibir.push(z); continue; }
+    // 13-nov-2026: si el auxiliar reportó que no ha llegado (aunque el proveedor la dio por entregada), Daniela lo ve.
+    if(z.estatus === 'Entregada por proveedor'){ recibir.push({ ...z, no_llego: noLlego.has(z.id) }); continue; }
     const fp = z.fecha_prometida ? String(z.fecha_prometida).slice(0, 10) : '';
     if(fp && fp < hoy){
       const dias = diasEntre(fp, hoy);
