@@ -1880,6 +1880,12 @@ async function viewInicioRoberto(){
   return `
   <h2 style="margin-bottom:4px;">Hola, ${esc(((currentUser && currentUser.nombre) || 'Roberto').split(' ')[0])} 👋</h2>
   <p class="subtle" style="margin-top:0;">Arriba lo que te toca a ti, en orden. Abajo, solo lo que está atorado en el equipo.</p>
+  ${/* 13-nov-2026 (Roberto: "en qué parte del tablero puedo ver los reportes tanto de la mañana como el de la tarde, no
+     veo la opción en mi resumen"): accesos directos a las dos páginas, listas para copiar al grupo. */''}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 12px;">
+    <button class="btn secondary" onclick="window.open('/reporte-dia.html', '_blank')">📋 Reporte de la mañana</button>
+    <button class="btn secondary" onclick="window.open('/reporte-dia.html?tipo=corte', '_blank')">🕒 Corte de las 3</button>
+  </div>
   <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
   <div class="grid-cards">
     ${tarjetaNumeroInicio(n.por_valuar, 'Por valuar', n.por_valuar ? 'ambar' : 'verde', 'por-valuar')}
