@@ -578,14 +578,18 @@ function seccionEntradasHoy(a){
         ${p.con_foto ? `<span class="link" style="font-size:13px;" onclick="verFotoEntrada(${p.registro_id}, '${esc(p.nombre)}', '${esc(p.hora)}')">Ver foto</span>` : ''}
         <span class="link" style="font-size:13px;" title="Darle una contraseña nueva" onclick="robNuevaPassword(${p.usuario_id}, '${esc(p.nombre)}')">🔑</span>
       </span></div>`;
-  return `<div id="sec-entradas" class="section" style="margin:14px 0 8px;padding:14px;">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
-      <b style="font-size:17px;">🕘 Entradas de hoy</b>
-      <span class="subtle">Entrada ${esc(a.hora_entrada)} · ${a.resumen.a_tiempo} a tiempo · ${a.resumen.retardos} retardo(s) · ${a.resumen.sin_registro} sin registro</span>
-    </div>
-    ${a.personas.map(fila).join('')}
-    <div style="text-align:right;margin-top:8px;"><button class="btn ghost small" onclick="marcarUbicacionTaller()">Volver a marcar ubicación del taller</button></div>
-  </div>`;
+  // 17-nov-2026 (Roberto: "las entradas de hoy me gustaría poder minimizar o expandir"): se abre o cierra tocando el
+  // encabezado; el resumen siempre se ve. Se recuerda en este celular cómo la dejó (cerrada la primera vez).
+  let abierta = false; try{ abierta = localStorage.getItem('sc_entradas_abiertas') === '1'; }catch(e){}
+  return `<details id="sec-entradas" class="section" style="margin:14px 0 8px;padding:14px;" ${abierta ? 'open' : ''}
+      ontoggle="try{ localStorage.setItem('sc_entradas_abiertas', this.open ? '1' : '0'); }catch(e){}">
+    <summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+      <b style="font-size:17px;">🕘 Entradas de hoy <span class="subtle" style="font-weight:400;font-size:14px;">(toca para abrir o cerrar)</span></b>
+      <span class="subtle">Entrada ${esc(a.hora_entrada)} · ${a.resumen.a_tiempo} a tiempo · ${a.resumen.retardos ? `<b style="color:#b91c1c;">${a.resumen.retardos} retardo(s)</b>` : '0 retardos'} · ${a.resumen.sin_registro} sin registro</span>
+    </summary>
+    <div style="margin-top:6px;">${a.personas.map(fila).join('')}
+    <div style="text-align:right;margin-top:8px;"><button class="btn ghost small" onclick="marcarUbicacionTaller()">Volver a marcar ubicación del taller</button></div></div>
+  </details>`;
 }
 // Si alguien olvida su contraseña, Roberto le genera una nueva desde "Entradas de hoy" (🔑).
 function robNuevaPassword(id, nombre){
