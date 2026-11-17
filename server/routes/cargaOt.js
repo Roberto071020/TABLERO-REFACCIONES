@@ -60,6 +60,14 @@ router.post('/ot-piezas', autorizado, (req, res)=>{
   if(!s) return res.status(404).json({ error:'No existe ese expediente en el tablero.' });
   try{
     const n = calidad.guardarPiezas(db, s.id, req.body.piezas, req.body.archivo_id);
+    // 17-nov-2026 (Roberto: "el número de piezas a cambio igual lo puedes tomar de lo que yo mando al estar
+    // autorizado"): la OT de Roberto define cuántas piezas van a CAMBIO (de ahí salen los avisos al cliente).
+    const cambio = (Array.isArray(req.body.piezas) ? req.body.piezas : []).filter(p => /cambi/i.test(String(p && p.laminacion || ''))).length;
+    const antes = db.prepare('SELECT piezas_autorizadas_cambio FROM siniestros WHERE id = ?').get(s.id).piezas_autorizadas_cambio;
+    if(Number(antes || 0) !== cambio){
+      db.prepare(`UPDATE siniestros SET piezas_autorizadas_cambio = ?, actualizado_en = datetime('now') WHERE id = ?`).run(cambio, s.id);
+      registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:s.id, accion:'actualizacion', campo:'piezas_autorizadas_cambio', valor_anterior: antes == null ? null : String(antes), valor_nuevo: String(cambio), usuario:USUARIO });
+    }
     registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:s.id, accion:'ot_piezas_cargadas', valor_nuevo:`${n} pieza(s) para el checklist de calidad`, usuario:USUARIO });
     res.status(201).json({ siniestro:s, piezas:n, puntos: calidad.revisionDe(db, s.id).puntos.length });
   }catch(e){ res.status(400).json({ error:e.message }); }

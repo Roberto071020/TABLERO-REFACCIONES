@@ -39,7 +39,23 @@ function enTransito(s){
 }
 
 // Código de plantilla 5.x que corresponde HOY a la unidad (o null si no aplica ningún aviso).
-function codigoAvisoActual(db, s, hoy){
+// 17-nov-2026 (Roberto: "no en todos los expedientes se está generando el mensaje automático para que ella informe a
+// los clientes, ese punto es de los más importantes"). Para el aviso manual de Alejandra se corrigen tres huecos SIN
+// tocar el piloto automático de WhatsApp (whatsappFaseA, que sigue bloqueando la parcial a propósito):
+//   - Autorización PARCIAL: al cliente se le avisa igual que una autorizada (lo no autorizado va por reautorización).
+//   - "En autorización" sin fecha de envío capturada: ya se mandó a la aseguradora -> aviso 5.2.
+//   - Autorizada con refacciones pero sin el número de piezas capturado: lleva piezas (5.3 / 5.4 / 5.5, no 5.6 / 5.7).
+function siniestroParaAviso(s){
+  const c = { ...s };
+  if(c.estado_autorizacion === 'parcial') c.estado_autorizacion = 'autorizada';
+  if(['en_autorizacion','por_aclarar'].includes(c.estado_autorizacion) && vacio(c.valuacion_fecha_envio))
+    c.valuacion_fecha_envio = c.autorizacion_fecha_envio || fecha10(c.actualizado_en) || 'enviada';
+  if(c.estado_autorizacion === 'autorizada' && !(Number(c.piezas_autorizadas_cambio) > 0)
+      && ['si','autosurtido'].includes(String(c.requiere_refacciones || '').toLowerCase())) c.piezas_autorizadas_cambio = 1;
+  return c;
+}
+function codigoAvisoActual(db, s0, hoy){
+  const s = siniestroParaAviso(s0);
   const etapa = whatsappFaseA.etapaCicloPrincipalActual(db, s);
   if(!etapa) return null;
   if(etapa === 'postventa'){
@@ -61,9 +77,12 @@ function codigoAvisoActual(db, s, hoy){
   return etapa; // '5.1' ... '5.11'
 }
 
+// 17-nov-2026: si ya se le avisó "ya autorizaron" (5.6/5.7), no se le repite el 5.3 (mismo momento, otro texto).
+const EQUIVALENTES = { '5.3': ['5.6', '5.7'] };
 function yaSeAviso(db, siniestroId, codigo){
-  const bitacora = db.prepare(`SELECT 1 FROM eventos_cliente WHERE siniestro_id=? AND tipo_evento=?`).get(siniestroId, 'aviso:' + codigo);
-  if(bitacora) return true;
+  for(const c of [codigo, ...(EQUIVALENTES[codigo] || [])]){
+    if(db.prepare(`SELECT 1 FROM eventos_cliente WHERE siniestro_id=? AND tipo_evento=?`).get(siniestroId, 'aviso:' + c)) return true;
+  }
   const enBandeja = db.prepare(`SELECT 1 FROM whatsapp_envios_manuales WHERE siniestro_id=? AND plantilla_codigo=? AND estado='enviado'`).get(siniestroId, codigo);
   return !!enBandeja;
 }

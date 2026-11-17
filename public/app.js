@@ -1040,10 +1040,12 @@ const ALE_SECCIONES = [
   { k:'recibir', titulo:'2. Recibir unidades', ayuda:'Citas de hoy que todavía no se registran.', tipos:['cita'] },
   { k:'reingreso', titulo:'3. Agendar reingresos', ayuda:'Ya llegó el 90% de las piezas: dale fecha al cliente.', tipos:['reingreso'] },
   { k:'avisar', titulo:'4. Avisar al cliente', ayuda:'Su unidad avanzó: mándale el mensaje por WhatsApp.', tipos:['aviso'] },
+  // 17-nov-2026 (Roberto: el mensaje al cliente "es de los puntos más importantes"): sin teléfono el aviso no se puede
+  // mandar, así que esta sección sube aquí, con número arriba y el teléfono se captura en la misma tarjeta.
+  { k:'datos', titulo:'⚠️ Falta el teléfono: no le llega su aviso', ayuda:'El mensaje ya está listo pero no tenemos su teléfono. Búscalo en el grupo de WhatsApp o en la orden de admisión, escríbelo aquí y la unidad pasa sola a "Avisar al cliente".', tipos:['sin_datos'] },
   { k:'seguimiento', titulo:'5. Dar seguimiento', ayuda:'Más de 3 días sin saber nada: mándale el mensaje de seguimiento (máximo 10 al día).', tipos:['seguimiento'] },
   // Ajustes 6-nov-2026: lo que no se puede hacer hoy con un botón queda al final, aparte y sin contar.
   { k:'confirmar', titulo:'Revisa: citas viejas', ayuda:'Tenían cita hace más de una semana y nunca se registró su llegada. Pregúntale al cliente si todavía viene.', tipos:['cita_vieja'] },
-  { k:'datos', titulo:'Completa estos datos', ayuda:'No se les puede avisar porque falta el teléfono (o el vehículo). Captúralo y la unidad pasa sola a "Avisar al cliente".', tipos:['sin_datos'] },
 ];
 const ALE_MAX_POR_SECCION = 10;
 // Fecha del día en el celular (hora de Veracruz). todayISO() usa UTC y después de las 6 pm ya marca mañana.
@@ -1088,6 +1090,7 @@ async function viewInicioAlejandra(){
     ${tarjetaNum(n.citas, 'Citas de hoy', 'azul', 'recibir')}
     ${tarjetaNum(n.avisos, 'Clientes por avisar', n.avisos ? 'ambar' : 'verde', 'avisar')}
     ${tarjetaNum(n.seguimiento, 'Seguimientos de hoy', n.seguimiento ? 'rojo' : 'verde', 'seguimiento')}
+    ${n.sin_datos ? tarjetaNum(n.sin_datos, 'Sin teléfono (no les llega su aviso)', 'rojo', 'datos') : ''}
   </div>
   ${n.seguimiento === 0 && n.seguimientos_hechos_hoy >= d.max_seguimientos_dia ? `<p class="subtle" style="margin-top:-8px;">✅ Ya hiciste los ${d.max_seguimientos_dia} seguimientos de hoy. Mañana te salen los siguientes.</p>` : ''}
   ${secciones || '<div class="empty" style="margin-top:12px;">🎉 Terminaste todo lo de hoy.</div>'}
@@ -1126,7 +1129,8 @@ function aleTarjetaHtml(t, i){
   } else if(t.tipo === 'sin_datos'){
     boton = t.falta === 'vehiculo'
       ? `<button class="btn secondary" onclick="abrirFormEditarSiniestro(${t.id})">✏️ Capturar vehículo</button>`
-      : `<button class="btn secondary" onclick="abrirFormEditarSiniestro(${t.id})">✏️ Capturar teléfono</button>`;
+      : `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><input id="aleTel${t.id}" type="tel" inputmode="numeric" maxlength="14" placeholder="Teléfono a 10 dígitos" style="font-size:16px;padding:10px;flex:1;min-width:170px;">
+          <button class="btn" onclick="aleGuardarTelefono(${t.id})">💾 Guardar</button></div>`;
   }
   return `<div class="section" style="margin:8px 0;padding:14px;">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
@@ -1239,11 +1243,20 @@ async function aleGuardarCita(id, tareaId){
 /* ---------- Recibir unidad (paso a paso) ---------- */
 let ALE_REC = null;
 const ALE_GASOLINA = ['Reserva', '1/4', '1/2', '3/4', 'Lleno'];
+// 17-nov-2026: teléfono directo desde la tarjeta (sin abrir el expediente).
+async function aleGuardarTelefono(id){
+  const el = document.getElementById('aleTel' + id);
+  const tel = String(el && el.value || '').replace(/\D/g, '').slice(-10);
+  if(tel.length !== 10) return toast('Escribe el teléfono a 10 dígitos.', 'error');
+  try{ await api('PATCH', '/api/siniestros/' + id, { cliente_telefono: tel }); toast('Listo: ya le puedes mandar su aviso.', 'success'); render(); }catch(e){}
+}
 async function aleRecibir(id){
   try{
     const s = await api('GET', '/api/siniestros/' + id);
     ALE_REC = { id, s, esReingreso: !!(s.fecha_admision && String(s.fecha_admision).trim()),
-      datos: { ingreso_tipo: s.ingreso_tipo || '', kilometraje: '', combustible_nivel: '', llaves_entregadas: '', pertenencias: '' } };
+      datos: { ingreso_tipo: s.ingreso_tipo || '', kilometraje: '', combustible_nivel: '', llaves_entregadas: '', pertenencias: '', telefono: '' },
+      // 17-nov-2026: sin teléfono no le llegan los avisos -> se pide al recibir la unidad si no lo tenemos.
+      pideTelefono: String(s.cliente_telefono || '').replace(/\D/g, '').length < 10 };
     aleRecibirPaso1();
   }catch(e){}
 }
@@ -1257,6 +1270,7 @@ function aleRecibirPaso1(){
     ${aleRecPaso(1)}<h4 style="margin:0 0 8px;">Datos de llegada</h4>
     ${r.esReingreso ? '' : `<div class="field"><label>¿Cómo llegó?</label><div style="display:flex;gap:6px;flex-wrap:wrap;">
       ${opc('ingreso_tipo','circulando','Manejando')} ${opc('ingreso_tipo','grua','En grúa')} ${opc('ingreso_tipo','permanece','Se queda todo el proceso')}</div></div>`}
+    ${r.pideTelefono ? `<div class="field"><label>📱 Teléfono del cliente (WhatsApp)</label><input id="ale_tel" type="tel" inputmode="numeric" maxlength="14" value="${esc(d.telefono)}" placeholder="10 dígitos"></div>` : ''}
     <div class="field"><label>Kilometraje</label><input id="ale_km" inputmode="numeric" value="${esc(d.kilometraje)}" placeholder="Ej. 45230"></div>
     <div class="field"><label>Gasolina</label><div style="display:flex;gap:6px;flex-wrap:wrap;">${ALE_GASOLINA.map(g => opc('combustible_nivel', g, g)).join(' ')}</div></div>
     <div class="field"><label>¿Dejó las llaves?</label><div style="display:flex;gap:6px;">${opc('llaves_entregadas','1','Sí')} ${opc('llaves_entregadas','0','No')}</div></div>
@@ -1264,7 +1278,8 @@ function aleRecibirPaso1(){
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleRecibirIrPaso2()">Siguiente →</button></div>`);
 }
 function aleRecGuardarCampos(){
-  const km = document.getElementById('ale_km'), pert = document.getElementById('ale_pert');
+  const km = document.getElementById('ale_km'), pert = document.getElementById('ale_pert'), tel = document.getElementById('ale_tel');
+  if(tel) ALE_REC.datos.telefono = tel.value.replace(/\D/g, '').slice(-10);
   if(km) ALE_REC.datos.kilometraje = km.value.trim();
   if(pert) ALE_REC.datos.pertenencias = pert.value.trim();
 }
@@ -1272,6 +1287,7 @@ function aleRecSet(campo, valor){ aleRecGuardarCampos(); ALE_REC.datos[campo] = 
 function aleRecibirIrPaso2(){
   aleRecGuardarCampos();
   const r = ALE_REC, d = r.datos, faltan = [];
+  if(r.pideTelefono && String(d.telefono || '').length !== 10) faltan.push('teléfono del cliente a 10 dígitos');
   if(!r.esReingreso && !d.ingreso_tipo) faltan.push('cómo llegó');
   if(!d.kilometraje) faltan.push('kilometraje');
   if(!d.combustible_nivel) faltan.push('gasolina');
@@ -1303,6 +1319,7 @@ async function aleRecibirGuardar(){
     await api('POST', `/api/inicio-alejandra/${r.id}/llego`, {});
     const cambios = { kilometraje: d.kilometraje, combustible_nivel: d.combustible_nivel, llaves_entregadas: Number(d.llaves_entregadas),
       pertenencias: d.pertenencias, ubicacion: 'Piso' };
+    if(r.pideTelefono && d.telefono) cambios.cliente_telefono = d.telefono;
     if(!r.esReingreso){ cambios.fecha_admision = hoy; cambios.ingreso_tipo = d.ingreso_tipo; }
     if(!s.estado_admision) cambios.estado_admision = 'admitido';
     if(s.tipo_reparacion === 'AUTO_SURTIDO' && !s.autosurtido_reingreso_en && r.esReingreso) cambios.autosurtido_reingreso_en = hoy;
