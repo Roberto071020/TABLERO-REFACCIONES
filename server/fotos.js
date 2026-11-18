@@ -16,9 +16,10 @@ const UPLOAD_DIR = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'uploa
 
 // 6-nov-2026: 'reautorizacion' = fotos editadas que Orlando sube para pedir que se autoricen piezas no autorizadas.
 // 12-nov-2026: 'paro' = evidencia que toma el técnico de patio al detenerse por pieza mal surtida o daño oculto.
-const ETAPAS_FOTO = ['recepcion','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado','reautorizacion','paro','pieza_mal','otra'];
+// 18-nov-2026: 'vale' = foto del vale que firma el cliente cuando se entrega con algo pendiente (Roberto: "la foto no estaría mal").
+const ETAPAS_FOTO = ['recepcion','mecanica','en_laminado','preparacion','pintura','armado','pulido','lavado','terminado','reautorizacion','paro','pieza_mal','vale','otra'];
 const ETIQUETA_ETAPA_FOTO = { recepcion:'Recepción', mecanica:'Mecánica', en_laminado:'Hojalatería', preparacion:'Preparación',
-  pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', paro:'Evidencia de patio (paro)', pieza_mal:'Pieza mal surtida', otra:'Otras' };
+  pintura:'Pintura', armado:'Armado', pulido:'Pulido', lavado:'Lavado', terminado:'Terminado', reautorizacion:'Fotos editadas (reautorización)', paro:'Evidencia de patio (paro)', pieza_mal:'Pieza mal surtida', vale:'Vale de pendiente', otra:'Otras' };
 
 // Etapas de producción que exigen al menos una foto ANTES de poder salir de ellas. Pulido y lavado quedan
 // opcionales (no dejan evidencia útil para la aseguradora); se pueden agregar aquí si se decide lo contrario.
@@ -95,7 +96,8 @@ function purgarFotos(db, filas, motivo, registrarAuditoria){
 const SQL_FOTOS_ENTREGADAS = `SELECT a.id, a.entidad_id, a.nombre_almacenado, a.miniatura, s.fecha_entrega_real
   FROM archivos a JOIN siniestros s ON s.id = a.entidad_id
   WHERE a.entidad_tipo='siniestro' AND a.mime LIKE 'image/%' AND a.purgado_en IS NULL
-    AND s.fecha_entrega_real IS NOT NULL AND s.fecha_entrega_real != ''`;
+    AND s.fecha_entrega_real IS NOT NULL AND s.fecha_entrega_real != ''
+    AND s.id NOT IN (SELECT siniestro_id FROM vales_pendientes WHERE estado = 'pendiente')`; // 18-nov-2026: con vale pendiente no se borran
 
 // 1) Antigüedad: fotos de unidades entregadas hace más de `meses` meses.
 // 2) Espacio: si el disco pasa de `alto` (85%), se borran las de las entregadas más antiguas, unidad por

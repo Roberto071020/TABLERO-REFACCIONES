@@ -638,6 +638,9 @@ router.patch('/:id/cerrar', requireAuth, requireRole('operativo','jefe','admin')
   if(!s.fecha_entrega_real){
     problemas.push('Falta registrar la fecha de entrega de la unidad.');
   }
+  // 18-nov-2026 (Roberto): entregada con vale pendiente -> no se cierra hasta instalar lo pendiente.
+  const vales = db.prepare(`SELECT pieza_pendiente FROM vales_pendientes WHERE siniestro_id = ? AND estado = 'pendiente'`).all(s.id);
+  if(vales.length) problemas.push(`Vale pendiente sin instalar: ${vales.map(v => v.pieza_pendiente).join('; ')}`);
   if(problemas.length){
     return res.status(400).json({ error:'No se puede cerrar el siniestro todavía.', detalle: problemas });
   }

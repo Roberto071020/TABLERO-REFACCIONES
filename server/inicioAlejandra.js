@@ -154,8 +154,10 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
   }
 
   // 2) CITAS (primera llegada o reingreso) que todavía no llegan.
+  // 18-nov-2026 (Roberto): una unidad ya entregada con vale pendiente también tiene cita (para instalar lo pendiente).
   const cita = fecha10(s.cita_fecha);
-  if(!entregada && cita && cita <= hoy){
+  const vale = contexto.vales ? contexto.vales.get(s.id) : null;
+  if((!entregada || vale) && cita && cita <= hoy){
     const llegoPrimera = !vacio(s.fecha_admision) && fecha10(s.fecha_admision) >= cita;
     const llegoReingreso = !vacio(s.reingreso_recibido_en) && fecha10(s.reingreso_recibido_en) >= cita;
     if(!llegoPrimera && !llegoReingreso){
@@ -168,8 +170,8 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
           motivo: `${esReingreso ? 'Reingreso' : 'Primera llegada'}: tenía cita el ${cita} (hace ${diasAtraso} días) y nunca se registró` };
       }
       return { ...base, tipo:'cita', orden:2, color: cita < hoy ? 'ambar' : 'azul', es_reingreso: esReingreso, cita_fecha: cita,
-        ingreso_tipo: s.ingreso_tipo || '',
-        motivo: (esReingreso ? 'Reingreso' : 'Primera llegada') + (cita < hoy ? ` — tenía cita el ${cita} y no se ha registrado` : ' — cita hoy') };
+        ingreso_tipo: s.ingreso_tipo || '', vale_pendiente: vale || null,
+        motivo: (vale ? `Viene a instalar lo pendiente del vale (${vale})` : esReingreso ? 'Reingreso' : 'Primera llegada') + (cita < hoy ? ` — tenía cita el ${cita} y no se ha registrado` : ' — cita hoy') };
     }
   }
 
@@ -238,10 +240,11 @@ function calcularInicioAlejandra(db){
     if(!tareasReingreso.has(t.siniestro_id)) tareasReingreso.set(t.siniestro_id, t);
   }
   const activos = db.prepare(`SELECT * FROM siniestros WHERE archivado=0 AND estatus_general != 'Cerrado'`).all();
+  const vales = require('./valesPendientes').pendientesPorUnidad(db); // 18-nov-2026
   const tarjetas = [];
   for(const s of activos){
     try{
-      const t = tarjetaDeUnidad(db, s, hoy, { tareasReingreso });
+      const t = tarjetaDeUnidad(db, s, hoy, { tareasReingreso, vales });
       if(t) tarjetas.push(t);
     }catch(e){ /* una unidad con datos raros no debe tumbar la pantalla completa */ }
   }

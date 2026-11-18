@@ -8,8 +8,27 @@ const db = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { registrarAuditoria, auditarCambios } = require('../utils');
 const router = express.Router();
+const V = require('../valesPendientes');
 
-const ROLES_EDICION = ['operativo','atencion_cliente','admin','jefe'];
+// 18-nov-2026 (Roberto): "lo puede cerrar cualquiera de oficina o incluso Beto" -> toda la oficina y Beto.
+const ROLES_EDICION = V.ROLES_VALE;
+
+// 18-nov-2026: apartado "Entregadas con pendiente" (ver server/valesPendientes.js).
+router.get('/apartado', requireAuth, (req, res)=>{
+  res.json({ vales: V.listarEntregadasConPendiente(db) });
+});
+
+// 18-nov-2026: "Ya se instaló" -- cierra el vale; la unidad vuelve a seguir su archivo normal.
+router.post('/:id/resolver', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
+  const v = db.prepare('SELECT * FROM vales_pendientes WHERE id = ?').get(req.params.id);
+  if(!v) return res.status(404).json({ error:'Vale no encontrado.' });
+  if(v.estado !== 'pendiente') return res.status(400).json({ error:'Este vale ya estaba cerrado.' });
+  db.prepare(`UPDATE vales_pendientes SET estado='surtido', resuelto_en=datetime('now'), resuelto_por=?, notas=CASE WHEN ? != '' THEN TRIM(COALESCE(notas,'') || ' ' || ?) ELSE notas END, actualizado_en=datetime('now') WHERE id=?`)
+    .run(req.session.user.id, String(req.body.nota || '').trim(), String(req.body.nota || '').trim(), v.id);
+  registrarAuditoria(db, { entidad_tipo:'vale_pendiente', entidad_id:v.id, accion:'vale_resuelto', campo:'estado', valor_anterior:'pendiente', valor_nuevo:'Resuelto: ' + v.pieza_pendiente, usuario:req.session.user });
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:v.siniestro_id, accion:'vale_resuelto', valor_nuevo:'Se instaló lo pendiente: ' + v.pieza_pendiente, usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM vales_pendientes WHERE id = ?').get(v.id));
+});
 
 router.get('/', requireAuth, (req, res)=>{
   const { siniestro_id, estado } = req.query;
@@ -27,13 +46,13 @@ router.get('/', requireAuth, (req, res)=>{
 router.post('/', requireAuth, requireRole(...ROLES_EDICION), (req, res)=>{
   const b = req.body;
   if(!b.siniestro_id) return res.status(400).json({ error:'El vale debe ligarse a un expediente.' });
-  const siniestro = db.prepare('SELECT id FROM siniestros WHERE id = ?').get(b.siniestro_id);
+  const siniestro = db.prepare('SELECT id, fecha_entrega_real FROM siniestros WHERE id = ?').get(b.siniestro_id);
   if(!siniestro) return res.status(400).json({ error:'El expediente indicado no existe.' });
   if(!b.pieza_pendiente || !String(b.pieza_pendiente).trim()) return res.status(400).json({ error:'Indica qué pieza quedó pendiente.' });
 
   const info = db.prepare(`INSERT INTO vales_pendientes (siniestro_id,pieza_pendiente,fecha_entrega_vehiculo,fecha_estimada_llegada,estado,notas,creado_por)
     VALUES (?,?,?,?,?,?,?)`)
-    .run(b.siniestro_id, String(b.pieza_pendiente).trim(), b.fecha_entrega_vehiculo||'', b.fecha_estimada_llegada||'', 'pendiente', b.notas||'', req.session.user.id);
+    .run(b.siniestro_id, String(b.pieza_pendiente).trim(), b.fecha_entrega_vehiculo || siniestro.fecha_entrega_real || '', b.fecha_estimada_llegada||'', 'pendiente', b.notas||'', req.session.user.id);
   registrarAuditoria(db, { entidad_tipo:'vale_pendiente', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user, valor_nuevo:b.pieza_pendiente });
   res.status(201).json(db.prepare('SELECT * FROM vales_pendientes WHERE id = ?').get(info.lastInsertRowid));
 });

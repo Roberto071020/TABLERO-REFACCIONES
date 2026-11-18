@@ -493,7 +493,9 @@ function archivarSiniestrosVencidos(db){
   const limite = new Date();
   limite.setUTCDate(limite.getUTCDate() - 90);
   const limiteStr = limite.toISOString().slice(0,10);
-  const candidatos = db.prepare(`SELECT id, fecha_entrega_real FROM siniestros WHERE archivado = 0 AND no_auto_archivar = 0 AND fecha_entrega_real IS NOT NULL AND fecha_entrega_real != '' AND fecha_entrega_real <= ?`).all(limiteStr);
+  // 18-nov-2026 (Roberto): una unidad entregada con un vale pendiente no se archiva sola hasta que se instale lo pendiente.
+  const candidatos = db.prepare(`SELECT id, fecha_entrega_real FROM siniestros WHERE archivado = 0 AND no_auto_archivar = 0 AND fecha_entrega_real IS NOT NULL AND fecha_entrega_real != '' AND fecha_entrega_real <= ?
+    AND id NOT IN (SELECT siniestro_id FROM vales_pendientes WHERE estado = 'pendiente')`).all(limiteStr);
   for(const c of candidatos){
     db.prepare(`UPDATE siniestros SET archivado = 1, archivado_en = datetime('now') WHERE id = ?`).run(c.id);
     registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: c.id, accion:'archivado_automatico',

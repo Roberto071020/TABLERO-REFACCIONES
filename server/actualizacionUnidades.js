@@ -24,7 +24,9 @@ const ENCABEZADOS = {
   'expediente':'expediente', 'expediente enviado':'expediente', 'expediente completo':'expediente', 'expediente completo enviado':'expediente', // 11-nov-2026 // 11-nov-2026: SI = archivar (p. ej. pérdida total)
   'revision':'revision', 'estado revision':'revision', 'pendiente':'revision',
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
-  'entregada':'entregada', 'fecha entregada':'entregada', 'fecha entregado':'entregada', 'entregado':'entregada'
+  'entregada':'entregada', 'fecha entregada':'entregada', 'fecha entregado':'entregada', 'entregado':'entregada',
+  // 18-nov-2026 (Roberto): entregada con algo pendiente -> VALE = qué quedó pendiente (abre el vale; ver server/valesPendientes.js).
+  'vale':'vale', 'vale pendiente':'vale', 'pendiente vale':'vale', 'pendiente con vale':'vale'
 };
 
 const ETAPAS = {
@@ -300,7 +302,17 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
       else { r._reautorizar = lista; if(r.accion === 'sin_cambios' || !r.cambios.length) r.accion = 'actualizar';
         r.avisos.push(`Reautorización: Orlando tiene 24 h para mandar fotos editadas de: ${lista}.`); }
     } else if(f.no_autorizadas && String(f.no_autorizadas).trim() && !actual) r.errores.push('La unidad no existe en el tablero.');
-    if(r.accion === 'actualizar' && !r.cambios.length && !r._reautorizar) r.accion = 'sin_cambios';
+    // 18-nov-2026 (Roberto): VALE = lo que quedó pendiente al entregar. Abre el vale (si no está ya abierto con el mismo texto).
+    if(f.vale && String(f.vale).trim()){
+      const texto = String(f.vale).trim();
+      const entregada = nuevo.fecha_entrega_real || (actual && actual.fecha_entrega_real);
+      if(!entregada) r.errores.push('Para abrir un vale pendiente, la unidad debe estar entregada (pon también FECHA ENTREGADA).');
+      else if(actual && db.prepare(`SELECT 1 FROM vales_pendientes WHERE siniestro_id=? AND estado='pendiente' AND pieza_pendiente=?`).get(actual.id, texto)) r.avisos.push('Ese vale pendiente ya estaba abierto.');
+      else { r._vale = { texto, entregada }; if(r.accion === 'sin_cambios') r.accion = 'actualizar';
+        r.avisos.push(`Vale pendiente: ${texto}. Queda en "Entregadas con pendiente" y no se archiva hasta instalarlo.`); }
+      if(r.errores.length){ r.accion = 'error'; return r; }
+    }
+    if(r.accion === 'actualizar' && !r.cambios.length && !r._reautorizar && !r._vale) r.accion = 'sin_cambios';
     r._actualId = actual ? actual.id : null;
     return r;
   });
@@ -372,6 +384,14 @@ function aplicar(db, texto, usuario, { archivarFaltantes = false } = {}){
               new Date().toISOString().slice(0, 10), usuario && usuario.id ? usuario.id : null);
         }
       }
+    }
+    // 18-nov-2026: vales pendientes (columna VALE).
+    for(const r of aplicables){
+      if(!r._vale) continue;
+      const id = r._actualId || db.prepare('SELECT id FROM siniestros WHERE numero = ?').get(r.siniestro).id;
+      const info = db.prepare(`INSERT INTO vales_pendientes (siniestro_id, pieza_pendiente, fecha_entrega_vehiculo, estado, notas, creado_por) VALUES (?,?,?,'pendiente','',?)`)
+        .run(id, r._vale.texto, r._vale.entregada, usuario && usuario.id ? usuario.id : null);
+      registrarAuditoria(db, { entidad_tipo:'vale_pendiente', entidad_id: info.lastInsertRowid, accion:'alta', usuario, valor_nuevo: r._vale.texto });
     }
     if(archivarFaltantes && a.archivar.length){
       lote = 'L' + Date.now().toString(36).toUpperCase();

@@ -137,6 +137,8 @@ function calcularReporteArranque(db, ahora = new Date()){
     falta_fecha_entrega: faltaFechaEntrega, sin_dato_refacciones: sinDatoRefacciones,
     aviso_espacio: (()=>{ try{ return require('./fotos').avisoEspacio(db); }catch(e){ return []; } })(),
     complementos_pendientes: complementosPendientes, pendientes_calidad: pendientesCalidad,
+    // 18-nov-2026 (Roberto): entregadas con vale pendiente -- las que vienen hoy a instalar y las que no llegaron.
+    vales: (()=>{ try{ return require('./valesPendientes').listarEntregadasConPendiente(db, hoy); }catch(e){ return []; } })(),
     // 12-nov-2026 (Roberto: premiar a quienes llegan temprano): reconocimiento en el reporte que reenvía al grupo.
     puntualidad: (()=>{ try{ const A = require('./asistencia'); return { semana: A.semanaPerfecta(db, hoy), medallas: A.medallasVigentes(db, hoy) }; }catch(e){ return null; } })()
   };
@@ -192,6 +194,17 @@ function textoWhatsApp(d){
       .map(p => `• ${p.proveedor}: ${p.piezas} pieza${p.piezas === 1 ? '' : 's'} (${p.unidades} unidad${p.unidades === 1 ? '' : 'es'})`);
     if(d.piezas_vencidas.length > MAX_POR_SECCION) lineas.push(`  …y ${d.piezas_vencidas.length - MAX_POR_SECCION} proveedores más`);
     b.push(`*📦 Piezas vencidas (${total})*\n` + lineas.join('\n'));
+  }
+
+  if(d.vales && d.vales.length){
+    const hoyV = d.vales.filter(v => v.cita.estado === 'hoy' || v.cita.estado === 'llego');
+    const noLlego = d.vales.filter(v => v.cita.estado === 'no_llego');
+    const sinCita = d.vales.filter(v => v.cita.estado === 'sin_cita');
+    const l = [];
+    hoyV.forEach(v => l.push(`• Hoy: ${etiquetaUnidad(v)} – instalar ${v.pieza_pendiente}`));
+    noLlego.forEach(v => l.push(`• No llegó (cita ${ddmm(v.cita_fecha)}): ${etiquetaUnidad(v)} – ${v.pieza_pendiente}`));
+    if(sinCita.length) l.push(`• Sin cita para instalar: ${sinCita.length}`);
+    if(l.length) b.push(`*🧾 Entregadas con pendiente (${d.vales.length})*\n` + l.slice(0, MAX_POR_SECCION + 2).join('\n'));
   }
 
   const otros = [];

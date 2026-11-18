@@ -1576,4 +1576,10 @@ for(const [col, tipo] of [['detenido_motivo','TEXT'], ['detenido_nota','TEXT'], 
   if(!db.prepare(`SELECT 1 FROM pragma_table_info('siniestros') WHERE name=?`).get(col)) db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${tipo}`);
 }
 
+// 18-nov-2026 (Roberto): "Hay que crear un apartado para estas unidades que se reparan y entregan dejando algo pendiente".
+// El vale pendiente (tabla vales_pendientes, 28-ago-2026) ahora se cierra con quién y cuándo se resolvió.
+for(const [col, tipo] of [['resuelto_en','TEXT'], ['resuelto_por','INTEGER']]){
+  if(!db.prepare(`SELECT 1 FROM pragma_table_info('vales_pendientes') WHERE name=?`).get(col)) db.exec(`ALTER TABLE vales_pendientes ADD COLUMN ${col} ${tipo}`);
+}
+
 module.exports = db;

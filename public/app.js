@@ -226,6 +226,8 @@ const TABS = [
   {k:'inicio', label:'Inicio'},
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
   {k:'pendientes-hoy', label:'Pendientes de hoy', roles:['atencion_cliente','admin','jefe']},
+  // 18-nov-2026 (Roberto): unidades entregadas con algo pendiente (vale). Toda la oficina y Beto las pueden cerrar.
+  {k:'vales', label:'Entregadas con pendiente', roles:['atencion_cliente','operativo','orlando','vanessa','beto','admin','jefe']},
   {k:'kanban', label:'Kanban', roles:['operativo','admin','jefe']},
   {k:'autosurtidos', label:'Autosurtidos', roles:['operativo','admin','jefe']},
   {k:'incidencias', label:'Incidencias', roles:['operativo','admin','jefe']},
@@ -324,6 +326,7 @@ async function render(){
     if(state.view==='inicio') app.innerHTML = await viewInicio();
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
     else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
+    else if(state.view==='vales') app.innerHTML = await viewVales();
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
     else if(state.view==='autosurtidos') app.innerHTML = await viewAutosurtidos();
     else if(state.view==='ov-pendientes-revision') app.innerHTML = await viewOvPendientesRevision();
@@ -1368,7 +1371,7 @@ let ALE_ENT = null;
 async function aleEntregar(id){
   try{
     const s = await api('GET', '/api/siniestros/' + id);
-    ALE_ENT = { id, s, d: { receptor: s.cliente_nombre || '', ine: '', deducible: s.deducible_aplica ? '' : 'no_aplica', km: '', gasolina: '', llaves: '', finiquito: '', encuesta: '', correo: s.cliente_correo || '', motivo: '' } };
+    ALE_ENT = { id, s, d: { receptor: s.cliente_nombre || '', ine: '', deducible: s.deducible_aplica ? '' : 'no_aplica', km: '', gasolina: '', llaves: '', finiquito: '', encuesta: '', correo: s.cliente_correo || '', motivo: '', pendiente: '', vale: '' } };
     aleEntregarPaso();
   }catch(e){}
 }
@@ -1392,6 +1395,8 @@ function aleEntregarPaso(){
       ${d.encuesta === 'enviada' ? `<div class="subtle" style="margin:8px 0 4px;">Confirma su correo: ahí le llega la encuesta de GNP en 1 o 2 días. Pídele que la conteste y que revise también su correo no deseado.</div><input id="ale_ent_correo" type="email" placeholder="correo del cliente" value="${esc(d.correo)}">` : ''}
       ${d.encuesta === 'no_solicitar' ? `<div class="subtle" style="margin:8px 0 4px;"><b>No le menciones la encuesta.</b> Trata de resolverlo antes de que se vaya; a Roberto le aparece en su inicio.</div><textarea id="ale_ent_motivo" placeholder="¿Qué no le gustó?">${esc(d.motivo)}</textarea>` : ''}`) : ''}
     <div class="field" id="ale_ent_obs_wrap" style="display:${d.finiquito === 'inconformidad_abierta' ? 'block' : 'none'}"><label>¿Cuál es la inconformidad?</label><textarea id="ale_ent_obs">${esc(d.obs || '')}</textarea></div>
+    ${fila('🧾', '¿Queda algo pendiente con vale? (ej. una pieza por instalar)', `<div style="display:flex;gap:6px;">${opc('pendiente','no','No, todo completo')} ${opc('pendiente','si','Sí, se le da vale')}</div>
+      ${d.pendiente === 'si' ? `<input id="ale_ent_vale" style="margin-top:8px;" placeholder="¿Qué quedó pendiente?" value="${esc(d.vale)}"><div class="subtle" style="margin-top:4px;">Después puedes subir la foto del vale en "Entregadas con pendiente".</div>` : ''}`)}
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="aleEntregarGuardar()">✅ Unidad entregada</button></div>`, true);
 }
 function aleEntGuardarCampos(){
@@ -1401,6 +1406,7 @@ function aleEntGuardarCampos(){
   if(g('ale_ent_obs')) ALE_ENT.d.obs = g('ale_ent_obs').value.trim();
   if(g('ale_ent_correo')) ALE_ENT.d.correo = g('ale_ent_correo').value.trim();
   if(g('ale_ent_motivo')) ALE_ENT.d.motivo = g('ale_ent_motivo').value.trim();
+  if(g('ale_ent_vale')) ALE_ENT.d.vale = g('ale_ent_vale').value.trim();
 }
 function aleEntSet(campo, valor){ aleEntGuardarCampos(); ALE_ENT.d[campo] = valor; aleEntregarPaso(); }
 async function aleEntregarGuardar(){
@@ -1423,6 +1429,8 @@ async function aleEntregarGuardar(){
   if(d.ine !== 'si'){ toast('Sin INE no se entrega la unidad. Pídele su identificación.', 'error'); return; }
   if(d.deducible === 'pendiente'){ toast('El deducible no está pagado: no se entrega la unidad hasta que lo pague.', 'error'); return; }
   if(d.finiquito === 'inconformidad_abierta' && !d.obs){ toast('Escribe cuál es la inconformidad.', 'error'); return; }
+  if(!d.pendiente){ toast('Falta: si queda algo pendiente con vale.', 'error'); return; }
+  if(d.pendiente === 'si' && !d.vale){ toast('Escribe qué quedó pendiente.', 'error'); return; }
   const hoy = hoyLocalISO();
   try{
     await api('PATCH', '/api/siniestros/' + id, {
@@ -1435,7 +1443,9 @@ async function aleEntregarGuardar(){
     await api('PATCH', `/api/siniestros/${id}/entrega`, { fecha_entrega_real: hoy });
     // El finiquito firmado exige la entrega ya registrada, por eso va al final.
     await api('PATCH', '/api/siniestros/' + id, { finiquito_estado: d.finiquito, finiquito_fecha: hoy, ...(d.obs ? { finiquito_observacion: d.obs } : {}) });
-    toast('Unidad entregada. Pasa el expediente completo a Angélica.', 'success', 6000);
+    // 18-nov-2026 (Roberto): entregada con vale -> queda en "Entregadas con pendiente" hasta instalar lo pendiente.
+    if(d.pendiente === 'si') await api('POST', '/api/vales-pendientes', { siniestro_id: id, pieza_pendiente: d.vale, fecha_entrega_vehiculo: hoy });
+    toast(d.pendiente === 'si' ? 'Unidad entregada con vale pendiente. Agenda la cita para instalarlo.' : 'Unidad entregada. Pasa el expediente completo a Angélica.', 'success', 6000);
     closeModal(); render();
   }catch(e){}
 }
@@ -3266,18 +3276,18 @@ async function viewSiniestro(id){
     ${puedeFiniquito?`<div style="margin-top:8px;"><button class="btn small secondary" onclick="registrarPostventa(${id},'contactado')">Marcar contactado</button> <button class="btn small secondary" onclick="registrarPostventa(${id},'no_contesta')">Marcar no contesta</button></div>`:''}
 
     <h3 style="margin-top:20px;">Vales pendientes</h3>
-    <p class="subtle">Modificación 3: piezas que quedaron pendientes al momento de la entrega (ej. un emblema), con seguimiento periódico para que no se pierdan de vista.</p>
+    <p class="subtle">Lo que quedó pendiente al entregar (ej. una moldura). Mientras siga pendiente la unidad sale en "Entregadas con pendiente" y no se archiva.</p>
     ${valesLista.length===0?'<div class="empty">Sin vales pendientes registrados.</div>':`
     <table><thead><tr><th>Pieza pendiente</th><th>F. entrega vehículo</th><th>F. estimada llegada</th><th>Estado</th><th></th></tr></thead><tbody>
     ${valesLista.map(v=>`<tr>
       <td>${esc(v.pieza_pendiente)}${v.notas?`<div class="subtle">${esc(v.notas)}</div>`:''}</td>
       <td>${esc(v.fecha_entrega_vehiculo||'—')}</td>
       <td>${esc(v.fecha_estimada_llegada||'—')}</td>
-      <td><span class="badge ${v.estado==='surtido'?'verde':v.estado==='cancelado'?'gris':'ambar'}">${esc(v.estado)}</span></td>
-      <td>${v.estado==='pendiente'?`<button class="btn small secondary" onclick="abrirFormEditarVale(${v.id})">Actualizar</button>`:''}</td>
+      <td><span class="badge ${v.estado==='surtido'?'verde':v.estado==='cancelado'?'gris':'ambar'}">${esc(({ pendiente:'Pendiente', surtido:'Resuelto (instalado)', cancelado:'Cancelado' })[v.estado] || v.estado)}</span>${v.resuelto_en?`<div class="subtle">${esc(String(v.resuelto_en).slice(0,10))}</div>`:''}</td>
+      <td>${v.estado==='pendiente'?`<button class="btn small" onclick="valeResolver(${v.id}, ${JSON.stringify(String(v.pieza_pendiente)).replace(/"/g, '&quot;')})">✅ Ya se instaló</button> <button class="btn small secondary" onclick="abrirFormEditarVale(${v.id})">Actualizar</button>`:''}</td>
     </tr>`).join('')}
     </tbody></table>`}
-    <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoVale(${id})">+ Registrar vale pendiente</button></div>`;
+    <div style="margin-top:8px;"><button class="btn small" onclick="abrirFormNuevoVale(${id})">+ Registrar vale pendiente</button> <button class="btn small ghost" onclick="FotosSC.abrirSubirFotos(${id}, 'vale', { titulo:'Foto del vale' })">📷 Foto del vale</button></div>`;
   } else if(state.subtabSiniestro==='pedidos'){
     body = `<table><thead><tr><th>Pedido</th><th>F. creación</th><th>F. prevista</th><th>Estatus Inpart</th><th>Estatus operativo</th><th></th></tr></thead><tbody>
     ${peds.map(p=>`<tr><td>${esc(p.numero)}</td><td>${esc(p.fecha_creacion)}</td><td>${esc(p.fecha_prevista)}</td><td>${esc(p.estatus_inpart)}<div class="subtle" style="font-size:11px;">${p.estatus_inpart_actualizado_en?'Actualizado: '+fmtFechaHora(p.estatus_inpart_actualizado_en):'Sin fecha de última actualización de Inpart'}</div></td><td>
@@ -3406,6 +3416,7 @@ function abrirFormEntrega(siniestroId){
   showModal(`
     <h3>Registrar entrega de la unidad</h3>
     <div class="field"><label>Fecha de entrega</label><input id="fent_fecha" type="date" value="${todayISO()}"></div>
+    <div class="field"><label>¿Quedó algo pendiente con vale? (opcional)</label><input id="fent_vale" placeholder="Ej. instalar moldura central de fascia trasera"></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarEntrega(${siniestroId})">Guardar</button></div>
   `);
 }
@@ -3414,7 +3425,9 @@ async function guardarEntrega(siniestroId){
   if(!fecha){ toast('Indica la fecha de entrega.', 'error'); return; }
   try{
     await api('PATCH', `/api/siniestros/${siniestroId}/entrega`, { fecha_entrega_real: fecha });
-    toast('Entrega registrada.', 'success');
+    const vale = (document.getElementById('fent_vale').value || '').trim(); // 18-nov-2026
+    if(vale) await api('POST', '/api/vales-pendientes', { siniestro_id: siniestroId, pieza_pendiente: vale, fecha_entrega_vehiculo: fecha });
+    toast(vale ? 'Entrega registrada con vale pendiente.' : 'Entrega registrada.', 'success');
     closeModal(); render();
   }catch(e){}
 }
@@ -4722,13 +4735,65 @@ async function registrarPostventa(siniestroId, resultado){
   }catch(e){}
 }
 
+/* ===================== ENTREGADAS CON PENDIENTE (18-nov-2026) =====================
+   Roberto: "Hay que crear un apartado para estas unidades que se reparan y entregan dejando algo pendiente ... el
+   cliente firma documentación de unidad terminada y se le entrega un vale solo por lo pendiente". Lógica en
+   server/valesPendientes.js. Lo cierra cualquiera de oficina o Beto con "Ya se instaló". */
+const COLOR_CITA_VALE = { no_llego:'rojo', llego:'ambar', hoy:'azul', sin_cita:'gris', futura:'verde' };
+const COLOR_PIEZA_VALE = { lista:'verde', en_camino:'ambar', sin_pedido:'gris' };
+async function viewVales(){
+  const r = await api('GET', '/api/vales-pendientes/apartado');
+  const puedeCita = currentUser && ['atencion_cliente','vanessa','admin','jefe'].includes(currentUser.rol);
+  const puedeLlegada = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
+  const lista = r.vales || [];
+  const tarjetas = lista.map(v => cajaInicio(`${encabezadoUnidad(v.siniestro_id, v.vehiculo, v.numero, [v.placas, v.aseguradora, v.cliente_nombre].filter(Boolean).map(esc).join(' · '))}
+    <div style="font-size:16px;margin:4px 0 8px;">🧾 <b>Pendiente:</b> ${esc(v.pieza_pendiente)}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <span class="badge gris">Entregada ${v.entregada ? esc(fechaCorta(v.entregada)) + ' (' + diasTexto(v.dias_desde_entrega) + ')' : '—'}</span>
+      <span class="badge ${COLOR_PIEZA_VALE[v.pieza.estado] || 'gris'}">${esc(v.pieza.texto)}</span>
+      <span class="badge ${COLOR_CITA_VALE[v.cita.estado] || 'gris'}">${esc(v.cita.texto)}</span>
+    </div>
+    ${v.notas ? `<div class="subtle" style="margin-top:6px;">${esc(v.notas)}</div>` : ''}
+    ${v.fotos.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">${v.fotos.map(f => `<img src="/api/fotos/${Number(f)}/imagen?mini=1" alt="Vale" onclick="FotosSC.verFoto(${Number(f)})" style="width:72px;height:72px;object-fit:cover;border-radius:8px;cursor:pointer;">`).join('')}</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
+      <button class="btn" onclick="valeResolver(${v.id}, ${JSON.stringify(String(v.pieza_pendiente)).replace(/"/g, '&quot;')})">✅ Ya se instaló</button>
+      ${puedeLlegada && v.cita.estado !== 'llego' ? `<button class="btn secondary" onclick="valeLlego(${v.siniestro_id})">🚗 Ya llegó</button>` : ''}
+      ${puedeCita ? `<button class="btn small secondary" onclick="aleCambiarCita(${v.siniestro_id}, '${esc(String(v.cita_fecha || '').slice(0, 10))}')">📅 ${v.cita_fecha ? 'Cambiar cita' : 'Agendar cita'}</button>` : ''}
+      ${v.cliente_telefono ? `<button class="btn small secondary" onclick="window.open(linkWhatsapp('${esc(String(v.cliente_telefono).replace(/\D/g, '').slice(-10))}', ''), '_blank')">📲 Escribirle</button>` : ''}
+      <button class="btn small ghost" onclick="FotosSC.abrirSubirFotos(${v.siniestro_id}, 'vale', { titulo:'Foto del vale' })">📷 ${v.fotos.length ? 'Otra foto' : 'Foto del vale'}</button>
+    </div>`)).join('');
+  return `<div class="section"><h2 style="margin-top:0;">🧾 Entregadas con pendiente <span class="badge ${lista.length ? 'ambar' : 'verde'}">${lista.length}</span></h2>
+    <p class="subtle" style="margin:0;">Unidades que ya se entregaron (y se pueden cobrar) pero el cliente se llevó un vale por algo pendiente. No se archivan ni se cierran hasta que se instale lo pendiente.</p></div>
+    ${lista.length ? tarjetas : '<div class="empty">No hay unidades entregadas con pendiente. ✅</div>'}`;
+}
+function valeResolver(valeId, pieza){
+  showModal(`<h3>¿Ya se instaló?</h3>
+    <p><b>${esc(pieza)}</b></p>
+    <div class="field"><label>Nota (opcional)</label><input id="vale_res_nota" placeholder="Ej. instalada por Fidel"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="valeGuardarResolver(${valeId})">✅ Sí, ya quedó</button></div>`);
+}
+async function valeGuardarResolver(valeId){
+  try{
+    await api('POST', '/api/vales-pendientes/' + valeId + '/resolver', { nota: document.getElementById('vale_res_nota').value });
+    toast('Listo: el pendiente quedó cerrado.', 'success');
+    closeModal(); render();
+  }catch(e){}
+}
+async function valeLlego(siniestroId){
+  try{
+    await api('POST', '/api/llegada/' + siniestroId);
+    toast('Registrado: ya está en el taller para instalar lo pendiente.', 'success');
+    render();
+  }catch(e){}
+}
+
 // Modificación 3: vale pendiente por pieza que quedó fuera al momento de la entrega.
 function abrirFormNuevoVale(siniestroId){
   showModal(`
     <h3>Registrar vale pendiente</h3>
     <div class="field"><label>Pieza pendiente</label><input id="fvale_pieza" placeholder="Ej. emblema trasero"></div>
     <div class="row-flex">
-      <div class="field"><label>Fecha de entrega del vehículo</label><input id="fvale_fentrega" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Fecha de entrega del vehículo</label><input id="fvale_fentrega" type="date" value=""><div class="subtle">Si la dejas vacía se toma la fecha de entrega de la unidad.</div></div>
       <div class="field"><label>Fecha estimada de llegada</label><input id="fvale_fllegada" type="date"></div>
     </div>
     <div class="field"><label>Notas</label><textarea id="fvale_notas"></textarea></div>
@@ -4759,7 +4824,7 @@ function abrirFormEditarVale(valeId){
       <div class="field"><label>Fecha estimada de llegada</label><input id="fvale2_fllegada" type="date" value="${esc(v.fecha_estimada_llegada||'')}"></div>
       <div class="field"><label>Estado</label><select id="fvale2_estado">
         <option value="pendiente" ${v.estado==='pendiente'?'selected':''}>Pendiente</option>
-        <option value="surtido" ${v.estado==='surtido'?'selected':''}>Surtido</option>
+        <option value="surtido" ${v.estado==='surtido'?'selected':''}>Resuelto (instalado)</option>
         <option value="cancelado" ${v.estado==='cancelado'?'selected':''}>Cancelado</option>
       </select></div>
       <div class="field"><label>Notas</label><textarea id="fvale2_notas">${esc(v.notas||'')}</textarea></div>
