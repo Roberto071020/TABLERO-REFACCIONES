@@ -95,7 +95,11 @@ function calcularCorteTarde(db, ahora = new Date()){
     const o = seguro(() => require('./inicioOrlando').calcularInicioOrlando(db), null);
     const r = [];
     if(o){
-      const reaut = o.reautorizar.filter(c => c.horas_restantes !== null && c.horas_restantes <= HORAS_REAUTORIZACION);
+      // 19-nov-2026 (Roberto: "¿en el reporte de las 3 se le está recordando a Orlando los expedientes con reincidencia?"):
+      // las reincidencias salen SIEMPRE, en su propio renglón, sin importar cuántas horas les queden.
+      const reinc = o.reautorizar.filter(c => c.reincidencia);
+      const reaut = o.reautorizar.filter(c => !c.reincidencia && c.horas_restantes !== null && c.horas_restantes <= HORAS_REAUTORIZACION);
+      r.push(renglon(reinc.length, reinc.length === 1 ? 'REINCIDENCIA sin resolver' : 'REINCIDENCIAS sin resolver', reinc));
       const revisar = o.revisar.filter(s => s.dias_esperando >= 1);
       r.push(renglon(reaut.length, reaut.length === 1 ? 'reautorización por vencer (fotos editadas)' : 'reautorizaciones por vencer (fotos editadas)', reaut));
       r.push(renglon(revisar.length, revisar.length === 1 ? 'unidad esperando revisión técnica desde ayer o antes' : 'unidades esperando revisión técnica desde ayer o antes', revisar));

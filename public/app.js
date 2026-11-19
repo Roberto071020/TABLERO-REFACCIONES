@@ -5221,13 +5221,16 @@ function abrirFormResolverIncidencia(id){
   showModal(`
     <h3>Resolver incidencia</h3>
     <div class="field"><label>Estado</label><select id="fr_estado"><option value="en_proceso">En proceso</option><option value="resuelta">Resuelta</option><option value="cancelada">Cancelada</option></select></div>
-    <div class="field"><label>Resolución (obligatoria para cerrar como "Resuelta")</label><textarea id="fr_resolucion" placeholder="Ej. el proveedor envió el espejo correcto, se confirmó físicamente el 20/08."></textarea></div>
+    <div class="field"><label>Resolución (obligatoria para cerrar como "Resuelta")</label><textarea id="fr_resolucion" placeholder="Ej. el proveedor va a surtir la pieza correcta."></textarea></div>
+    <div class="field"><label>¿Cuándo llega la pieza correcta? (opcional)</label><input id="fr_llegada" type="date">
+      <div class="subtle">Al resolverla, la pieza deja de salir como mal surtida y queda "por llegar" con esta fecha. Cuando llegue, márcala como recibida.</div></div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarResolverIncidencia(${id})">Guardar</button></div>
   `);
 }
 async function guardarResolverIncidencia(id){
   try{
-    await api('PATCH','/api/incidencias/'+id, { estado: document.getElementById('fr_estado').value, resolucion: document.getElementById('fr_resolucion').value });
+    // 19-nov-2026: fecha_llegada -> la pieza pasa a "por llegar" con esa fecha (ver server/routes/incidencias.js).
+    await api('PATCH','/api/incidencias/'+id, { estado: document.getElementById('fr_estado').value, resolucion: document.getElementById('fr_resolucion').value, fecha_llegada: document.getElementById('fr_llegada').value });
     toast('Incidencia actualizada.', 'success');
     closeModal(); render();
   }catch(e){}

@@ -71,6 +71,25 @@ router.patch('/:id', requireAuth, (req, res)=>{
   db.prepare(`UPDATE incidencias SET tipo=?,descripcion=?,accion_solicitada=?,responsable=?,fecha_compromiso=?,estado=?,resolucion=?,fecha_resolucion=?,actualizado_en=datetime('now') WHERE id=?`)
     .run(nuevo.tipo, nuevo.descripcion, nuevo.accion_solicitada, nuevo.responsable, nuevo.fecha_compromiso, nuevo.estado, nuevo.resolucion, fechaResolucion, req.params.id);
   auditarCambios(db, { entidad_tipo:'incidencia', entidad_id:req.params.id, anterior, nuevo, usuario:req.session.user });
+
+  // 19-nov-2026 (Daniela: "porque me seguirán apareciendo esas piezas mal surtidas si ya indiqué que se resolvió"):
+  // al resolverla, la pieza deja de contar como mal surtida y pasa a "por llegar" (Confirmada) con la fecha en que
+  // el proveedor surte la correcta. Se sigue contando como vencida si no llega, y desaparece al recibirla físicamente.
+  if(b.estado === 'resuelta' && anterior.estado !== 'resuelta'){
+    const pieza = db.prepare('SELECT * FROM piezas WHERE id = ?').get(anterior.pieza_id);
+    if(pieza && ['Incorrecta/dañada','Devuelta'].includes(pieza.estatus)){
+      const fecha = String(b.fecha_llegada || nuevo.fecha_compromiso || '').slice(0, 10) || pieza.fecha_prometida || null;
+      db.prepare(`UPDATE piezas SET estatus='Confirmada', fecha_prometida=?, actualizado_en=datetime('now') WHERE id=?`).run(fecha, pieza.id);
+      registrarAuditoria(db, { entidad_tipo:'pieza', entidad_id:pieza.id, accion:'incidencia_resuelta', campo:'estatus', valor_anterior:pieza.estatus,
+        valor_nuevo:'Confirmada (por llegar la correcta' + (fecha ? ', ' + fecha : '') + ')', usuario:req.session.user });
+      const otras = db.prepare(`SELECT COUNT(*) n FROM incidencias i JOIN piezas z ON z.id = i.pieza_id WHERE z.pedido_id = ? AND i.estado IN ('abierta','en_proceso')`).get(pieza.pedido_id).n;
+      const pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(pieza.pedido_id);
+      if(!otras && pedido && pedido.estatus_operativo === 'Con incidencia'){
+        db.prepare(`UPDATE pedidos SET estatus_operativo='Esperando proveedor', actualizado_en=datetime('now') WHERE id=?`).run(pedido.id);
+        registrarAuditoria(db, { entidad_tipo:'pedido', entidad_id:pedido.id, accion:'incidencia_resuelta', campo:'estatus_operativo', valor_anterior:pedido.estatus_operativo, valor_nuevo:'Esperando proveedor', usuario:req.session.user });
+      }
+    }
+  }
   res.json(db.prepare('SELECT * FROM incidencias WHERE id = ?').get(req.params.id));
 });
 
