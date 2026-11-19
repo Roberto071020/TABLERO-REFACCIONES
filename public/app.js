@@ -1046,6 +1046,8 @@ const ALE_SECCIONES = [
   { k:'entregar', titulo:'1. Entregar', ayuda:'El cliente viene por su unidad, o se le prometió para hoy.', tipos:['entrega','retraso'] },
   { k:'recibir', titulo:'2. Recibir unidades', ayuda:'Citas de hoy que todavía no se registran.', tipos:['cita'] },
   { k:'reingreso', titulo:'3. Agendar reingresos', ayuda:'Ya llegó el 90% de las piezas: dale fecha al cliente.', tipos:['reingreso'] },
+  // 19-nov-2026 (Roberto: "que de alguna manera se le explique brevemente qué quiere decir alta por volante").
+  { k:'volante', titulo:'📄 Asignadas por volante (aún no llegan)', ayuda:'La aseguradora nos asignó la unidad y la dimos de alta con los datos del volante del ajustador, antes de que llegue. Contacta al cliente para que la traiga antes de que venza el volante; cuando llegue, confirma sus datos al recibirla.', tipos:['volante'] },
   { k:'avisar', titulo:'4. Avisar al cliente', ayuda:'Su unidad avanzó: mándale el mensaje por WhatsApp.', tipos:['aviso'] },
   // 17-nov-2026 (Roberto: el mensaje al cliente "es de los puntos más importantes"): sin teléfono el aviso no se puede
   // mandar, así que esta sección sube aquí, con número arriba y el teléfono se captura en la misma tarjeta.
@@ -1128,6 +1130,10 @@ function aleTarjetaHtml(t, i){
     extra = `<button class="btn small ghost" onclick="aleCambiarCita(${t.id}, '${esc(t.cita_fecha || '')}')">Cambiar cita</button>`;
   } else if(t.tipo === 'reingreso'){
     boton = `<button class="btn" onclick="aleAgendarReingreso(${i})">📅 Agendar reingreso</button>`;
+  } else if(t.tipo === 'volante'){ // 19-nov-2026
+    boton = (t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Escribirle</button> ` : '')
+      + `<button class="btn" onclick="aleCambiarCita(${t.id}, '${esc(t.cita_fecha || '')}')">📅 ${t.cita_fecha ? 'Cambiar cita' : 'Agendar cita'}</button>`;
+    extra = `<button class="btn small secondary" onclick="aleRecibir(${t.id})">🚗 Ya llegó: recibir</button>`;
   } else if(t.tipo === 'cita_vieja'){
     boton = (t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Escribirle</button>` : '')
       + ` <button class="btn small secondary" onclick="aleCambiarCita(${t.id}, '')">Sí viene: nueva cita</button>`
@@ -1145,6 +1151,7 @@ function aleTarjetaHtml(t, i){
       <span class="link" style="font-size:13px;white-space:nowrap;" onclick="goSiniestro(${t.id})">Ver expediente</span>
     </div>
     ${sub ? `<div class="subtle" style="margin:2px 0 6px;">${sub}</div>` : ''}
+    ${t.volante && t.tipo !== 'volante' ? `<div style="margin-bottom:6px;"><span class="badge azul" title="${esc(VOLANTE_EXPLICACION)}">📄 Alta por volante · datos por confirmar</span></div>` : ''}
     <div style="margin-bottom:10px;"><span class="badge ${t.color || 'gris'}" style="white-space:normal;">${esc(t.motivo || '')}</span></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${boton} ${extra}</div>
   </div>`;
@@ -1264,7 +1271,9 @@ async function aleRecibir(id){
       datos: { ingreso_tipo: s.ingreso_tipo || '', kilometraje: '', combustible_nivel: '', llaves_entregadas: '', pertenencias: '', telefono: '' },
       // 17-nov-2026: sin teléfono no le llegan los avisos -> se pide al recibir la unidad si no lo tenemos.
       pideTelefono: String(s.cliente_telefono || '').replace(/\D/g, '').length < 10 };
-    aleRecibirPaso1();
+    // 19-nov-2026: alta por volante -> primero se confirman los datos del volante con la unidad.
+    if(s.volante_origen && !s.volante_confirmado_en) volanteConfirmar(id, () => aleRecibir(id));
+    else aleRecibirPaso1();
   }catch(e){}
 }
 function aleRecPaso(n){ return `<p class="subtle" style="margin:0 0 8px;">Paso ${n} de 3</p>`; }
@@ -1364,6 +1373,54 @@ async function aleSubirDoc(input, id, tipo){
   if(!res.ok){ toast(data.error || 'No se pudo subir.', 'error'); return; }
   toast('Documento guardado.', 'success');
   const label = input.closest('label'); if(label){ label.classList.add('hidden'); }
+}
+
+/* ===================== ALTA POR VOLANTE (19-nov-2026) =====================
+   Roberto: ANA e Inbursa mandan el volante de reparación al asignar una unidad; se da de alta antes de que llegue y
+   "debe quedar por confirmar la información con Alejandra o quien reciba en taller". Ver server/volantes.js. */
+const VOLANTE_EXPLICACION = 'Alta por volante: la aseguradora nos asignó esta unidad y la dimos de alta con los datos del volante del ajustador, antes de que llegue. Cuando llegue, confirma esos datos con la unidad y el cliente.';
+async function volanteConfirmar(id, alTerminar){
+  const s = await api('GET', '/api/siniestros/' + id);
+  const campo = (k, label, extra = '') => `<div class="field"><label>${label}</label><input id="vol_${k}" value="${esc(s[k] || '')}" ${extra}></div>`;
+  showModal(`
+    <h3 style="margin-top:0;">📄 Confirma los datos del volante</h3>
+    <div class="fg-aviso" style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:10px;">${esc(VOLANTE_EXPLICACION)} Si algo no coincide, corrígelo aquí.</div>
+    <p class="subtle" style="margin-top:0;">Siniestro ${esc(s.numero)} · ${esc(s.aseguradora || '')}${s.volante_vigencia ? ' · volante vigente hasta ' + esc(String(s.volante_vigencia).slice(0, 10)) : ''}</p>
+    ${campo('vehiculo', 'Vehículo (marca, modelo, año, color)')}
+    ${campo('placas', 'Placas')}${campo('vin', 'VIN / No. de serie')}
+    ${campo('cliente_nombre', 'Nombre del cliente')}
+    ${campo('cliente_telefono', 'Teléfono del cliente', 'type="tel" inputmode="numeric"')}${campo('cliente_correo', 'Correo del cliente', 'type="email"')}
+    <div class="field"><label>¿Aplica deducible?</label><select id="vol_deducible"><option value="1" ${s.deducible_aplica ? 'selected' : ''}>Sí</option><option value="0" ${s.deducible_aplica === 0 ? 'selected' : ''}>No</option></select></div>
+    ${s.notas ? `<details style="margin-bottom:8px;"><summary class="subtle">Ver lo que decía el volante</summary><div class="subtle" style="white-space:pre-wrap;margin-top:6px;">${esc(s.notas)}</div></details>` : ''}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" id="vol_ok">✅ Datos confirmados</button></div>`);
+  document.getElementById('vol_ok').addEventListener('click', async () => {
+    const v = k => document.getElementById('vol_' + k).value.trim();
+    try{
+      await api('POST', `/api/siniestros/${id}/confirmar-volante`, { vehiculo: v('vehiculo'), placas: v('placas').toUpperCase(), vin: v('vin').toUpperCase(),
+        cliente_nombre: v('cliente_nombre'), cliente_telefono: v('cliente_telefono'), cliente_correo: v('cliente_correo'), deducible_aplica: v('deducible') });
+      toast('Datos del volante confirmados.', 'success');
+      closeModal();
+      if(alTerminar) alTerminar(); else render();
+    }catch(e){}
+  });
+}
+// Alta de siniestro: si placas/VIN coinciden con una unidad por volante que no ha llegado, se pregunta si es la misma.
+async function crearSiniestroRevisandoVolante(body){
+  try{ return await api('POST', '/api/siniestros', body, { silent: true }); }
+  catch(e){
+    if(!(e.data && e.data.coincide_volante)){ toast(e.message, 'error'); throw e; }
+    const c = e.data.coincide_volante;
+    const otro = await new Promise(resolve => {
+      showModal(`<h3 style="margin-top:0;">📄 ¿Es la misma unidad?</h3><p>${esc(e.message)}</p>
+        <p class="subtle">${esc(VOLANTE_EXPLICACION)}</p>
+        <div class="modal-actions"><button class="btn secondary" id="vol_no">No, es otro siniestro</button><button class="btn" id="vol_si">Sí, es la misma</button></div>`);
+      document.getElementById('vol_si').addEventListener('click', () => resolve(false));
+      document.getElementById('vol_no').addEventListener('click', () => resolve(true));
+    });
+    if(!otro){ closeModal(); goSiniestro(c.id); const err = new Error('misma_unidad'); err.data = { manejado: true }; throw err; }
+    closeModal();
+    return await api('POST', '/api/siniestros', { ...body, es_otro_siniestro: 1 });
+  }
 }
 
 /* ---------- Entregar unidad (paso a paso) ---------- */
@@ -3391,6 +3448,7 @@ async function viewSiniestro(id){
   <div class="section" style="margin-top:10px;">
     ${s.completo===0?`<div class="banner ambar">Este siniestro está <b>Pendiente de completar</b> (faltan vehículo o placas). <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Completar datos</button></div>`:''}
     ${s.estatus_general==='Cerrado'?`<div class="banner verde">Siniestro cerrado.</div>`:''}
+    ${s.volante_origen && !s.volante_confirmado_en ? `<div class="banner ambar">📄 <b>Alta por volante (${esc(s.volante_origen)})</b> · datos por confirmar${s.volante_vigencia ? ' · volante vigente hasta ' + esc(String(s.volante_vigencia).slice(0,10)) : ''}<br><span style="font-size:13px;">${esc(VOLANTE_EXPLICACION)}</span> <button class="btn small secondary no-print" onclick="volanteConfirmar(${s.id})">Confirmar datos</button></div>` : ''}
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
         <h2 style="margin-bottom:2px;">Siniestro ${esc(s.numero)} <span class="badge azul">${esc(s.aseguradora)}</span> <span class="badge ${s.estatus_general==='Cerrado'?'verde':'gris'}">${esc(s.estatus_general)}</span></h2>
@@ -5471,9 +5529,10 @@ async function guardarExpediente(){
   }
   let numero = particular ? '' : document.getElementById('fx_numero').value.trim();
   if(!numero) numero = 'EXP-' + Date.now().toString(36).toUpperCase();
+  const fotosRecepcionPre = Array.from((document.getElementById('fx_fotos_recepcion') || {}).files || []); // antes de que el aviso de volante cierre el formulario
   let s;
   try{
-    s = await api('POST','/api/siniestros', {
+    s = await crearSiniestroRevisandoVolante({ // 19-nov-2026: revisa coincidencia con unidades por volante
       numero, cliente_nombre, cliente_telefono, cliente_correo,
       cliente_notas: document.getElementById('fx_cliente_notas').value,
       aseguradora: particular ? 'Particular' : document.getElementById('fx_aseguradora').value,
@@ -5494,7 +5553,7 @@ async function guardarExpediente(){
   }
   if(ordenFile && !particular) await subirArchivoDirecto(ordenFile, s.id, 'orden_admision');
   if(inventarioFile) await subirArchivoDirecto(inventarioFile, s.id, 'inventario_fisico');
-  const fotosRecepcion = Array.from((document.getElementById('fx_fotos_recepcion') || {}).files || []);
+  const fotosRecepcion = fotosRecepcionPre;
   if(fotosRecepcion.length){
     toast(`Subiendo ${fotosRecepcion.length} foto(s) de recepción…`, 'info');
     const r = await FotosSC.subirVarias(fotosRecepcion, s.id, 'recepcion');
@@ -6012,7 +6071,7 @@ function formNuevoSiniestro(){
 }
 async function guardarSiniestro(){
   try{
-    const s = await api('POST','/api/siniestros', {
+    const s = await crearSiniestroRevisandoVolante({ // 19-nov-2026
       numero: document.getElementById('f_numero').value.trim(), aseguradora: document.getElementById('f_aseguradora').value,
       vehiculo: document.getElementById('f_vehiculo').value, placas: document.getElementById('f_placas').value, fecha_ingreso: document.getElementById('f_fecha').value
     });

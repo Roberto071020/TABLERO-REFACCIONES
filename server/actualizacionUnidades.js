@@ -26,7 +26,11 @@ const ENCABEZADOS = {
   'cita reingreso':'cita', 'fecha cita reingreso':'cita', 'cita':'cita', 'fecha cita':'cita',
   'entregada':'entregada', 'fecha entregada':'entregada', 'fecha entregado':'entregada', 'entregado':'entregada',
   // 18-nov-2026 (Roberto): entregada con algo pendiente -> VALE = qué quedó pendiente (abre el vale; ver server/valesPendientes.js).
-  'vale':'vale', 'vale pendiente':'vale', 'pendiente vale':'vale', 'pendiente con vale':'vale'
+  'vale':'vale', 'vale pendiente':'vale', 'pendiente vale':'vale', 'pendiente con vale':'vale',
+  // 19-nov-2026 (Roberto): alta por volante. VOLANTE = vigencia del volante (marca la unidad; ver server/volantes.js).
+  // OTRO SINIESTRO = SI para crearla aunque coincidan placas/VIN con una unidad por volante que no ha llegado.
+  'volante':'volante', 'vigencia volante':'volante', 'alta por volante':'volante',
+  'otro siniestro':'otro_siniestro', 'es otro siniestro':'otro_siniestro', 'vin':'vin', 'serie':'vin', 'no. serie':'vin'
 };
 
 const ETAPAS = {
@@ -50,7 +54,8 @@ const ETIQUETA_CAMPO = { aseguradora:'Aseguradora', vehiculo:'Vehículo', placas
   aseguradora_regla_aplicada:'Regla aplicada', archivado:'Archivada', archivado_en:'Archivada el', fecha_entrega_prevista:'Fecha de entrega', estado_produccion:'Etapa',
   fecha_hora_disponible_revision:'Disponible para revisión', estado_revision_tecnica:'Revisión técnica', excel_capturado:'Capturado en Excel',
   fotos_completas:'Fotos completas', enviado_propietario:'Enviado a Roberto', estado_expediente:'Expediente',
-  cita_fecha:'Cita de reingreso', reingreso_recibido_en:'Llegó a su cita', fecha_entrega_real:'Fecha entregada', estado_entrega:'Estado de entrega' };
+  cita_fecha:'Cita de reingreso', reingreso_recibido_en:'Llegó a su cita', fecha_entrega_real:'Fecha entregada', estado_entrega:'Estado de entrega',
+  vin:'VIN', volante_origen:'Alta por volante de', volante_vigencia:'Vigencia del volante' };
 
 function limpiar(t){
   return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -133,6 +138,18 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
     if(f.aseguradora) nuevo.aseguradora = normalizarAseguradora(f.aseguradora);
     if(f.vehiculo) nuevo.vehiculo = f.vehiculo;
     if(f.placas) nuevo.placas = f.placas.toUpperCase();
+    if(f.vin) nuevo.vin = String(f.vin).toUpperCase().trim();
+    // 19-nov-2026: alta por volante.
+    if(f.volante){
+      const fx = fecha(f.volante);
+      if(!fx.ok) r.errores.push(`Vigencia del volante "${f.volante}" no es una fecha válida (usa DD/MM/AAAA).`);
+      else { nuevo.volante_vigencia = fx.valor; if(!(actual && actual.volante_origen)) nuevo.volante_origen = nuevo.aseguradora || (actual && actual.aseguradora) || 'Aseguradora'; }
+    }
+    if(!actual && !(f.otro_siniestro && /^s/i.test(limpiar(f.otro_siniestro)))){
+      const V = require('./volantes');
+      const c = V.buscarCoincidencia(db, { placas: nuevo.placas, vin: nuevo.vin, numero: f.siniestro });
+      if(c) r.errores.push(V.mensajeCoincidencia(c) + ' Si es otro siniestro, agrega la columna OTRO SINIESTRO = SI.');
+    }
 
     if(f.ubicacion){
       const u = limpiar(f.ubicacion);

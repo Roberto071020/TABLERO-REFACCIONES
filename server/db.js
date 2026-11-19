@@ -1582,4 +1582,7 @@ for(const [col, tipo] of [['resuelto_en','TEXT'], ['resuelto_por','INTEGER']]){
   if(!db.prepare(`SELECT 1 FROM pragma_table_info('vales_pendientes') WHERE name=?`).get(col)) db.exec(`ALTER TABLE vales_pendientes ADD COLUMN ${col} ${tipo}`);
 }
 
+// 19-nov-2026: alta por volante (ver server/volantes.js).
+require('./volantes').asegurarColumnas(db);
+
 module.exports = db;

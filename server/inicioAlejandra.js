@@ -131,6 +131,8 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
   const base = {
     id: s.id, numero: s.numero, vehiculo: s.vehiculo || '', placas: s.placas || '', aseguradora: s.aseguradora || '',
     cliente_nombre: s.cliente_nombre || '', fecha_entrega_prevista: s.fecha_entrega_prevista || '',
+    // 19-nov-2026: alta por volante con datos por confirmar (ver server/volantes.js).
+    volante: s.volante_origen && !s.volante_confirmado_en ? { origen: s.volante_origen, vigencia: fecha10(s.volante_vigencia) || null } : null,
   };
   const entregada = !vacio(s.fecha_entrega_real);
 
@@ -173,6 +175,17 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
         ingreso_tipo: s.ingreso_tipo || '', vale_pendiente: vale || null,
         motivo: (vale ? `Viene a instalar lo pendiente del vale (${vale})` : esReingreso ? 'Reingreso' : 'Primera llegada') + (cita < hoy ? ` — tenía cita el ${cita} y no se ha registrado` : ' — cita hoy') };
     }
+  }
+
+  // 2b) ALTA POR VOLANTE (19-nov-2026, Roberto): asignada por la aseguradora, todavía no llega y sin cita para hoy.
+  // Ámbar 2 días antes de que venza el volante; rojo si ya venció.
+  if(base.volante && !entregada && vacio(s.fecha_admision) && !/^piso/i.test(String(s.ubicacion || '')) && !(cita && cita <= hoy)){
+    const vig = base.volante.vigencia;
+    const dias = vig ? Math.floor((Date.parse(vig) - Date.parse(hoy)) / 86400000) : null;
+    const tel = whatsappFaseA.normalizarTelefonoMX(s.cliente_telefono);
+    return { ...base, tipo:'volante', orden:3, color: dias !== null && dias < 0 ? 'rojo' : dias !== null && dias <= 2 ? 'ambar' : 'azul',
+      cita_fecha: cita || null, telefono: tel.valido ? tel.local : null, dias_vigencia: dias,
+      motivo: `Asignada por volante (${base.volante.origen}) · aún no llega` + (vig ? (dias < 0 ? ` · el volante venció el ${vig}` : ` · el volante vence el ${vig}`) : '') + (cita ? ` · cita el ${cita}` : '') };
   }
 
   // 3) AGENDAR REINGRESO (90% de piezas, unidad circulando, sin cita futura).
@@ -277,6 +290,7 @@ function calcularInicioAlejandra(db){
     reingresos: visibles.filter(t => t.tipo === 'reingreso').length,
     citas_viejas: visibles.filter(t => t.tipo === 'cita_vieja').length,
     sin_datos: visibles.filter(t => t.tipo === 'sin_datos').length,
+    volantes: visibles.filter(t => t.tipo === 'volante').length, // 19-nov-2026
     seguimientos_hechos_hoy: hechosHoy, seguimientos_pendientes: seguimientosPendientes,
   };
   return { hoy, numeros, tarjetas: visibles, max_seguimientos_dia: MAX_SEGUIMIENTOS_DIA };

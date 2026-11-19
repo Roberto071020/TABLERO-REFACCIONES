@@ -85,12 +85,38 @@ router.get('/:id', requireAuth, (req, res)=>{
   res.json({ ...s, semaforo: calcularSemaforo(s), admision_faltantes: admisionFaltantes });
 });
 
+// 19-nov-2026: quien recibe la unidad confirma (y corrige si hace falta) los datos tomados del volante.
+const CAMPOS_VOLANTE = ['vehiculo','placas','vin','cliente_nombre','cliente_telefono','cliente_correo'];
+router.post('/:id/confirmar-volante', requireAuth, requireRole('atencion_cliente','operativo','orlando','vanessa','beto','admin','jefe'), (req, res)=>{
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  if(!s.volante_origen) return res.status(400).json({ error:'Esta unidad no se dio de alta por volante.' });
+  if(s.volante_confirmado_en) return res.status(400).json({ error:'Los datos del volante ya estaban confirmados.' });
+  const b = req.body || {};
+  const nuevo = { ...s };
+  for(const c of CAMPOS_VOLANTE) if(b[c] !== undefined) nuevo[c] = String(b[c]).trim();
+  if(b.deducible_aplica !== undefined && b.deducible_aplica !== '') nuevo.deducible_aplica = Number(b.deducible_aplica) ? 1 : 0;
+  nuevo.volante_confirmado_en = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare(`UPDATE siniestros SET vehiculo=?, placas=?, vin=?, cliente_nombre=?, cliente_telefono=?, cliente_correo=?, deducible_aplica=?, volante_confirmado_en=?, actualizado_en=datetime('now') WHERE id=?`)
+    .run(nuevo.vehiculo, nuevo.placas, nuevo.vin, nuevo.cliente_nombre, nuevo.cliente_telefono, nuevo.cliente_correo, nuevo.deducible_aplica, nuevo.volante_confirmado_en, s.id);
+  auditarCambios(db, { entidad_tipo:'siniestro', entidad_id:s.id, anterior:s, nuevo, usuario:req.session.user });
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:s.id, accion:'volante_confirmado', valor_nuevo:'Datos del volante confirmados con la unidad', usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
 router.post('/', requireAuth, (req, res)=>{
   const b = req.body;
   if(!b.numero || !String(b.numero).trim()) return res.status(400).json({ error:'El número de siniestro es obligatorio.' });
   const existente = db.prepare('SELECT * FROM siniestros WHERE numero = ?').get(String(b.numero).trim());
   if(existente) return res.status(409).json({ error:'Ya existe un siniestro con ese número (no se crean duplicados).', duplicado: existente });
   if(!b.aseguradora) return res.status(400).json({ error:'La aseguradora es obligatoria.' });
+  // 19-nov-2026 (Roberto: "ni que se duplique la información"): si las placas o el VIN coinciden con una unidad dada de
+  // alta por volante que todavía no llega, se pregunta si es la misma antes de crear otra (es_otro_siniestro = sí, crear).
+  if(!b.es_otro_siniestro){
+    const V = require('../volantes');
+    const c = V.buscarCoincidencia(db, { placas: b.placas, vin: b.vin, numero: b.numero });
+    if(c) return res.status(409).json({ error: V.mensajeCoincidencia(c), coincide_volante: c });
+  }
   // Módulo Alejandra (Fase 1): cuando ella da de alta el expediente desde recepción, los datos
   // básicos de contacto son obligatorios. No se exige a otros roles, para no alterar el flujo actual de Daniela.
   if(req.session.user.rol === 'atencion_cliente'){
