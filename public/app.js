@@ -594,6 +594,7 @@ function seccionEntradasHoy(a){
         ${p.racha >= 2 ? `<span title="Días seguidos a tiempo" style="font-size:13px;white-space:nowrap;">${medallaDe(p.racha) ? medallaDe(p.racha).icono : '🔥'}${p.racha}</span>` : ''}
         ${p.con_foto ? `<span class="link" style="font-size:13px;" onclick="verFotoEntrada(${p.registro_id}, '${esc(p.nombre)}', '${esc(p.hora)}')">Ver foto</span>` : ''}
         <span class="link" style="font-size:13px;" title="Darle una contraseña nueva" onclick="robNuevaPassword(${p.usuario_id}, '${esc(p.nombre)}')">🔑</span>
+        ${currentUser && currentUser.rol === 'admin' ? `<span class="link" style="font-size:13px;" title="Dar de baja (ya no trabaja aquí)" onclick="robDarDeBaja(${p.usuario_id}, '${esc(p.nombre)}')">🚫</span>` : ''}
       </span></div>`;
   // 17-nov-2026 (Roberto: "las entradas de hoy me gustaría poder minimizar o expandir"): se abre o cierra tocando el
   // encabezado; el resumen siempre se ve. Se recuerda en este celular cómo la dejó (cerrada la primera vez).
@@ -623,6 +624,17 @@ async function robConfirmarPassword(id, nombre){
       <p class="subtle">Puede cambiarla después con el candado 🔒 del menú.</p>
       <div class="modal-actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>`);
   }catch(e){}
+}
+// 23-nov-2026. Roberto: "Adrián de refacciones ya no trabaja con nosotros". 🚫 junto a la 🔑: ya no puede entrar y si
+// tenía la sesión abierta se le cierra. Su historial se conserva.
+function robDarDeBaja(id, nombre){
+  showModal(`<h3>Dar de baja a ${esc(nombre)}</h3>
+    <p>Ya no podrá entrar al tablero y, si lo tiene abierto, se le cerrará. Lo que hizo se queda en el historial.</p>
+    <p><b>¿Seguro que ya no trabaja en el taller?</b></p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" style="background:#b91c1c;" onclick="robConfirmarBaja(${id}, '${esc(nombre)}')">Sí, dar de baja</button></div>`);
+}
+async function robConfirmarBaja(id, nombre){
+  try{ await api('POST', '/api/auth/usuarios/' + id + '/baja'); closeModal(); toast(nombre + ' quedó dado de baja.', 'success'); render(); }catch(e){}
 }
 function verFotoEntrada(id, nombre, hora){
   showModal(`<h3>${esc(nombre)} · ${esc(hora)}</h3>

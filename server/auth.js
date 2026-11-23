@@ -66,4 +66,25 @@ function resetPassword(req, res){
   res.json({ ok:true, email:u.email, password_temporal: temporal });
 }
 
-module.exports = { requireAuth, requireRole, login, logout, me, crearUsuario, resetPassword };
+// 23-nov-2026. Roberto: "Adrián de refacciones ya no trabaja con nosotros" -> botón "Dar de baja" en Entradas de hoy.
+// El usuario queda inactivo (no puede entrar y su sesión abierta se cierra); su historial y auditoría se conservan.
+function darDeBaja(req, res){
+  const u = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(req.params.id);
+  if(!u) return res.status(404).json({ error:'Usuario no encontrado.' });
+  if(u.id === req.session.user.id) return res.status(400).json({ error:'No puedes darte de baja a ti mismo.' });
+  if(['admin','jefe'].includes(u.rol)) return res.status(400).json({ error:'Este usuario no se puede dar de baja desde aquí.' });
+  if(!u.activo) return res.json({ ok:true, ya_estaba:true });
+  db.prepare('UPDATE usuarios SET activo = 0 WHERE id = ?').run(u.id);
+  registrarAuditoria(db, { entidad_tipo:'usuario', entidad_id:u.id, accion:'baja', usuario:req.session.user });
+  res.json({ ok:true });
+}
+// Si a alguien lo dieron de baja con la sesión abierta, en su siguiente acción se le cierra.
+function cerrarSiInactivo(req, res, next){
+  const s = req.session && req.session.user;
+  if(!s || !s.id || typeof req.session.destroy !== 'function') return next(); // la "sesión" del acceso de Claude no es real
+  const u = db.prepare('SELECT activo FROM usuarios WHERE id = ?').get(s.id);
+  if(u && u.activo) return next();
+  req.session.destroy(() => res.status(401).json({ error:'Sesión expirada. Vuelve a iniciar sesión.' }));
+}
+
+module.exports = { requireAuth, requireRole, login, logout, me, crearUsuario, resetPassword, darDeBaja, cerrarSiInactivo };

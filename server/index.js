@@ -18,7 +18,7 @@ if(!process.env.TEST_DB_PATH){ require('./utils').limpiarDuplicadosCorreosPendie
 if(!process.env.TEST_DB_PATH){ require('./utils').corregirBorradoresAutomaticosExistentes(db); } // hallazgo de Daniela 27-ago-2026: corrige destinatario/copia/cuerpo de los borradores automaticos ya existentes
 if(!process.env.TEST_DB_PATH){ require('./utils').normalizarFechasCreacionPedidosExistentes(db); } // hallazgo real 27-ago-2026: normaliza fecha_creacion de pedidos importados en DD/MM/AAAA a ISO (la ventana operativa del 1-jun-2026 los ocultaba por error de formato)
 if(!process.env.TEST_DB_PATH){ require('./utils').normalizarAseguradorasExistentes(db); } // hallazgo A-03 de Daniela 28-ago-2026: unifica variantes de nombre de aseguradora ya importadas
-const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword } = require('./auth');
+const { login, logout, me, crearUsuario, requireAuth, requireRole, resetPassword, darDeBaja, cerrarSiInactivo } = require('./auth');
 const bcrypt = require('bcryptjs');
 
 const app = express();
@@ -37,6 +37,8 @@ app.use(session({
   saveUninitialized: false,
   cookie: { maxAge: 1000*60*60*12, sameSite:'lax' } // 12 horas
 }));
+
+app.use('/api', cerrarSiInactivo); // 23-nov-2026: usuario dado de baja con la sesión abierta
 
 // 9-nov-2026: el personal de patio (rol 'tecnico') por ahora SOLO registra su entrada. Fuera de su sesión y
 // de su registro de entrada no puede consultar nada (ni expedientes ni datos de clientes).
@@ -57,6 +59,7 @@ app.post('/api/auth/logout', logout);
 app.get('/api/auth/me', me);
 app.post('/api/auth/usuarios', requireAuth, requireRole('admin'), crearUsuario);
 app.post('/api/auth/usuarios/:id/reset-password', requireAuth, requireRole('admin'), resetPassword);
+app.post('/api/auth/usuarios/:id/baja', requireAuth, requireRole('admin'), darDeBaja);
 app.get('/api/auth/usuarios', requireAuth, requireRole('admin','jefe'), (req,res)=>{
   res.json(db.prepare('SELECT id,nombre,email,rol,activo,creado_en FROM usuarios ORDER BY nombre').all());
 });
