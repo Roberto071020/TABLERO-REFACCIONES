@@ -317,11 +317,21 @@ async function doGlobalSearch(){
 }
 
 /* ===================== RENDER PRINCIPAL ===================== */
+// 23-nov-2026. Roberto: "¿porque despues de marcar algún cambio en el tablero me regresa a la parte superior de la
+// pantalla?" -> render() ponía "Cargando…" (página corta) y el navegador perdía la posición. Si se vuelve a dibujar la
+// MISMA pantalla (después de guardar algo), se deja lo anterior mientras carga y se regresa al mismo lugar, con las
+// secciones que estaban abiertas. Al cambiar de pantalla sigue empezando arriba.
+let RENDER_CLAVE = null;
 async function render(){
   renderTabs();
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="empty">Cargando…</div>';
-  if(await bloqueoEntrada(app)) return;
+  const clave = [state.view, state.siniestroId || '', state.proveedorId || ''].join('|');
+  const mismaPantalla = clave === RENDER_CLAVE && app.innerHTML.trim() !== '';
+  RENDER_CLAVE = clave;
+  const scrollPrevio = mismaPantalla ? window.scrollY : 0;
+  const abiertas = mismaPantalla ? [...app.querySelectorAll('details[id][open]')].map(d => d.id) : [];
+  if(!mismaPantalla) app.innerHTML = '<div class="empty">Cargando…</div>';
+  if(await bloqueoEntrada(app)){ RENDER_CLAVE = null; return; }
   try{
     if(state.view==='inicio') app.innerHTML = await viewInicio();
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
@@ -349,6 +359,10 @@ async function render(){
     else if(state.view==='siniestro') app.innerHTML = await viewSiniestro(state.siniestroId);
   }catch(e){
     if(e.message !== 'Sesión expirada. Vuelve a iniciar sesión.') app.innerHTML = `<div class="empty">No se pudo cargar la vista: ${esc(e.message)}</div>`;
+  }
+  if(mismaPantalla){
+    for(const id of abiertas){ const d = document.getElementById(id); if(d && d.tagName === 'DETAILS') d.open = true; }
+    window.scrollTo(0, scrollPrevio);
   }
   actualizarBadgeWhatsapp(); // en segundo plano, no bloquea el render ya mostrado.
 }
