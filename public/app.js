@@ -1897,7 +1897,10 @@ function orlTipoElegido(id, tipo, terminar){
     <p class="subtle" style="margin:0 0 8px;">No cuenta en tu indicador de envío a valuación: se valúa cuando la unidad reingresa.</p>
     <textarea id="orlPiezasAuto" rows="6" style="width:100%;box-sizing:border-box;font-size:16px;" placeholder="Fascia delantera&#10;Faro izquierdo"></textarea>
     <div class="modal-actions"><button class="btn secondary" onclick="orlElegirTipo(${id}, '', ${terminar})">← Atrás</button>
-      <button class="btn" onclick="orlGuardarTipo(${id}, 'AUTO_SURTIDO', ${terminar}, document.getElementById('orlPiezasAuto').value.split('\n'))">Guardar y mandar a Daniela</button></div>`);
+      <button class="btn" onclick="orlGuardarTipo(${id}, 'AUTO_SURTIDO', ${terminar}, document.getElementById('orlPiezasAuto').value.split(/\\r?\\n/))">Guardar y mandar a Daniela</button></div>`);
+  // 21-nov-2026 (Orlando: "no me deja avanzar de este menú, donde pongo la pieza que se necesita del carro para Daniela"):
+  // el '\n' dentro de la plantilla se convertía en un salto de línea real dentro del onclick y el botón no hacía nada.
+  // Con '\\n' el HTML recibe el texto \n y el split funciona.
 }
 async function orlGuardarTipo(id, tipo, terminar, piezas){
   piezas = (piezas || []).map(p => String(p).trim()).filter(Boolean);
