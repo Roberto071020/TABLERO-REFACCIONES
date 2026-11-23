@@ -67,8 +67,17 @@ function pendientesOrlando(db){
   }
   for(const x of d.revisar) lista.push({ clave:`revisar-${x.siniestro_id}`, titulo:'🔍 Unidad nueva por revisar', cuerpo:unidad(x) });
   for(const c of d.complementos) lista.push({ clave:`comp-${c.id}`, titulo:'🛠️ Complemento por daño oculto', cuerpo:`${unidad(c)}: ${c.causa || ''}` });
+  // 23-nov-2026. Roberto: "que se genere el recordatorio para Orlando que si no termina en tablero no me va a llegar"
+  // (los expedientes se mandaban por correo pero no se terminaba "Captura y envío a Roberto" y no le salían por valuar).
+  // A las 2 h de terminada la revisión, si sigue sin enviarse en el tablero, se le recuerda una vez.
+  const limite = Date.now() - HORAS_RECORDAR_ENVIO * 3600000;
+  for(const x of d.captura){
+    const t = Date.parse(String(x.revision_tecnica_terminada_en || '').replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(x.revision_tecnica_terminada_en || '')) ? '' : 'Z'));
+    if(!isNaN(t) && t <= limite) lista.push({ clave:`envio-${x.siniestro_id}`, titulo:'📨 Termina el envío a Roberto', cuerpo:`${unidad(x)}: si no lo terminas en el tablero, a Roberto no le llega para valuar.` });
+  }
   return lista;
 }
+const HORAS_RECORDAR_ENVIO = 2;
 
 // ---- 12-nov-2026: avisos para todo el equipo. Roberto: "Los demás también me están pidiendo las notificaciones
 // push" -> aprobó la lista por persona ("Si, nada fuera de días u horarios laborales"). Igual que con Orlando, solo

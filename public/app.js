@@ -1851,7 +1851,7 @@ async function viewInicioOrlando(){
         <button class="btn secondary" onclick="FotosSC.abrirSubirFotos(${c.siniestro_id}, 'otra', { titulo:'Fotos del complemento' })">📷 Fotos del daño</button>
         <button class="btn" onclick="orlComplementoEnviado(${c.id}, false)">✔ Complemento enviado</button>
       </div>`))}
-  ${seccionInicio('captura', '4. Captura y envío a Roberto', 'Lo que antes hacía Vanessa: cada unidad te dice su siguiente paso.', d.captura,
+  ${seccionInicio('captura', '4. Captura y envío a Roberto', 'Lo que antes hacía Vanessa: cada unidad te dice su siguiente paso. ⚠️ Aunque mandes el correo, si no terminas aquí a Roberto NO le llega para valuar.', d.captura,
     x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.revision_tecnica_terminada_en)}
       <div style="margin-bottom:10px;"><span class="badge ambar">${PASO[x.paso][0]}</span> <span class="subtle">Paso ${x.paso === 'excel' ? 1 : x.paso === 'fotos' ? 2 : 3} de 3</span></div>
       <button class="btn" onclick="orlSiguientePaso(${x.siniestro_id}, '${x.paso}')">${PASO[x.paso][1]}</button>`))}
