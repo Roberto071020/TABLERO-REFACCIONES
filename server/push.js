@@ -104,7 +104,7 @@ function pendientesDaniela(db){
   }
   return lista.concat(expedientesCompletos(db, 'da seguimiento a sus pedidos.'));
 }
-function pendientesBeto(db){
+function pendientesBeto(db, usuario){
   const { calcularPanoramaBeto } = require('./panoramaBeto');
   const lista = [];
   for(const x of calcularPanoramaBeto(db)){
@@ -120,6 +120,59 @@ function pendientesBeto(db){
     WHERE c.tipo = 'dano_oculto' AND c.decision IN ('autorizado','parcial') AND s.archivado = 0
       AND COALESCE(c.decision_en, c.actualizado_en) >= ${RECIENTE}`).all()
     .forEach(c => lista.push({ clave:`compaut-${c.id}`, titulo:'👍 Complemento autorizado', cuerpo:`${unidad(c)}: ${c.pieza_operacion || c.causa || ''}` }));
+  let extra = [];
+  try{ extra = pendientesExtraBeto(db, usuario); }catch(e){ console.error('[push] extra Beto:', e && e.message); }
+  return lista.concat(extra);
+}
+
+// 23-nov-2026. Roberto: "Hay que pedirle a Beto las fechas de entrega como siempre se hace con unidades en piso e
+// insistirle con que debe colocarla" y, sobre mandarle la notificación: "Si, eso y todo lo que consideres le debe
+// llegar". Se agrega a Beto lo que hoy solo veía en el corte de las 3 pm o tenía que preguntar:
+//   - unidad en piso sin fecha de entrega (mismo criterio que el corte: GNP en piso siempre; las demás con piezas)
+//   - fecha de entrega hoy / mañana / vencida (problema: "fechas que se le olvidan por volumen de trabajo")
+//   - unidad que reingresó al taller (problema: "reingresó y Beto no se entera")
+//   - terminada hace 4 h o más sin revisión de calidad (la revisión la hace Beto)
+//   - orden de trabajo nueva (problema: "las OT se le acumulan y las rápidas quedan debajo")
+//   - aviso que alguien le dejó a él en una unidad (tareas con responsable = Beto)
+const ZONA_MX = 'America/Mexico_City';
+const diaMx = f => new Intl.DateTimeFormat('en-CA', { timeZone: ZONA_MX, year:'numeric', month:'2-digit', day:'2-digit' }).format(f);
+const HORAS_CALIDAD_BETO = 4; // mismo umbral que el corte de las 3 pm
+function pendientesExtraBeto(db, usuario, ahora = new Date()){
+  const { calcularPanoramaBeto } = require('./panoramaBeto');
+  const hoy = diaMx(ahora), manana = diaMx(new Date(ahora.getTime() + 86400000));
+  const u = x => unidad({ vehiculo: x.vehiculo, placas: x.placas, siniestro_numero: x.numero || x.siniestro_numero });
+  const lista = [];
+  for(const x of calcularPanoramaBeto(db)){
+    if(x.en_transito || x.reingreso_citado) continue;
+    const gnp = /^gnp/i.test(String(x.aseguradora || ''));
+    const f = x.fecha_entrega_prevista ? String(x.fecha_entrega_prevista).slice(0, 10) : '';
+    if(!f){
+      if(gnp || x.refacciones_completas || x.piezas_suficientes){
+        lista.push({ clave:`sinfecha-${x.id}`, titulo:'📅 Unidad en piso sin fecha de entrega', cuerpo:`${u(x)}: colócale su fecha de entrega hoy.${gnp ? ' Es GNP y cuenta para el indicador.' : ''}` });
+      }
+    }else if(f < hoy){
+      lista.push({ clave:`vencida-${x.id}-${f}`, titulo:'🚨 Fecha de entrega vencida', cuerpo:`${u(x)}: se debía entregar el ${f.split('-').reverse().join('/')}.` });
+    }else if(f === hoy || f === manana){
+      lista.push({ clave:`vence-${x.id}-${f}`, titulo: f === hoy ? '⏰ Se entrega hoy' : '⏰ Se entrega mañana', cuerpo:`${u(x)}: revisa que vaya a tiempo.` });
+    }
+  }
+  db.prepare(`SELECT id, numero, vehiculo, placas, COALESCE(reingreso_recibido_en, autosurtido_reingreso_en) AS en FROM siniestros
+    WHERE archivado = 0 AND (estado_produccion IS NULL OR estado_produccion != 'terminado')
+      AND replace(substr(COALESCE(reingreso_recibido_en, autosurtido_reingreso_en, ''),1,19),'T',' ') >= ${RECIENTE}`).all()
+    .forEach(x => lista.push({ clave:`reingreso-${x.id}-${String(x.en).slice(0, 10)}`, titulo:'🚗 Unidad de regreso en el taller', cuerpo:`${u(x)}: ya reingresó, asígnala.` }));
+  try{
+    require('./calidadPendiente').unidadesPorRevisarCalidad(db, { minHoras: HORAS_CALIDAD_BETO })
+      .forEach(x => lista.push({ clave:`calidad-${x.id}`, titulo:'🔎 Falta revisión de calidad', cuerpo:`${u(x)}: terminada hace ${x.horas_terminada} h.` }));
+  }catch(e){}
+  db.prepare(`SELECT a.id, s.numero, s.vehiculo, s.placas FROM archivos a JOIN siniestros s ON s.id = a.entidad_id
+    WHERE a.entidad_tipo = 'siniestro' AND a.tipo = 'Orden de trabajo' AND COALESCE(a.eliminado, 0) = 0 AND s.archivado = 0
+      AND a.creado_en >= ${RECIENTE}`).all()
+    .forEach(x => lista.push({ clave:`ot-${x.id}`, titulo:'📄 Nueva orden de trabajo', cuerpo:`${u(x)}: ya puedes verla en el tablero.` }));
+  if(usuario && usuario.id){
+    db.prepare(`SELECT t.id, t.descripcion, s.numero, s.vehiculo, s.placas FROM tareas t LEFT JOIN siniestros s ON s.id = t.siniestro_id
+      WHERE t.responsable_id = ? AND t.estado IN ('pendiente','en_proceso') AND t.creado_en >= ${RECIENTE}`).all(usuario.id)
+      .forEach(t => lista.push({ clave:`tarea-${t.id}`, titulo:'📌 Aviso para ti', cuerpo:`${t.vehiculo ? u(t) + ': ' : ''}${String(t.descripcion || '').replace(/^Beto:\s*/i, '').slice(0, 180)}` }));
+  }
   return lista;
 }
 function pendientesRoberto(db){
@@ -144,8 +197,11 @@ const P = require('./patio');
 const conPatio = (fuente, extra) => db => { let l = fuente(db); try{ l = l.concat(extra(db)); }catch(e){} return l; };
 function pendientesTecnico(db, usuario){ try{ return P.pushTecnico(db, usuario); }catch(e){ return []; } }
 pendientesTecnico.porUsuario = true; // la lista cambia por persona, no por rol
+// 23-nov-2026: la lista de Beto incluye los avisos que le dejan a ÉL (tareas), así que se calcula por persona.
+function fuenteBeto(db, usuario){ let l = pendientesBeto(db, usuario); try{ l = l.concat(P.pushBeto(db)); }catch(e){} return l; }
+fuenteBeto.porUsuario = true;
 const FUENTES = { orlando: conPatio(pendientesOrlando, P.pushOrlando), atencion_cliente: pendientesAlejandra, operativo: conPatio(pendientesDaniela, P.pushDaniela),
-  beto: conPatio(pendientesBeto, P.pushBeto), admin: pendientesRoberto, jefe: pendientesRoberto, tecnico: pendientesTecnico };
+  beto: fuenteBeto, admin: pendientesRoberto, jefe: pendientesRoberto, tecnico: pendientesTecnico };
 
 // ---- Horario laboral (12-nov-2026, Roberto: "nada fuera de días u horarios laborales"; eligió L-V 9-7, Sáb 9-2).
 // Fuera de horario no se manda nada; lo que surja se avisa al abrir (agrupado si son más de 3).
@@ -249,4 +305,4 @@ function iniciarAvisosPush(db){
 }
 
 module.exports = { asegurarTablas, iniciarAvisosPush, barrido, enviarAUsuario, guardarSuscripcion, quitarSuscripcion, disponiblePara, configurado, enviarReal,
-  enHorarioLaboral, FUENTES, pendientesOrlando, pendientesAlejandra, pendientesDaniela, pendientesBeto, pendientesRoberto };
+  enHorarioLaboral, FUENTES, pendientesOrlando, pendientesAlejandra, pendientesDaniela, pendientesBeto, pendientesExtraBeto, pendientesRoberto };
