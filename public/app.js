@@ -1882,17 +1882,38 @@ async function orlCambioRevision(id, estado, mensaje){
 // piezas que requiero para que Daniela las consiga". También sirve para corregir el tipo después ("por si cambia").
 const TIPO_REP = { TRADICIONAL:'Tradicional', EXPRES:'Exprés', AUTO_SURTIDO:'Autosurtido', BDEO:'BDEO', PDD:'PDD', CE:'CE' };
 function orlTerminarRevision(id){ return orlElegirTipo(id, '', true); }
-function orlElegirTipo(id, nombre, terminar){
-  showModal(`<h3 style="margin-top:0;">${terminar ? 'Revisión terminada' : 'Cambiar tipo de reparación'}${nombre ? ' · ' + esc(nombre) : ''}</h3>
+// 23-nov-2026. Roberto: "veo que en esa nueva ventana no indica de que carro hablamos" (Orlando mandó captura de la
+// ventana de autosurtido de un Onix y se cargó por error en la Duster que estaba detrás). Las dos ventanas muestran
+// arriba vehículo · placas · siniestro, tomados del expediente para que siempre sea la unidad correcta.
+const orlUnidadCache = {};
+async function orlUnidad(id){
+  if(!orlUnidadCache[id]){
+    try{ const s = await api('GET', '/api/siniestros/' + id); orlUnidadCache[id] = { vehiculo: s.vehiculo || '', placas: s.placas || '', numero: s.numero || '' }; }
+    catch(e){ orlUnidadCache[id] = { vehiculo:'', placas:'', numero:'' }; }
+  }
+  return orlUnidadCache[id];
+}
+function orlCajaUnidad(u){
+  if(!u || !(u.vehiculo || u.numero)) return '';
+  return `<div style="background:#eef4ff;border-radius:10px;padding:8px 10px;margin:0 0 10px;">
+    <div style="font-weight:700;">🚗 ${esc(String(u.vehiculo || '').trim())}</div>
+    <div class="subtle">${[u.placas ? String(u.placas).toUpperCase() : '', u.numero ? 'Sin. ' + u.numero : ''].filter(Boolean).map(esc).join(' · ')}</div></div>`;
+}
+async function orlElegirTipo(id, nombre, terminar){
+  const u = await orlUnidad(id);
+  showModal(`<h3 style="margin-top:0;">${terminar ? 'Revisión terminada' : 'Cambiar tipo de reparación'}</h3>
+    ${orlCajaUnidad(u)}
     <p style="margin:4px 0 10px;"><b>¿Qué tipo de reparación es?</b></p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
       ${Object.entries(TIPO_REP).map(([k, t]) => `<button class="btn secondary" onclick="orlTipoElegido(${id}, '${k}', ${terminar})">${esc(t)}</button>`).join('')}
     </div>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>`);
 }
-function orlTipoElegido(id, tipo, terminar){
+async function orlTipoElegido(id, tipo, terminar){
   if(tipo !== 'AUTO_SURTIDO') return orlGuardarTipo(id, tipo, terminar, []);
+  const u = await orlUnidad(id);
   showModal(`<h3 style="margin-top:0;">Autosurtido</h3>
+    ${orlCajaUnidad(u)}
     <p style="margin:4px 0;">Escribe las piezas que se necesitan, <b>una por renglón</b>. Le llegan a <b>Daniela</b> para que las consiga.</p>
     <p class="subtle" style="margin:0 0 8px;">No cuenta en tu indicador de envío a valuación: se valúa cuando la unidad reingresa.</p>
     <textarea id="orlPiezasAuto" rows="6" style="width:100%;box-sizing:border-box;font-size:16px;" placeholder="Fascia delantera&#10;Faro izquierdo"></textarea>
