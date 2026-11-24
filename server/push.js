@@ -209,8 +209,10 @@ pendientesTecnico.porUsuario = true; // la lista cambia por persona, no por rol
 // 23-nov-2026: la lista de Beto incluye los avisos que le dejan a ÉL (tareas), así que se calcula por persona.
 function fuenteBeto(db, usuario){ let l = pendientesBeto(db, usuario); try{ l = l.concat(P.pushBeto(db)); }catch(e){} return l; }
 fuenteBeto.porUsuario = true;
-const FUENTES = { orlando: conPatio(pendientesOrlando, P.pushOrlando), atencion_cliente: pendientesAlejandra, operativo: conPatio(pendientesDaniela, P.pushDaniela),
-  beto: fuenteBeto, admin: pendientesRoberto, jefe: pendientesRoberto, tecnico: pendientesTecnico };
+// 24-nov-2026: avisos del apartado de Particulares (ver server/particulares.js).
+const conParticulares = (fuente, quien) => { const f = (db, u) => { let l = fuente(db, u); try{ l = l.concat(require('./particulares').pendientesPush(db, quien)); }catch(e){} return l; }; f.porUsuario = fuente.porUsuario; return f; };
+const FUENTES = { orlando: conPatio(pendientesOrlando, P.pushOrlando), atencion_cliente: conParticulares(pendientesAlejandra, 'alejandra'), operativo: conParticulares(conPatio(pendientesDaniela, P.pushDaniela), 'daniela'),
+  beto: conParticulares(fuenteBeto, 'beto'), admin: pendientesRoberto, jefe: pendientesRoberto, tecnico: pendientesTecnico };
 
 // ---- Horario laboral (12-nov-2026, Roberto: "nada fuera de días u horarios laborales"; eligió L-V 9-7, Sáb 9-2).
 // Fuera de horario no se manda nada; lo que surja se avisa al abrir (agrupado si son más de 3).

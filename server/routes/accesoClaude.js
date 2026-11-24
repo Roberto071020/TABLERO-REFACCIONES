@@ -58,7 +58,7 @@ const RUTAS = {
   complementos:'complementos', retrabajos:'retrabajos', 'checklist-calidad':'checklistCalidad', 'discrepancias-proveedor':'discrepanciasProveedor',
   'vales-pendientes':'valesPendientes', 'autosurtido-piezas':'autosurtidoPiezas', 'actualizacion-unidades':'actualizacionUnidades',
   fotos:'fotos', 'inicio-alejandra':'inicioAlejandra', 'inicio-daniela':'inicioDaniela', 'inicio-orlando':'inicioOrlando',
-  'inicio-roberto':'inicioRoberto', detenidas:'detenidas', llegada:'llegada', calidad:'calidad', 'whatsapp-manual':'whatsappBandejaManual',
+  'inicio-roberto':'inicioRoberto', detenidas:'detenidas', llegada:'llegada', calidad:'calidad', 'whatsapp-manual':'whatsappBandejaManual', particulares:'particulares',
 };
 for(const [ruta, archivo] of Object.entries(RUTAS)) router.use('/' + ruta, require('./' + archivo));
 

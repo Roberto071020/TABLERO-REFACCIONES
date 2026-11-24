@@ -227,6 +227,7 @@ const TABS = [
   {k:'clientes', label:'Clientes', roles:['atencion_cliente','admin']},
   {k:'pendientes-hoy', label:'Pendientes de hoy', roles:['atencion_cliente','admin','jefe']},
   // 18-nov-2026 (Roberto): unidades entregadas con algo pendiente (vale). Toda la oficina y Beto las pueden cerrar.
+  {k:'particulares', label:'Particulares', roles:['beto','atencion_cliente','operativo','admin','jefe']}, // 24-nov-2026
   {k:'vales', label:'Entregadas con pendiente', roles:['atencion_cliente','operativo','orlando','vanessa','beto','admin','jefe']},
   {k:'kanban', label:'Kanban', roles:['operativo','admin','jefe']},
   {k:'autosurtidos', label:'Autosurtidos', roles:['operativo','admin','jefe']},
@@ -337,6 +338,7 @@ async function render(){
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
     else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
     else if(state.view==='vales') app.innerHTML = await viewVales();
+    else if(state.view==='particulares') app.innerHTML = await viewParticulares();
     else if(state.view==='kanban') app.innerHTML = await viewKanban();
     else if(state.view==='autosurtidos') app.innerHTML = await viewAutosurtidos();
     else if(state.view==='ov-pendientes-revision') app.innerHTML = await viewOvPendientesRevision();
@@ -667,7 +669,7 @@ const MOTIVOS_DETENIDO = {
 // 12-nov-2026: foto de evidencia que tomó el técnico de patio al detenerse (pieza mal surtida / daño oculto).
 function verFotoEvidencia(id){
   showModal(`<h3 style="margin-top:0;">Evidencia de patio</h3><img alt="Evidencia" src="/api/fotos/${Number(id)}/imagen" style="width:100%;border-radius:8px;">
-    <div class="modal-actions"><a class="btn secondary" href="/api/fotos/${Number(id)}/descargar">⬇ Descargar</a><button class="btn" onclick="closeModal()">Cerrar</button></div>`);
+    <div class="modal-actions"><a class="btn secondary" href="/api/particulares/fotos/${Number(id)}?descargar=1">⬇ Descargar</a><button class="btn" onclick="closeModal()">Cerrar</button></div>`);
 }
 const diasTexto = n => n === 0 ? 'desde hoy' : n === 1 ? 'hace 1 día' : `hace ${n} días`;
 function seccionDetenidas(lista, ayuda){
@@ -4849,6 +4851,182 @@ async function registrarPostventa(siniestroId, resultado){
    server/valesPendientes.js. Lo cierra cualquiera de oficina o Beto con "Ya se instaló". */
 const COLOR_CITA_VALE = { no_llego:'rojo', llego:'ambar', hoy:'azul', sin_cita:'gris', futura:'verde' };
 const COLOR_PIEZA_VALE = { lista:'verde', en_camino:'ambar', sin_pedido:'gris' };
+/* ===================== Particulares (24-nov-2026) =====================
+   Roberto: "un apartado para las unidades particulares ... algo sencillo y que tenga su proceso independiente".
+   Beto lo captura con el cliente enfrente ("muchas veces se pierde el seguimiento y no recuerda Beto el monto ni lo
+   autorizado a reparar"); cada tarjeta dice el siguiente paso y a quién le toca, con un solo botón. Ver server/particulares.js. */
+const PART_QUIEN = { beto:'Beto', alejandra:'Alejandra', daniela:'Daniela' };
+const PART_ROL = { beto:['beto'], alejandra:['atencion_cliente'], daniela:['operativo','beto'] };
+let PART_HIST = false;
+const partDinero = n => n == null || n === '' ? '—' : '$' + Number(n).toLocaleString('es-MX', { maximumFractionDigits: 2 });
+const partFecha = f => f ? String(f).slice(0, 10).split('-').reverse().join('/') : '';
+function partMio(p){ return currentUser && (['admin','jefe'].includes(currentUser.rol) || (PART_ROL[p.quien] || []).includes(currentUser.rol)); }
+async function viewParticulares(){
+  const r = await api('GET', '/api/particulares' + (PART_HIST ? '?historial=1' : ''));
+  const l = r.unidades || [];
+  const puedeAlta = currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol);
+  const grupos = ['alejandra','beto','daniela'].map(q => ({ q, items: l.filter(p => p.quien === q) }));
+  const tarjeta = p => cajaInicio(`<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+      <div><div style="font-weight:700;font-size:17px;">🚗 ${esc(p.vehiculo)}${p.placas ? ` <span class="subtle" style="font-weight:400;">${esc(p.placas)}</span>` : ''}</div>
+      <div class="subtle">${esc(p.cliente_nombre)}${p.cliente_telefono ? ` · <a href="tel:${esc(p.cliente_telefono)}">${esc(p.cliente_telefono)}</a>` : ''}</div></div>
+      <div style="text-align:right;"><b style="font-size:17px;">${partDinero(p.monto)}</b>${p.anticipo_monto ? `<div class="subtle" style="font-size:13px;">anticipo ${partDinero(p.anticipo_monto)}</div>` : ''}</div></div>
+    <div style="margin:8px 0;">🔧 ${esc(p.trabajo)}</div>
+    ${p.lleva_piezas ? `<div style="margin:0 0 8px;">📦 ${esc(p.piezas || '')}${p.piezas_costo != null ? ` · ${partDinero(p.piezas_costo)} · ${p.piezas_dias} día(s) de surtido` : ''}${p.piezas_llegaron_en ? ' · <b>ya llegaron</b>' : ''}</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+      <span class="badge ${p.urgente ? 'rojo' : 'ambar'}">${esc(p.texto)}</span>
+      ${p.quien ? `<span class="badge gris">Le toca a ${esc(PART_QUIEN[p.quien] || p.quien)}</span>` : ''}
+      ${p.fecha_entrega && p.paso !== 'reparar' ? `<span class="badge azul">Entrega ${partFecha(p.fecha_entrega)}</span>` : ''}
+    </div>
+    ${p.notas ? `<div class="subtle" style="margin-bottom:8px;">${esc(p.notas)}</div>` : ''}
+    ${partFotos(p)}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">${partBotones(p)}</div>`);
+  const cuerpo = PART_HIST ? (l.length ? l.map(p => cajaInicio(`<b>${esc(p.vehiculo)}</b> · ${esc(p.cliente_nombre)} · ${partDinero(p.monto)}<div class="subtle">${p.decision === 'rechaza' ? 'No aceptó' + (p.motivo_rechazo ? ': ' + esc(p.motivo_rechazo) : '') : 'Entregada ' + partFecha(p.entregado_en)}</div>`)).join('') : '<div class="empty">Sin historial.</div>')
+    : grupos.filter(g => g.items.length).map(g => `<h3 style="margin:18px 0 2px;">${esc(PART_QUIEN[g.q])} <span class="badge gris">${g.items.length}</span></h3>${g.items.map(tarjeta).join('')}`).join('')
+      || '<div class="empty">No hay particulares en proceso.</div>';
+  return `<div class="section"><h2 style="margin-top:0;">🙋 Particulares <span class="badge gris">${PART_HIST ? 'historial' : l.length}</span></h2>
+    <p class="subtle" style="margin:0 0 10px;">Clientes sin seguro. Cada tarjeta dice el siguiente paso y a quién le toca.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${puedeAlta && !PART_HIST ? '<button class="btn" onclick="partNuevo()">+ Particular</button>' : ''}
+      <button class="btn secondary" onclick="PART_HIST=${!PART_HIST};render();">${PART_HIST ? '← En proceso' : 'Historial'}</button>
+    </div></div>${cuerpo}`;
+}
+// 24-nov-2026. Roberto: "sería bueno que se tomaran las fotos de los daños ya que algunas veces cuando regresa tiene
+// un daño adicional en la misma pieza" -> Beto las toma al presupuestar y Ale las ve al recibir la unidad.
+function partFotos(p){
+  const f = p.fotos || [];
+  if(!f.length) return `<div style="margin:0 0 10px;"><span class="badge rojo">📷 Sin fotos del daño</span></div>`;
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;">${f.map(id => `<img src="/api/particulares/fotos/${Number(id)}?mini=1" alt="Daño" onclick="partVerFoto(${Number(id)})" style="width:72px;height:72px;object-fit:cover;border-radius:8px;cursor:pointer;">`).join('')}</div>`;
+}
+function partVerFoto(id){
+  showModal(`<img src="/api/particulares/fotos/${Number(id)}" alt="Foto del daño" style="max-width:100%;border-radius:10px;display:block;margin:0 auto;">
+    <div class="modal-actions"><a class="btn small secondary" href="/api/particulares/fotos/${Number(id)}?descargar=1">⬇ Descargar</a><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`, true);
+}
+function partTomarFotos(id, aviso){ FotosSC.abrirSubirFotos({ particular:id }, 'recepcion', { titulo:'📷 Fotos del daño', aviso }); }
+function partBotones(p){
+  const b = [], mio = partMio(p);
+  const btn = (txt, fn, cls = 'btn') => `<button class="${cls}" onclick="${fn}">${txt}</button>`;
+  if(mio){
+    if(p.paso === 'seguimiento') b.push(btn('✅ Ya aceptó', `partDecidir(${p.id})`), btn('❌ No aceptó', `partRechazar(${p.id})`, 'btn secondary'));
+    if(p.paso === 'cotizar') b.push(btn('💲 Poner cotización', `partCotizar(${p.id})`));
+    if(p.paso === 'anticipo') b.push(btn('💵 Registrar anticipo', `partMonto(${p.id}, 'anticipo', 'Anticipo de piezas', ${Number(p.piezas_costo) || 0})`), btn('❌ No aceptó', `partRechazar(${p.id})`, 'btn secondary'));
+    if(p.paso === 'piezas') b.push(btn('📦 Ya llegaron las piezas', `partPiezasLlegaron(${p.id}, ${p.en_taller ? 1 : 0})`));
+    if(p.paso === 'recibir') b.push(btn(p.en_taller ? '📝 Inventario hecho' : '🚗 Ya llegó', `partRecibir(${p.id}, '${esc(String(p.fecha_entrega || '').slice(0, 10))}')`), ...(!p.en_taller ? [btn('📅 Cita', `partCita(${p.id})`, 'btn secondary')] : []));
+    if(p.paso === 'reparar') b.push(btn('✅ Terminada', `partAccion(${p.id}, 'terminado', {}, '¿Ya está terminada y revisada?')`));
+    if(p.paso === 'cobrar') b.push(btn('💵 Registrar pago', `partMonto(${p.id}, 'pago', 'Pago del saldo', ${Number(p.saldo) || 0})`));
+    if(p.paso === 'entregar') b.push(btn('🤝 Entregada', `partAccion(${p.id}, 'entregar', {}, '¿Ya se la llevó el cliente?')`));
+  }
+  if(currentUser && ['beto','atencion_cliente','operativo','admin','jefe'].includes(currentUser.rol) && ['reparar','recibir','piezas','anticipo'].includes(p.paso))
+    b.push(btn('📅 Fecha de entrega', `partFechaEntrega(${p.id}, '${esc(String(p.fecha_entrega || '').slice(0, 10))}')`, 'btn small secondary'));
+  if(currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol) && !p.entregado_en) b.push(btn('📷 Fotos', `partTomarFotos(${p.id})`, 'btn small secondary'));
+  if(currentUser && ['beto','atencion_cliente','admin','jefe'].includes(currentUser.rol)) b.push(btn('✏️', `partEditar(${p.id})`, 'btn small ghost'));
+  return b.join('');
+}
+const partVal = id => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+function partNuevo(){
+  showModal(`<h3 style="margin-top:0;">🙋 Nuevo particular</h3>
+    <p class="subtle" style="margin:0 0 8px;">Captúralo con el cliente enfrente.</p>
+    <div class="field"><label>Cliente</label><input id="pn_cliente" autocomplete="off"></div>
+    <div class="field"><label>Teléfono</label><input id="pn_tel" type="tel" inputmode="tel"></div>
+    <div class="field"><label>Vehículo (marca, modelo, año, color)</label><input id="pn_veh" placeholder="Nissan Versa 2019 blanco"></div>
+    <div class="field"><label>Placas</label><input id="pn_placas"></div>
+    <div class="field"><label>¿Qué se va a hacer?</label><textarea id="pn_trabajo" rows="3" style="width:100%;box-sizing:border-box;font-size:16px;" placeholder="Reparar y pintar fascia y salpicadera"></textarea></div>
+    <div class="field"><label>Monto total</label><input id="pn_monto" type="number" inputmode="decimal" placeholder="$"></div>
+    <label style="display:flex;align-items:center;gap:10px;margin:4px 0 12px;font-weight:600;"><input type="checkbox" id="pn_piezas_si" style="width:22px;height:22px;margin:0;" onchange="document.getElementById('pn_piezas_box').style.display=this.checked?'block':'none'"> Lleva piezas a cambio</label>
+    <div id="pn_piezas_box" style="display:none;">
+      <div class="field"><label>¿Qué piezas?</label><input id="pn_piezas" placeholder="Faro izquierdo"></div>
+      <p class="subtle" style="margin:0 0 6px;">Si ya las cotizaste, ponlo. Si no, le llega a Daniela.</p>
+      <div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>Costo piezas</label><input id="pn_pcosto" type="number" inputmode="decimal"></div>
+      <div class="field" style="flex:1;"><label>Días de surtido</label><input id="pn_pdias" type="number" inputmode="numeric"></div></div>
+    </div>
+    <div class="field"><label>¿Qué dijo el cliente?</label>
+      <select id="pn_decision" onchange="partMostrarDecision()" style="font-size:16px;">
+        <option value="deja">Acepta y lo deja hoy</option><option value="cita">Acepta y lo trae otro día</option>
+        <option value="pensando">Lo va a pensar</option><option value="rechaza">No acepta</option></select></div>
+    <div id="pn_cita_box" style="display:none;" class="field"><label>Día que lo trae</label><input id="pn_cita" type="date"></div>
+    <div id="pn_entrega_box" class="field"><label>Fecha de entrega que le diste</label><input id="pn_entrega" type="date"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partGuardarNuevo()">Guardar</button></div>`);
+}
+function partMostrarDecision(){
+  const d = partVal('pn_decision');
+  document.getElementById('pn_cita_box').style.display = d === 'cita' ? 'block' : 'none';
+  document.getElementById('pn_entrega_box').style.display = d === 'deja' || d === 'cita' ? 'block' : 'none';
+}
+async function partGuardarNuevo(){
+  const d = partVal('pn_decision'), piezas = document.getElementById('pn_piezas_si').checked;
+  try{
+    const nuevo = await api('POST', '/api/particulares', { cliente_nombre: partVal('pn_cliente'), cliente_telefono: partVal('pn_tel'), vehiculo: partVal('pn_veh'), placas: partVal('pn_placas'),
+      trabajo: partVal('pn_trabajo'), monto: partVal('pn_monto'), lleva_piezas: piezas ? 1 : 0, piezas: piezas ? partVal('pn_piezas') : '',
+      piezas_costo: piezas ? partVal('pn_pcosto') : '', piezas_dias: piezas ? partVal('pn_pdias') : '',
+      decision: d === 'deja' || d === 'cita' ? 'acepta' : d, en_taller: d === 'deja' ? 1 : 0, fecha_cita: d === 'cita' ? partVal('pn_cita') : '', fecha_entrega: partVal('pn_entrega') });
+    closeModal(); toast('Particular guardado.', 'success'); render();
+    if(nuevo && nuevo.id && d !== 'rechaza') partTomarFotos(nuevo.id, 'Toma fotos de los daños con el cliente presente: sirven por si al regresar trae un golpe nuevo en la misma pieza.');
+  }catch(e){}
+}
+async function partAccion(id, accion, datos = {}, confirmar){
+  if(confirmar){
+    showModal(`<h3 style="margin-top:0;">${esc(confirmar)}</h3><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, '${accion}', ${JSON.stringify(datos).replace(/"/g, '&quot;')})">Sí</button></div>`);
+    return;
+  }
+  try{ await api('POST', `/api/particulares/${id}/accion`, { accion, ...datos }); closeModal(); toast('Listo.', 'success'); render(); }catch(e){}
+}
+function partDecidir(id){
+  showModal(`<h3 style="margin-top:0;">¿El cliente aceptó?</h3>
+    <div class="field"><select id="pd_tipo" style="font-size:16px;" onchange="document.getElementById('pd_cita_box').style.display=this.value==='cita'?'block':'none'"><option value="deja">Lo deja hoy</option><option value="cita">Lo trae otro día</option></select></div>
+    <div id="pd_cita_box" style="display:none;" class="field"><label>Día que lo trae</label><input id="pd_cita" type="date"></div>
+    <div class="field"><label>Fecha de entrega</label><input id="pd_entrega" type="date"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'decision', { decision:'acepta', en_taller: partVal('pd_tipo')==='deja'?1:0, fecha_cita: partVal('pd_cita'), fecha_entrega: partVal('pd_entrega') })">Guardar</button></div>`);
+}
+function partRechazar(id){
+  showModal(`<h3 style="margin-top:0;">No aceptó</h3><div class="field"><label>¿Por qué? (opcional)</label><input id="pr_motivo" placeholder="Le pareció caro"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'decision', { decision:'rechaza', motivo_rechazo: partVal('pr_motivo') })">Guardar</button></div>`);
+}
+function partCotizar(id){
+  showModal(`<h3 style="margin-top:0;">Cotización de piezas</h3>
+    <div class="field"><label>Costo de las piezas</label><input id="pc_costo" type="number" inputmode="decimal"></div>
+    <div class="field"><label>Días de surtido</label><input id="pc_dias" type="number" inputmode="numeric"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'cotizar', { piezas_costo: partVal('pc_costo'), piezas_dias: partVal('pc_dias') })">Guardar</button></div>`);
+}
+function partMonto(id, accion, titulo, sugerido){
+  showModal(`<h3 style="margin-top:0;">${esc(titulo)}</h3><div class="field"><label>Monto</label><input id="pm_monto" type="number" inputmode="decimal" value="${sugerido || ''}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, '${accion}', { monto: partVal('pm_monto') })">Guardar</button></div>`);
+}
+function partPiezasLlegaron(id, enTaller){
+  showModal(`<h3 style="margin-top:0;">📦 Ya llegaron las piezas</h3>
+    ${enTaller ? '<p>La unidad ya está en el taller: Beto puede empezar.</p>' : '<p>La unidad está circulando. Si ya tiene día para traerla, ponlo (si no, Alejandra le da cita).</p><div class="field"><label>Día que la trae</label><input id="pp_cita" type="date"></div>'}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'piezas_llegaron', { fecha_cita: partVal('pp_cita') })">Guardar</button></div>`);
+}
+async function partRecibir(id, entrega){
+  let fotos = [];
+  try{ const r = await api('GET', '/api/particulares'); fotos = ((r.unidades || []).find(x => x.id === id) || {}).fotos || []; }catch(e){}
+  showModal(`<h3 style="margin-top:0;">Recibir unidad</h3><p>Haz su inventario como siempre.</p>
+    ${fotos.length ? `<p style="margin:6px 0;"><b>Compara con las fotos del presupuesto.</b> Si trae un daño nuevo, avísale al cliente antes de recibirla y toma foto.</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">${fotos.map(f => `<a href="/api/particulares/fotos/${Number(f)}" target="_blank"><img src="/api/particulares/fotos/${Number(f)}?mini=1" alt="Daño" style="width:80px;height:80px;object-fit:cover;border-radius:8px;"></a>`).join('')}</div>`
+      : '<p class="subtle">No hay fotos del presupuesto: toma fotos del daño al recibirla.</p>'}
+    <div class="field"><label>Fecha de entrega</label><input id="prc_entrega" type="date" value="${esc(entrega)}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'recibir', { fecha_entrega: partVal('prc_entrega') })">Ya la recibí</button></div>`);
+}
+function partCita(id){
+  showModal(`<h3 style="margin-top:0;">📅 Cita</h3><div class="field"><label>Día que la trae</label><input id="pci_cita" type="date"></div>
+    <div class="field"><label>Fecha de entrega (opcional)</label><input id="pci_entrega" type="date"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'cita', { fecha_cita: partVal('pci_cita'), fecha_entrega: partVal('pci_entrega') })">Guardar</button></div>`);
+}
+function partFechaEntrega(id, actual){
+  showModal(`<h3 style="margin-top:0;">📅 Fecha de entrega</h3><div class="field"><input id="pfe" type="date" value="${esc(actual)}"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partAccion(${id}, 'fecha_entrega', { fecha_entrega: partVal('pfe') })">Guardar</button></div>`);
+}
+async function partEditar(id){
+  const r = await api('GET', '/api/particulares');
+  const p = (r.unidades || []).find(x => x.id === id); if(!p) return;
+  const campo = (k, t, tipo = 'text') => `<div class="field"><label>${t}</label><input id="pe_${k}" type="${tipo}" value="${esc(p[k] == null ? '' : String(p[k]))}"></div>`;
+  showModal(`<h3 style="margin-top:0;">✏️ Corregir datos</h3>${campo('cliente_nombre', 'Cliente')}${campo('cliente_telefono', 'Teléfono', 'tel')}${campo('vehiculo', 'Vehículo')}${campo('placas', 'Placas')}
+    ${campo('trabajo', '¿Qué se va a hacer?')}${campo('monto', 'Monto total', 'number')}${p.lleva_piezas ? campo('piezas', 'Piezas') : ''}${campo('notas', 'Notas')}
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="partGuardarEdicion(${id}, ${p.lleva_piezas ? 1 : 0})">Guardar</button></div>`);
+}
+async function partGuardarEdicion(id, conPiezas){
+  const b = {}; for(const k of ['cliente_nombre','cliente_telefono','vehiculo','placas','trabajo','monto','notas'].concat(conPiezas ? ['piezas'] : [])) b[k] = partVal('pe_' + k);
+  try{ await api('PATCH', '/api/particulares/' + id, b); closeModal(); toast('Guardado.', 'success'); render(); }catch(e){}
+}
+
 async function viewVales(){
   const r = await api('GET', '/api/vales-pendientes/apartado');
   const puedeCita = currentUser && ['atencion_cliente','vanessa','admin','jefe'].includes(currentUser.rol);

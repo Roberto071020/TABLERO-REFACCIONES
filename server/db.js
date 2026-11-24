@@ -1585,4 +1585,7 @@ for(const [col, tipo] of [['resuelto_en','TEXT'], ['resuelto_por','INTEGER']]){
 // 19-nov-2026: alta por volante (ver server/volantes.js).
 require('./volantes').asegurarColumnas(db);
 
+// 24-nov-2026: apartado de Particulares (ver server/particulares.js).
+require('./particulares').asegurarTabla(db);
+
 module.exports = db;

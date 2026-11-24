@@ -99,6 +99,7 @@ app.use('/api/mapeo-estatus-inpart', require('./routes/mapeoEstatusInpart'));
 app.use('/api/respaldos', require('./routes/respaldos'));
 app.use('/api/discrepancias-proveedor', require('./routes/discrepanciasProveedor'));
 app.use('/api/vales-pendientes', require('./routes/valesPendientes'));
+app.use('/api/particulares', require('./routes/particulares')); // 24-nov-2026: apartado de Particulares
 app.use('/api/autosurtido-piezas', require('./routes/autosurtidoPiezas'));
 // Fase 1, punto 10 PORTAL SC (Orlando, 8-sep-2026): integración con Google Drive -- sin credenciales
 // reales configuradas todavía; ver server/routes/googleDrive.js (estaConfigurado()).

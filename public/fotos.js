@@ -65,14 +65,16 @@
     }
   }
 
+  // 24-nov-2026: siniestroId puede ser { particular: id } para las fotos del daño de un particular.
   async function subirUna(file, siniestroId, etapa){
     const c = await comprimir(file);
     const fd = new FormData();
-    fd.append('siniestro_id', siniestroId);
+    const esParticular = !!(siniestroId && typeof siniestroId === 'object' && siniestroId.particular);
+    if(!esParticular) fd.append('siniestro_id', siniestroId);
     fd.append('etapa', etapa);
     fd.append('foto', c.foto, c.nombre);
     if(c.miniatura) fd.append('miniatura', c.miniatura, 'mini.jpg');
-    const res = await fetch('/api/fotos', { method:'POST', body: fd });
+    const res = await fetch(esParticular ? `/api/particulares/${Number(siniestroId.particular)}/fotos` : '/api/fotos', { method:'POST', body: fd });
     if(!res.ok){
       const d = await res.json().catch(()=>({}));
       throw new Error(d.error || ('Error ' + res.status));
