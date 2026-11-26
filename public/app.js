@@ -1706,7 +1706,7 @@ async function viewInicioDaniela(){
   ${seccionInicio('dan-auto', '🛒 Autosurtido: conseguir piezas', 'Orlando ya puso las piezas que se necesitan. Completa costo, tiempo de entrega y proveedor.', d.autosurtido || [],
     a => cajaInicio(`${encabezadoUnidad(a.siniestro_id, a.vehiculo, a.siniestro_numero, [a.placas, a.aseguradora].filter(Boolean).map(esc).join(' · '))}
       <div style="margin-bottom:10px;"><b>${a.piezas} pieza(s):</b> ${esc(a.lista || '')}</div>
-      <button class="btn small" onclick="goSiniestro(${a.siniestro_id})">🛒 Abrir para cotizar</button>`))}
+      <button class="btn small" onclick="danCotizarAutosurtido(${a.siniestro_id})">🛒 Cotizar</button>`))}
   ${seccionInicio('recibir', '1. Recibir piezas', 'El proveedor ya las entregó. Revísalas: si llegaron bien, márcalas; si no, registra qué pasó.', d.recibir,
     u => cajaInicio(`${encabezadoUnidad(u.siniestro_id, u.vehiculo, u.siniestro_numero, [u.placas, u.aseguradora].filter(Boolean).map(esc).join(' · '))}
       ${u.piezas.map(z => (z.no_llego ? `<div style="margin-top:6px;"><span class="badge rojo" style="white-space:normal;">🚫 El auxiliar reporta que NO ha llegado aunque el proveedor la marcó entregada: avisa a la aseguradora</span></div>` : '') + (z.revisada_en ? `<div style="margin-top:6px;"><span class="badge verde" style="white-space:normal;">✅ Revisada por ${esc(String(z.revisada_por_nombre || '').split(' ')[0])}${horaLocal(z.revisada_en) ? ' a las ' + esc(horaLocal(z.revisada_en)) : ''}: llegó bien</span></div>` : '') + filaPieza(z, `<button class="btn small" onclick="marcarRecibida(${z.id})">✔ Llegó bien</button><button class="btn small secondary" onclick="abrirFormIncidencia(${z.id})">✖ Llegó mal</button>`)).join('')}`))}
@@ -5265,6 +5265,22 @@ async function guardarNuevaPiezaAutosurtido(siniestroId){
     toast('Pieza agregada.', 'success');
     closeModal(); render();
   }catch(e){}
+}
+// 26-nov-2026. Roberto: "aquí si ya tengo proveedor y fecha ¿dónde puedo agregarlo? cuando doy click me manda a su
+// ficha pero no tengo donde agregar los datos" -> "Abrir para cotizar" llevaba a la pestaña Pedidos y el formulario
+// estaba en "Admisión / técnica". Ahora el botón abre aquí mismo la ventanita para completar costo, entrega y proveedor.
+async function danCotizarAutosurtido(siniestroId){
+  const filas = await api('GET','/api/autosurtido-piezas?siniestro_id='+siniestroId);
+  const faltan = filas.filter(p => !p.requisitada);
+  const lista = faltan.length ? faltan : filas;
+  if(!lista.length){ toast('Esta unidad no tiene piezas de autosurtido.', 'warn'); return; }
+  if(lista.length === 1) return abrirFormEditarPiezaAutosurtido(lista[0].id, siniestroId);
+  showModal(`<h3>🛒 Piezas por cotizar</h3>
+    <p class="subtle" style="margin-top:0;">Elige la pieza para poner costo, tiempo de entrega y proveedor.</p>
+    ${lista.map(p => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+      <span>${esc(p.pieza || '—')}${p.requisitada ? ' <span class="badge verde">Completa</span>' : ''}</span>
+      <button class="btn small" onclick="abrirFormEditarPiezaAutosurtido(${p.id}, ${Number(siniestroId)})">Completar</button></div>`).join('')}
+    <div class="modal-actions"><button class="btn secondary" onclick="goSiniestro(${Number(siniestroId)});closeModal();">Ver ficha</button><button class="btn secondary" onclick="closeModal()">Cerrar</button></div>`);
 }
 async function abrirFormEditarPiezaAutosurtido(piezaId, siniestroId){
   const filas = await api('GET','/api/autosurtido-piezas?siniestro_id='+siniestroId);
