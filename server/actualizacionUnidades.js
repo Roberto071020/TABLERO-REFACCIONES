@@ -297,6 +297,18 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
       else if(!actual.archivado){ nuevo.archivado = 1; nuevo.archivado_en = new Date().toISOString().replace('T', ' ').slice(0, 19); r.avisos.push('Se archiva.'); }
     } else if(actual && actual.archivado){ nuevo.archivado = 0; nuevo.archivado_en = null; r.avisos.push('Estaba archivada: se reactiva.'); }
     if(r.errores.length){ r.accion = 'error'; return r; }
+    // 26-nov-2026. Roberto (Jetta 2016 XYM154B: 8 días en piso sin valuar; "me dice Orlando que no le apareció nunca
+    // en su tablero"): la carga del 7-nov le puso etapa "programado" sin estar valuado ni autorizado, y la lista de
+    // Orlando solo muestra unidades sin producción. Una unidad sin valuación ni autorización NO recibe etapa de
+    // producción (salvo Terminado por estar entregada); se avisa y se queda para la revisión de Orlando.
+    if(nuevo.estado_produccion && nuevo.estado_produccion !== 'terminado'){
+      const aut = nuevo.estado_autorizacion !== undefined ? nuevo.estado_autorizacion : (actual && actual.estado_autorizacion);
+      const valuada = actual && actual.valuacion_fecha_envio;
+      if(!['autorizada', 'parcial'].includes(aut) && !valuada){
+        r.avisos.push(`Sin valuación ni autorización: no se le pone la etapa "${ETIQUETA_ETAPA[nuevo.estado_produccion] || nuevo.estado_produccion}"; queda para la revisión de Orlando.`);
+        delete nuevo.estado_produccion;
+      }
+    }
     for(const [campo, valor] of Object.entries(nuevo)){
       const antes = actual ? actual[campo] : null;
       if(String(antes == null ? '' : antes) === String(valor == null ? '' : valor)) continue;

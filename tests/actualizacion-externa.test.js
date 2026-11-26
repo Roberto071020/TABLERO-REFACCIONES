@@ -19,7 +19,8 @@ const post = async (url, body, token) => {
   const r = await fetch('http://localhost:' + PORT + url, { method:'POST', headers:h, body: JSON.stringify(body || {}) });
   return { status: r.status, data: await r.json().catch(() => null) };
 };
-const TEXTO = ['ASEGURADORA\tSINIESTRO\tVEHICULO\tUBICACION\tETAPA', 'MAPFRE\tEXT-0001\tJETTA AZUL\tPISO\tHojalatería'].join('\n');
+// 26-nov-2026: lleva AUTORIZADA SI, porque sin valuación ni autorización ya no se acepta etapa de producción.
+const TEXTO = ['ASEGURADORA\tSINIESTRO\tVEHICULO\tUBICACION\tAUTORIZADA\tETAPA', 'MAPFRE\tEXT-0001\tJETTA AZUL\tPISO\tSI\tHojalatería'].join('\n');
 
 test.before(async () => { await new Promise(r => { server = app.listen(PORT, r); }); });
 test.after(async () => { delete process.env.ACTUALIZACION_TOKEN; await new Promise(r => server.close(r)); });
@@ -41,6 +42,23 @@ test('EXT-2: validar no guarda nada; confirmar aplica y deja la auditoría a nom
   const s = db.prepare(`SELECT * FROM siniestros WHERE numero='EXT-0001'`).get();
   assert.equal(s.aseguradora, 'Mapfre'); assert.equal(s.estado_produccion, 'en_laminado');
   assert.ok(db.prepare(`SELECT 1 FROM auditoria WHERE entidad_id=? AND usuario_nombre='Claude (actualización de unidades)'`).get(s.id));
+});
+
+// 26-nov-2026. Roberto: Jetta 2016 XYM154B oculto 8 días ("me dice Orlando que no le apareció nunca en su tablero").
+test('EXT-2b: sin valuación ni autorización no se acepta etapa de producción; se avisa y queda para Orlando', async () => {
+  process.env.ACTUALIZACION_TOKEN = 'clave-de-prueba-larga-123456';
+  const texto = ['ASEGURADORA\tSINIESTRO\tVEHICULO\tUBICACION\tETAPA', 'GNP\tEXT-SINVAL\tJETTA 2016 BLANCO\tPISO\tSin iniciar'].join('\n');
+  const v = await post('/api/externo/unidades/validar', { texto }, 'clave-de-prueba-larga-123456');
+  assert.equal(v.status, 200);
+  assert.ok(v.data.filas[0].avisos.some(a => /Sin valuación ni autorización/.test(a)), JSON.stringify(v.data.filas[0].avisos));
+  assert.ok(!v.data.filas[0].cambios.some(c => c.campo === 'estado_produccion'));
+  await post('/api/externo/unidades/confirmar', { texto }, 'clave-de-prueba-larga-123456');
+  const s = db.prepare(`SELECT estado_produccion FROM siniestros WHERE numero='EXT-SINVAL'`).get();
+  assert.equal(s.estado_produccion, null);
+  // Ya autorizada, la etapa sí se acepta.
+  db.prepare(`UPDATE siniestros SET estado_autorizacion='autorizada' WHERE numero='EXT-SINVAL'`).run();
+  await post('/api/externo/unidades/confirmar', { texto }, 'clave-de-prueba-larga-123456');
+  assert.equal(db.prepare(`SELECT estado_produccion FROM siniestros WHERE numero='EXT-SINVAL'`).get().estado_produccion, 'programado');
 });
 
 test('EXT-3: REVISION = PENDIENTE manda la unidad a Orlando; POR VALUAR, a la lista de Valuación de Roberto', async () => {
