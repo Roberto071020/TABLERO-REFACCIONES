@@ -48,10 +48,39 @@ test('puntos: aviso de seguridad, 8 generales y uno por pieza autorizada', () =>
   assert.equal(p.filter(x => x.critico).length, 1, 'la moldura no autorizada no es aviso de seguridad');
   assert.equal(p.filter(x => x.seccion === 'General').length, 8);
   const ot = p.filter(x => x.seccion === 'Trabajos de la OT');
-  assert.equal(ot.length, 5, 'las no autorizadas no se revisan como trabajo hecho');
+  // 26-nov-2026: las GRAPAS (insumo) ya no son punto propio; las cubre el punto general de grapas y tornillería.
+  assert.equal(ot.length, 4, 'las no autorizadas y los insumos no se revisan como trabajo hecho');
+  assert.ok(!ot.some(x => /GRAPAS/.test(x.texto)));
   assert.match(ot.find(x => /FASCIA/.test(x.texto)).texto, /Cambio \+ pintura completa: pieza nueva .*; tono, brillo/);
   assert.match(ot.find(x => /SALPICADERA/.test(x.texto)).texto, /Reparación \+ resane/);
   assert.equal(C.puntosCalidad([]).length, 8, 'sin OT: solo los generales');
+});
+
+// 26-nov-2026. Roberto: "¿Consideras que los checklist están quedando muy largos?" (CX-5 con 48 renglones).
+test('checklist corto: insumos fuera y mecánica agrupada en un punto por zona', () => {
+  const ot = [
+    { pieza:'FASCIA DELANTERA', laminacion:'CAMBIO', pintura:'COMPLETA' },
+    { pieza:'AMORTIGUADOR DELANTERO DERECHO', laminacion:'CAMBIO', pintura:'N/A' },
+    { pieza:'MANGO DELANTERO DERECHO', laminacion:'CAMBIO', pintura:'N/A' },
+    { pieza:'FLECHA DERECHA', laminacion:'CAMBIO', pintura:'N/A' },
+    { pieza:'LLANTA DELANTERA DERECHA', laminacion:'CAMBIO', pintura:'N/A' },
+    { pieza:'ALINEACIÓN DELANTERA', laminacion:'AUTORIZADO', pintura:'N/A' },
+    { pieza:'BALANCEO', laminacion:'AUTORIZADO', pintura:'N/A' },
+    { pieza:'LÍQUIDO DE FRENOS 1 LITRO', laminacion:'AUTORIZADO', pintura:'N/A' },
+    { pieza:'GRASA HOMOCINÉTICA 1 KILO', laminacion:'AUTORIZADO', pintura:'N/A' },
+    { pieza:'GRAPAS', laminacion:'AUTORIZADO', pintura:'N/A' },
+    { pieza:'PROGRAMACIÓN', laminacion:'AUTORIZADO', pintura:'N/A' },
+    { pieza:'PUENTE DE SUSPENSIÓN', laminacion:'NO AUTORIZADO', pintura:'N/A' },
+  ];
+  const p = C.puntosCalidad(ot);
+  const trabajos = p.filter(x => x.seccion === 'Trabajos de la OT');
+  assert.deepEqual(trabajos.map(x => x.texto.split(' ')[0]), ['FASCIA', 'MECÁNICA', 'PROGRAMACIÓN']);
+  const mec = trabajos[1];
+  assert.match(mec.texto, /^MECÁNICA DELANTERA DERECHA — .*Incluye \(6\): amortiguador, mango, llanta, flecha, alineación, balanceo\.$/);
+  assert.match(mec.texto, /flecha, alineación, balanceo/, 'lo que no dice zona completa se junta al grupo');
+  assert.ok(!p.some(x => /LÍQUIDO|GRASA|GRAPAS/.test(x.texto)), 'insumos fuera');
+  assert.ok(p.some(x => x.critico && /PUENTE DE SUSPENSIÓN/.test(x.texto)), 'el aviso de no autorizado se conserva');
+  assert.equal(new Set(p.map(x => x.clave)).size, p.length, 'claves únicas');
 });
 
 test('flujo completo: Claude carga piezas, Beto revisa desde el celular, corrige y libera', async () => {
@@ -65,7 +94,7 @@ test('flujo completo: Claude carga piezas, Beto revisa desde el celular, corrige
   const carga = await req('POST', '/api/externo/ot-piezas', { siniestro_id: sid, piezas: OT_VERSA }, { Authorization:'Bearer clave-ot-prueba' });
   assert.equal(carga.status, 201);
   assert.equal(carga.data.piezas, 7);
-  assert.equal(carga.data.puntos, 14);
+  assert.equal(carga.data.puntos, 13); // 26-nov-2026: 14 -> 13, las GRAPAS ya no son punto propio
 
   await login(...BETO);
   const g = await req('GET', '/api/calidad/' + sid);

@@ -57,6 +57,20 @@ const PIN = {
   pulir: ['pulido', 'acabado uniforme, sin rayas ni marcas'],
 };
 
+// 26-nov-2026. Roberto: "¿Consideras que los checklist están quedando muy largos?" (OT del CX-5 con 48 renglones).
+// 1) Los INSUMOS (grapas, líquidos, grasas, anticongelante, gas) no se revisan pieza por pieza: ya los cubre el punto
+//    general de "grapas y tornillería" y la revisión de funciones.
+// 2) La MECÁNICA (suspensión, frenos, dirección, llanta/rin, alineación y balanceo) sin pintura se agrupa en UN punto por
+//    zona (p. ej. "delantera derecha"), con la lista de piezas, en vez de un renglón por pieza.
+// La carrocería/pintura y los avisos de NO AUTORIZADO siguen igual.
+const INSUMO = /^(GRAPA|GRAPAS)\b|LIQUIDO|GRASA|ANTICONGELANTE|REFRIGERANTE|ACEITE|CARGA DE GAS|^GAS\b|SILICON|PEGAMENTO/;
+const MECANICA = /AMORTIGUADOR|BALERO|\bMASA\b|MANGO|MANGUETA|BIELETA|TERMINAL|TORNILLO ESTABILIZADOR|HORQUILLA|BRAZO|ROTULA|TIJERA|FLECHA|\bABS\b|FRENO|RESORTE|\bBUJE|BARRA ESTABILIZADORA|COJIN|DIRECCION|CREMALLERA|SENSOR DE PRESION|LLANTA|\bRIN\b|PUENTE DE SUSPENSION|SUSPENSION|ALINEACION|BALANCEO/;
+function zonaMecanica(n){
+  const eje = /TRASER/.test(n) ? 'trasera' : /DELANTER/.test(n) ? 'delantera' : '';
+  const lado = /DERECH|\bDER\b|\bDR\b/.test(n) ? 'derecha' : /IZQUIERD|\bIZQ\b/.test(n) ? 'izquierda' : '';
+  return [eje, lado].filter(Boolean).join(' ') || 'general';
+}
+
 function puntosCalidad(piezas){
   const puntos = [];
   const usadas = new Set();
@@ -70,16 +84,48 @@ function puntosCalidad(piezas){
     }
   }
   GENERALES.forEach((t, i) => puntos.push({ clave: 'g' + (i + 1), seccion: 'General', critico: false, texto: t }));
+  const grupos = new Map(); // zona -> { clave, piezas: [] } (se arma en el orden en que aparece cada zona)
   for(const p of lista){
     const pieza = String(p.pieza || '').trim();
     const l = laminacion(p.laminacion), q = pintura(p.pintura);
     if(!pieza || l === 'no_autorizado' || (!LAM[l] && !PIN[q])) continue;
+    const n = norm(pieza);
+    if(INSUMO.test(n)) continue;
+    if(!q && MECANICA.test(n)){
+      const zona = zonaMecanica(n);
+      if(!grupos.has(zona)){
+        const g = { zona, piezas: [] };
+        grupos.set(zona, g);
+        puntos.push(g); // se reemplaza por el punto final abajo, conservando su lugar
+      }
+      // En la lista va el nombre corto: sin la zona (ya está en el título) ni la medida de la llanta.
+      const corto = pieza.toLowerCase()
+        .replace(/\s+\d{3}\/\d{2}.*$/, '')
+        .replace(/\b(delanter[oa]s?|traser[oa]s?|derech[oa]s?|izquierd[oa]s?|del|tras|der|izq)\b\.?/g, '')
+        .replace(/\s+/g, ' ').trim();
+      grupos.get(zona).piezas.push(corto || pieza.toLowerCase());
+      continue;
+    }
     const que = [LAM[l] && LAM[l][0], PIN[q] && PIN[q][0]].filter(Boolean).join(' + ');
     const verificar = [LAM[l] && LAM[l][1], PIN[q] && PIN[q][1]].filter(Boolean).join('; ');
     const t = que.charAt(0).toUpperCase() + que.slice(1);
     puntos.push({ clave: clave('p:' + norm(pieza)), seccion: 'Trabajos de la OT', critico: false, texto: `${pieza} — ${t}: ${verificar}.` });
   }
-  return puntos;
+  // Lo que no dice eje y lado completos ("FLECHA DERECHA", "ALINEACIÓN DELANTERA", "BALANCEO") se junta con la primera
+  // zona completa de la OT, para no dejar puntos de una sola pieza.
+  const completas = [...grupos.values()].filter(g => g.zona.includes(' '));
+  const destino = completas[0] || [...grupos.values()][0];
+  for(const g of grupos.values()){
+    if(g === destino || g.zona.includes(' ')) continue;
+    destino.piezas.push(...g.piezas);
+    g.fusionado = true;
+  }
+  return puntos.filter(x => !x.fusionado).map(x => {
+    if(!x.piezas) return x;
+    const titulo = x.zona === 'general' ? 'MECÁNICA' : 'MECÁNICA ' + x.zona.toUpperCase();
+    return { clave: clave('m:' + x.zona), seccion: 'Trabajos de la OT', critico: false,
+      texto: `${titulo} — armado completo, tornillería apretada, sin ruidos, juegos ni fugas; sin testigos; alineación y balanceo hechos si aplican. Incluye (${x.piezas.length}): ${x.piezas.join(', ')}.` };
+  });
 }
 
 function asegurarTablas(db){
