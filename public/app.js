@@ -275,7 +275,14 @@ function renderTabs(){
     `<button class="${state.view===t.k?'active':''}" onclick="goTo('${t.k}')">${t.label}${t.k==='whatsapp' && whatsappPendientesBadge?` <span class="badge-count">${whatsappPendientesBadge}</span>`:''}</button>`).join('') +
     `<button onclick="abrirCambiarPassword()" title="Cambiar contraseña">🔒</button>`;
 }
-function goTo(view){ if(view==='inicio'){ state.resumenCompleto=false; BETO_FILTRO=null; } state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
+// 25-nov-2026. Roberto: "¿Porque tarda tanto cuando selecciono menú?" -> no tardaba: en el celular el menú se quedaba
+// abierto (renderTabs() cambia el contenido del <nav> pero NO le quita la clase "open") y, como el encabezado es fijo,
+// la lista tapaba la pantalla que ya había cargado. Al elegir una opción se cierra el menú y se sube al inicio.
+function cerrarMenuMovil(){
+  const nav = document.getElementById('mainTabs');
+  if(nav) nav.classList.remove('open');
+}
+function goTo(view){ if(view==='inicio'){ state.resumenCompleto=false; BETO_FILTRO=null; } cerrarMenuMovil(); window.scrollTo(0, 0); state.view=view; state.siniestroId=null; state.proveedorId=null; render(); }
 // Hallazgo de Daniela (26-ago-2026): el menu ocupaba casi toda la pantalla en movil. Se colapsa
 // detras de un boton "Menu" (ver CSS .nav-toggle / nav.tabs.open) y se cierra solo al navegar, porque
 // renderTabs() reconstruye el <nav> desde cero sin la clase "open" en cada render().
@@ -284,10 +291,11 @@ function toggleMenuMovil(){
   if(nav) nav.classList.toggle('open');
 }
 function goSiniestro(id){
+  cerrarMenuMovil();
   if(state.view !== 'siniestro') state.origenSiniestro = state.view;
   state.view='siniestro'; state.siniestroId=id; state.subtabSiniestro='pedidos'; render();
 }
-function goProveedor(id){ state.view='proveedor'; state.proveedorId=id; render(); }
+function goProveedor(id){ cerrarMenuMovil(); state.view='proveedor'; state.proveedorId=id; render(); }
 function setSubtabSiniestro(tab){ state.subtabSiniestro = tab; render(); }
 function setFiltroListaMaestra(campo, valor){ state.filtros[campo] = valor; state.filtros.page = 1; render(); }
 function setFiltroQLive(valor){ state.filtros.q = valor; }

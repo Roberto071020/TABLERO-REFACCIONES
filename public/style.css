@@ -140,6 +140,11 @@ footer.note{font-size:11.5px;color:var(--gris-500);text-align:center;padding:20p
   nav.tabs{display:none;order:5;width:100%;flex-direction:column;gap:2px;background:var(--gris-50);border:1px solid var(--border);border-radius:10px;padding:6px;margin-top:4px;}
   nav.tabs.open{display:flex;}
   nav.tabs button{width:100%;text-align:left;border-radius:8px;}
+  /* 25-nov-2026 (Roberto, video del celular): las tablas anchas hacían que el celular encogiera toda la página.
+     Ahora la tabla se desliza de lado dentro de su recuadro y el resto de la pantalla queda a tamaño normal. */
+  .section{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  #app table:not(.kv){display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  main{padding:12px;}
 }
 
 /* Propuesta de Alejandra: pantalla "Pendientes de hoy" (27-ago-2026), 3 columnas de color. */
