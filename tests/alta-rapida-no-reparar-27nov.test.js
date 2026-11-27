@@ -83,3 +83,17 @@ test('NOREP-1: "No reparar" exige motivo, saca la unidad de los pendientes de Or
   assert.ok(calcularInicioOrlando(db).revisar.some(x => x.siniestro_id === id), 'regresa a Orlando');
   assert.ok(db.prepare(`SELECT 1 FROM auditoria WHERE entidad_id=? AND accion='no_reparar'`).get(id), 'queda en la auditoría');
 });
+
+test('ALTA-4: una unidad creada desde el importador (expediente de Roberto) le aparece a Ale para recibirla; volante no', async () => {
+  const AU = require('../server/actualizacionUnidades');
+  const adm = { id: 1, nombre: 'Administrador', rol: 'admin' };
+  AU.aplicar(db, 'SINIESTRO\tASEGURADORA\tVEHICULO\tPLACAS\tUBICACION\nIMP-1\tMAPFRE\tFord Focus 2014 Gris\tYUG884B\tPISO', adm);
+  const s = db.prepare(`SELECT id, alta_rapida_por FROM siniestros WHERE numero='IMP-1'`).get();
+  assert.equal(s.alta_rapida_por, 'Roberto');
+  const t = calcularInicioAlejandra(db).tarjetas.find(x => x.id === s.id);
+  assert.equal(t.tipo, 'alta_otro'); assert.match(t.motivo, /Registrada por Roberto/);
+  // alta por volante: conserva su propia tarjeta
+  db.prepare(`UPDATE siniestros SET volante_origen='Inbursa', ubicacion='Tránsito' WHERE id=?`).run(s.id);
+  const t2 = calcularInicioAlejandra(db).tarjetas.find(x => x.id === s.id);
+  assert.equal(t2.tipo, 'volante');
+});

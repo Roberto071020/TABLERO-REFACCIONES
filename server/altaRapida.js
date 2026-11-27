@@ -22,6 +22,10 @@ function asegurarColumnas(db){
     ['no_reparar_motivo','TEXT'], ['no_reparar_en','TEXT'], ['no_reparar_por','TEXT']]){
     if(!db.prepare(`SELECT 1 FROM pragma_table_info('siniestros') WHERE name=?`).get(col)) db.exec(`ALTER TABLE siniestros ADD COLUMN ${col} ${tipo}`);
   }
+  // 27-nov-2026: el Focus 4264106628000591 se dio de alta desde su expediente antes de esta regla; se marca una sola
+  // vez (si todavía no lo recibe Ale) para que le aparezca. Las demás unidades viejas sin recepción no se tocan.
+  db.prepare(`UPDATE siniestros SET alta_rapida_por = 'Roberto', alta_rapida_en = datetime('now')
+    WHERE numero = '4264106628000591' AND (alta_rapida_por IS NULL OR alta_rapida_por = '') AND (fecha_admision IS NULL OR fecha_admision = '')`).run();
 }
 
 // Unidad ACTIVA (no archivada, no cerrada, no entregada) con las mismas placas y otro número de siniestro.

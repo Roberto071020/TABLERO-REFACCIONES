@@ -395,6 +395,11 @@ function aplicar(db, texto, usuario, { archivarFaltantes = false } = {}){
         id = Number(db.prepare(`INSERT INTO siniestros (numero, aseguradora, fecha_ingreso, ubicacion, responsable, creado_por)
           VALUES (?, ?, ?, 'Piso', ?, ?)`).run(r.siniestro, ase, hoyMexico(), usuario ? usuario.nombre : null, usuario ? usuario.id : null).lastInsertRowid);
         registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id:id, accion:'crear_actualizacion_masiva', usuario });
+        // 27-nov-2026 (Roberto, al dar de alta el Focus 4264106628000591 desde su expediente: "¿Esto se le avisa a
+        // alguien?"): una unidad que nace aquí no pasó por la recepción de Ale. Se marca como registrada por Roberto
+        // (los expedientes vienen de él) para que a Ale le salga en "Registradas por otra persona" hasta recibirla.
+        // Solo es recordatorio: no detiene nada. Las altas por volante tienen su propia tarjeta (ver inicioAlejandra.js).
+        db.prepare(`UPDATE siniestros SET alta_rapida_por = 'Roberto', alta_rapida_en = datetime('now') WHERE id = ?`).run(id);
       }
       const cambios = r.cambios.filter(c => !(r.accion === 'crear' && c.campo === 'aseguradora'));
       if(cambios.length){

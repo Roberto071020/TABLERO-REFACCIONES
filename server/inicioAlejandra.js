@@ -180,7 +180,7 @@ function tarjetaDeUnidad(db, s, hoy, contexto){
   // 2a) REGISTRADA POR OTRA PERSONA (27-nov-2026). Roberto: "me dicen que muchas veces Ale no lo hace por no estar en su
   // lugar" -> ahora cualquiera del equipo puede dar de alta la unidad, pero Ale sigue siendo la dueña de la recepción:
   // le aparece hasta que la recibe (inventario y datos). Si se fue circulando, solo hasta que tenga cita.
-  if(!entregada && s.alta_rapida_por && vacio(s.fecha_admision) && !(cita && cita <= hoy)){
+  if(!entregada && s.alta_rapida_por && !base.volante && vacio(s.fecha_admision) && !(cita && cita <= hoy)){ // 27-nov: volante tiene su tarjeta
     const enPiso = !/^tr[aá]nsito/i.test(String(s.ubicacion || ''));
     const tel = whatsappFaseA.normalizarTelefonoMX(s.cliente_telefono);
     if(enPiso) return { ...base, tipo:'alta_otro', orden:2, color:'ambar', en_piso:true, telefono: tel.valido ? tel.local : null,
