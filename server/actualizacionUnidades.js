@@ -149,6 +149,13 @@ function analizar(db, texto, { archivarFaltantes = false } = {}){
       const V = require('./volantes');
       const c = V.buscarCoincidencia(db, { placas: nuevo.placas, vin: nuevo.vin, numero: f.siniestro });
       if(c) r.errores.push(V.mensajeCoincidencia(c) + ' Si es otro siniestro, agrega la columna OTRO SINIESTRO = SI.');
+      // 27-nov-2026 (Roberto): el Arona, Versa y Focus de Mapfre quedaron dos veces (recepción con el número sin la
+      // terminación y el expediente con el número completo). Antes de crear, también se revisan placas contra
+      // cualquier unidad activa, no solo las de volante.
+      else {
+        const m = require('./altaRapida').buscarMismaPlaca(db, { placas: nuevo.placas, numero: f.siniestro });
+        if(m) r.errores.push(require('./altaRapida').mensajeMismaPlaca(m) + ' Si es la misma, usa ese número; si es otro siniestro, agrega la columna OTRO SINIESTRO = SI.');
+      }
     }
 
     if(f.ubicacion){

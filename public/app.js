@@ -262,7 +262,7 @@ const LABEL_ACCION = {
   correo_aprobado: 'Correo aprobado (borrador/sandbox)', correo_descartado: 'Correo descartado',
   exclusion_temporal: 'Proveedor excluido de un envío puntual', reversion: 'Carga masiva revertida',
   login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador',
-  no_reparar: 'Unidad marcada como "No reparar"', retirada_taller: 'Unidad retirada del taller' // 27-nov-2026
+  fusion: 'Unidades duplicadas juntadas', no_reparar: 'Unidad marcada como "No reparar"', retirada_taller: 'Unidad retirada del taller' // 27-nov-2026
 };
 const LABEL_CAMPO = {
   estatus_operativo: 'Estatus operativo', estatus_inpart: 'Estatus Inpart', fecha_prevista: 'Fecha promesa',

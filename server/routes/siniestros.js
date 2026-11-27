@@ -718,6 +718,12 @@ router.post('/:id/no-reparar', requireAuth, (req, res)=>{
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
 });
 
+// 27-nov-2026 (Roberto: "Hazlo", juntar unidades duplicadas). Solo admin/jefe. Ver server/fusionar.js.
+router.post('/:id/fusionar-en/:destino', requireAuth, requireRole('admin','jefe'), (req, res)=>{
+  try{ res.json(require('../fusionar').fusionar(db, Number(req.params.id), Number(req.params.destino), req.session.user, registrarAuditoria)); }
+  catch(e){ res.status(400).json({ error: e.message }); }
+});
+
 // Desarchivar manualmente (correcciones/consultas puntuales). Mismo permiso que cerrar/administrar.
 router.patch('/:id/desarchivar', requireAuth, requireRole('operativo','jefe','admin'), (req, res)=>{
   const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
