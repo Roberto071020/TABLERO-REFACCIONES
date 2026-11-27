@@ -206,7 +206,8 @@ const LABEL_ACCION = {
   incidencia_registrada: 'Incidencia registrada', respuesta_registrada: 'Respuesta del proveedor registrada',
   correo_aprobado: 'Correo aprobado (borrador/sandbox)', correo_descartado: 'Correo descartado',
   exclusion_temporal: 'Proveedor excluido de un envío puntual', reversion: 'Carga masiva revertida',
-  login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador'
+  login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador',
+  no_reparar: 'Unidad marcada como "No reparar"' // 27-nov-2026
 };
 const LABEL_CAMPO = {
   estatus_operativo: 'Estatus operativo', estatus_inpart: 'Estatus Inpart', fecha_prevista: 'Fecha promesa',
@@ -1081,6 +1082,8 @@ let ALE = { tarjetas: [], verTodo: {} };
 const ALE_SECCIONES = [
   { k:'entregar', titulo:'1. Entregar', ayuda:'El cliente viene por su unidad, o se le prometió para hoy.', tipos:['entrega','retraso'] },
   { k:'recibir', titulo:'2. Recibir unidades', ayuda:'Citas de hoy que todavía no se registran.', tipos:['cita'] },
+  // 27-nov-2026: lo que registró otra persona del equipo porque Ale no estaba; ella la recibe.
+  { k:'alta_otro', titulo:'🆕 Registradas por otra persona', ayuda:'Alguien del equipo dio de alta la unidad porque no estabas. Recíbela tú para completar inventario y datos del cliente.', tipos:['alta_otro'] },
   { k:'reingreso', titulo:'3. Agendar reingresos', ayuda:'Ya llegó el 90% de las piezas: dale fecha al cliente.', tipos:['reingreso'] },
   // 19-nov-2026 (Roberto: "que de alguna manera se le explique brevemente qué quiere decir alta por volante").
   { k:'volante', titulo:'📄 Asignadas por volante (aún no llegan)', ayuda:'La aseguradora nos asignó la unidad y la dimos de alta con los datos del volante del ajustador, antes de que llegue. Contacta al cliente para que la traiga antes de que venza el volante; cuando llegue, confirma sus datos al recibirla.', tipos:['volante'] },
@@ -1170,6 +1173,11 @@ function aleTarjetaHtml(t, i){
     boton = (t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Escribirle</button> ` : '')
       + `<button class="btn" onclick="aleCambiarCita(${t.id}, '${esc(t.cita_fecha || '')}')">📅 ${t.cita_fecha ? 'Cambiar cita' : 'Agendar cita'}</button>`;
     extra = `<button class="btn small secondary" onclick="aleRecibir(${t.id})">🚗 Ya llegó: recibir</button>`;
+  } else if(t.tipo === 'alta_otro'){ // 27-nov-2026
+    boton = t.en_piso ? `<button class="btn" onclick="aleRecibir(${t.id})">🚗 Recibir unidad</button>`
+      : (t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Escribirle</button> ` : '')
+        + `<button class="btn" onclick="aleCambiarCita(${t.id}, '')">📅 Agendar cita</button>`;
+    extra = t.en_piso ? '' : `<button class="btn small secondary" onclick="aleRecibir(${t.id})">🚗 Ya llegó: recibir</button>`;
   } else if(t.tipo === 'cita_vieja'){
     boton = (t.telefono ? `<button class="btn secondary" onclick="window.open(linkWhatsapp('${t.telefono}', ''), '_blank')">📲 Escribirle</button>` : '')
       + ` <button class="btn small secondary" onclick="aleCambiarCita(${t.id}, '')">Sí viene: nueva cita</button>`
@@ -1444,11 +1452,12 @@ async function volanteConfirmar(id, alTerminar){
 async function crearSiniestroRevisandoVolante(body){
   try{ return await api('POST', '/api/siniestros', body, { silent: true }); }
   catch(e){
-    if(!(e.data && e.data.coincide_volante)){ toast(e.message, 'error'); throw e; }
-    const c = e.data.coincide_volante;
+    // 27-nov-2026: también pregunta si las placas ya están en una unidad activa (ahora registra más gente).
+    if(!(e.data && (e.data.coincide_volante || e.data.coincide_unidad))){ toast(e.message, 'error'); throw e; }
+    const c = e.data.coincide_volante || e.data.coincide_unidad;
     const otro = await new Promise(resolve => {
-      showModal(`<h3 style="margin-top:0;">📄 ¿Es la misma unidad?</h3><p>${esc(e.message)}</p>
-        <p class="subtle">${esc(VOLANTE_EXPLICACION)}</p>
+      showModal(`<h3 style="margin-top:0;">${e.data.coincide_volante ? '📄' : '🚗'} ¿Es la misma unidad?</h3><p>${esc(e.message)}</p>
+        ${e.data.coincide_volante ? `<p class="subtle">${esc(VOLANTE_EXPLICACION)}</p>` : '<p class="subtle">Si es la misma, te llevo a su expediente y no se crea otra. Si es otro siniestro del mismo carro, se crea aparte.</p>'}
         <div class="modal-actions"><button class="btn secondary" id="vol_no">No, es otro siniestro</button><button class="btn" id="vol_si">Sí, es la misma</button></div>`);
       document.getElementById('vol_si').addEventListener('click', () => resolve(false));
       document.getElementById('vol_no').addEventListener('click', () => resolve(true));
@@ -1876,10 +1885,16 @@ async function viewInicioOrlando(){
   ${seccionInicio('revisar', '1. Revisar unidades nuevas', 'Ya las recibió Alejandra. Empieza por la que lleva más tiempo esperando.', d.revisar,
     x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.fecha_hora_disponible_revision)}
       <div style="margin-bottom:10px;">${x.estado_revision_tecnica === 'en_revision' ? '<span class="badge azul">Ya la empezaste</span>' : `<span class="badge ${x.dias_esperando >= 1 ? 'rojo' : 'ambar'}">${x.dias_esperando >= 1 ? `Esperando hace ${x.dias_esperando} día(s)` : 'Llegó hoy'}</span>`}</div>
-      <button class="btn" onclick="orlRevisar(${x.siniestro_id}, '${esc(x.vehiculo || x.siniestro_numero)}')">🔍 ${x.estado_revision_tecnica === 'en_revision' ? 'Continuar revisión' : 'Revisar'}</button>`))}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn" onclick="orlRevisar(${x.siniestro_id}, '${esc(x.vehiculo || x.siniestro_numero)}')">🔍 ${x.estado_revision_tecnica === 'en_revision' ? 'Continuar revisión' : 'Revisar'}</button>
+        <button class="btn ghost" onclick="abrirNoReparar(${x.siniestro_id})">🚫 No reparar</button>
+      </div>`))}
   ${seccionInicio('desarme', '2. Terminar las que esperaban desarme', 'Cuando ya estén desarmadas, termina la revisión.', d.desarme,
     x => cajaInicio(`${encabezadoUnidad(x.siniestro_id, x.vehiculo, x.siniestro_numero, sub(x), x.actualizado_en)}
-      <button class="btn" onclick="orlTerminarRevision(${x.siniestro_id})">✔ Ya se desarmó: revisión terminada</button>`))}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn" onclick="orlTerminarRevision(${x.siniestro_id})">✔ Ya se desarmó: revisión terminada</button>
+        <button class="btn ghost" onclick="abrirNoReparar(${x.siniestro_id})">🚫 No reparar</button>
+      </div>`))}
   ${seccionInicio('complementos', '3. Hacer complementos', 'Daños ocultos que salieron en la reparación. Documéntalos con fotos y envíalos.', d.complementos,
     c => cajaInicio(`${encabezadoUnidad(c.siniestro_id, c.vehiculo, c.siniestro_numero, sub(c), c.creado_en)}
       <div style="margin-bottom:10px;"><b>Hallazgo:</b> ${esc(c.causa || '')}${c.pieza_operacion ? ' · ' + esc(c.pieza_operacion) : ''}</div>
@@ -1995,6 +2010,28 @@ async function danReautListo(id){
 async function danReautEnviar(id){
   try{ await api('POST', `/api/complementos/${id}/daniela-listo`, { respuesta: (document.getElementById('danRespReaut') || {}).value || '' });
     toast('Listo: regresó a Orlando.', 'success'); closeModal(); render(); }catch(e){}
+}
+// 27-nov-2026 (Orlando: "colocar alguna opción que diga 'unidad no reparar' y que haya un campo de texto libre para
+// poder poner la explicación del porqué"). La unidad sale de todos los pendientes; Dani o Roberto la pueden regresar.
+const ROLES_NO_REPARAR = ['orlando', 'vanessa', 'atencion_cliente', 'operativo', 'beto', 'jefe', 'admin'];
+async function abrirNoReparar(id){
+  const u = await orlUnidad(id);
+  showModal(`<h3 style="margin-top:0;">🚫 No reparar</h3>
+    ${orlCajaUnidad(u)}
+    <p style="margin:4px 0 8px;">La unidad sale de los pendientes de todos. <b>¿Por qué no se va a reparar?</b></p>
+    <textarea id="noRepMotivo" rows="3" maxlength="300" style="width:100%;box-sizing:border-box;font-size:16px;" placeholder="Ej. el cliente decidió no repararla por el seguro"></textarea>
+    <p class="subtle" style="margin:6px 0 0;">Si al final sí entra, Daniela o Roberto la regresan a proceso.</p>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn" onclick="guardarNoReparar(${id})">Marcar "No reparar"</button></div>`);
+}
+async function guardarNoReparar(id){
+  const motivo = ((document.getElementById('noRepMotivo') || {}).value || '').trim();
+  if(motivo.length < 5) return toast('Escribe por qué no se va a reparar.', 'error');
+  try{ await api('POST', `/api/siniestros/${id}/no-reparar`, { motivo }); toast('Listo: la unidad quedó como "No reparar".', 'success'); closeModal(); render(); }catch(e){}
+}
+async function regresarAProceso(id){
+  if(!confirm('¿Regresar esta unidad a proceso? Vuelve a aparecer en los pendientes.')) return;
+  try{ await api('PATCH', `/api/siniestros/${id}/desarchivar`, {}); toast('La unidad regresó a proceso.', 'success'); render(); }catch(e){}
 }
 function orlPedirDesarme(id){ return orlCambioRevision(id, 'requiere_desarme', 'Marcada para desarme. Avísale a Beto.'); }
 function orlEmpezarRevision(id){ return orlCambioRevision(id, 'en_revision', 'Quedó como empezada.'); }
@@ -3503,11 +3540,14 @@ async function viewSiniestro(id){
 
   const puedeCerrar = currentUser && ['operativo','jefe','admin'].includes(currentUser.rol);
   const puedeEntregar = currentUser && ['operativo','atencion_cliente','admin'].includes(currentUser.rol);
+  const puedeNoReparar = currentUser && ROLES_NO_REPARAR.includes(currentUser.rol); // 27-nov-2026
   return `
   <button class="btn ghost small no-print" onclick="goTo(state.origenSiniestro||'inicio')">← Volver</button>
   <div class="section" style="margin-top:10px;">
     ${s.completo===0?`<div class="banner ambar">Este siniestro está <b>Pendiente de completar</b> (faltan vehículo o placas). <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Completar datos</button></div>`:''}
     ${s.estatus_general==='Cerrado'?`<div class="banner verde">Siniestro cerrado.</div>`:''}
+    ${s.estatus_general==='No reparar'?`<div class="banner rojo">🚫 <b>No se repara</b>${s.no_reparar_por ? ' · lo marcó ' + esc(s.no_reparar_por) : ''}${s.no_reparar_en ? ' el ' + esc(fechaCorta(s.no_reparar_en)) : ''}<br>Motivo: ${esc(s.no_reparar_motivo || '')}
+      ${puedeCerrar ? ` <button class="btn small secondary no-print" onclick="regresarAProceso(${s.id})">Regresar a proceso</button>` : ''}</div>`:''}
     ${s.volante_origen && !s.volante_confirmado_en ? `<div class="banner ambar">📄 <b>Alta por volante (${esc(s.volante_origen)})</b> · datos por confirmar${s.volante_vigencia ? ' · volante vigente hasta ' + esc(String(s.volante_vigencia).slice(0,10)) : ''}<br><span style="font-size:13px;">${esc(VOLANTE_EXPLICACION)}</span> <button class="btn small secondary no-print" onclick="volanteConfirmar(${s.id})">Confirmar datos</button></div>` : ''}
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
@@ -3522,7 +3562,8 @@ async function viewSiniestro(id){
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
         ${puedeEntregar && s.estatus_general!=='Cerrado'?`<button class="btn small secondary" onclick="abrirFormEntrega(${s.id})">${s.fecha_entrega_real?'Editar entrega':'Registrar entrega'}</button>`:''}
-        ${puedeCerrar && s.estatus_general!=='Cerrado'?`<button class="btn small" onclick="intentarCerrarSiniestro(${s.id})">Cerrar siniestro</button>`:''}
+        ${puedeCerrar && s.estatus_general!=='Cerrado' && s.estatus_general!=='No reparar'?`<button class="btn small" onclick="intentarCerrarSiniestro(${s.id})">Cerrar siniestro</button>`:''}
+        ${puedeNoReparar && !s.archivado && s.estatus_general!=='Cerrado' && !s.fecha_entrega_real?`<button class="btn small ghost no-print" onclick="abrirNoReparar(${s.id})">🚫 No reparar</button>`:''}
         <button class="btn small secondary" onclick="abrirFormEditarSiniestro(${s.id})">Editar</button>
       </div>
     </div>
@@ -5672,7 +5713,7 @@ function openNuevoMenu(){
     <div style="display:flex;flex-direction:column;gap:8px;">
       ${esAtencionCliente?`<button class="btn secondary" onclick="closeModal();formNuevoExpediente()">Expediente (recepción de cliente)</button>`:''}
       ${soloExpediente?'':`
-      <button class="btn secondary" onclick="closeModal();formNuevoSiniestro()">Siniestro</button>
+      <button class="btn secondary" onclick="closeModal();formNuevoSiniestro()">Unidad / siniestro</button>
       <button class="btn secondary" onclick="closeModal();formNuevoPedido()">Pedido (ligado a un siniestro)</button>
       <button class="btn secondary" onclick="closeModal();formNuevoProveedor()">Proveedor</button>`}
     </div>
@@ -6304,9 +6345,13 @@ async function cambiarEstadoMensajeIa(id, estado){
     render();
   }catch(e){}
 }
+// 27-nov-2026 (Roberto: "¿consideras que todos deberíamos poder registrar unidades? me dicen que muchas veces Ale no
+// lo hace por no estar en su lugar"): alta rápida para quien recibe la unidad. Se pregunta si está en piso o se fue
+// circulando y a Ale le aparece en su inicio para que la reciba (ver server/altaRapida.js).
 function formNuevoSiniestro(){
   showModal(`
-    <h3>Nuevo siniestro</h3>
+    <h3>Registrar unidad</h3>
+    <p class="subtle" style="margin-top:-4px;">Regístrala tú si Ale no está. A ella le aparece para que la reciba (inventario y datos del cliente).</p>
     <div class="field"><label>Número de siniestro</label><input id="f_numero" placeholder="0186561262A"></div>
     <div class="row-flex">
       <div class="field"><label>Aseguradora</label><select id="f_aseguradora" onchange="actualizarHintMapfre('f_aseguradora','f_hint_mapfre')">${ASEGURADORAS.map(a=>`<option>${a}</option>`).join('')}</select></div>
@@ -6317,6 +6362,7 @@ function formNuevoSiniestro(){
       <div class="field"><label>Placas</label><input id="f_placas"></div>
       <div class="field"><label>Fecha de ingreso</label><input id="f_fecha" type="date" value="${todayISO()}"></div>
     </div>
+    <div class="field"><label>¿Dónde está la unidad?</label><select id="f_ubicacion"><option value="Piso">Está aquí en el taller (piso)</option><option value="Tránsito">Se fue circulando (tránsito)</option></select></div>
     <p class="subtle">Si dejas vehículo o placas vacíos, el siniestro se guarda como "Pendiente de completar" y podrás editarlo después.</p>
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button><button class="btn" onclick="guardarSiniestro()">Guardar</button></div>
   `);
@@ -6325,9 +6371,10 @@ async function guardarSiniestro(){
   try{
     const s = await crearSiniestroRevisandoVolante({ // 19-nov-2026
       numero: document.getElementById('f_numero').value.trim(), aseguradora: document.getElementById('f_aseguradora').value,
-      vehiculo: document.getElementById('f_vehiculo').value, placas: document.getElementById('f_placas').value, fecha_ingreso: document.getElementById('f_fecha').value
+      vehiculo: document.getElementById('f_vehiculo').value, placas: document.getElementById('f_placas').value.trim().toUpperCase(), fecha_ingreso: document.getElementById('f_fecha').value,
+      ubicacion: document.getElementById('f_ubicacion').value, alta_rapida: 1 // 27-nov-2026
     });
-    if(s.advertencia) toast(s.advertencia, 'warn'); else toast('Siniestro registrado.', 'success');
+    if(s.advertencia) toast(s.advertencia, 'warn'); else toast(currentUser && currentUser.rol === 'atencion_cliente' ? 'Unidad registrada.' : 'Unidad registrada. A Ale le aparece para recibirla.', 'success');
     closeModal(); goSiniestro(s.id);
   }catch(e){
     if(e.data && e.data.duplicado){ closeModal(); goSiniestro(e.data.duplicado.id); }

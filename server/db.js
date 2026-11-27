@@ -1588,4 +1588,7 @@ require('./volantes').asegurarColumnas(db);
 // 24-nov-2026: apartado de Particulares (ver server/particulares.js).
 require('./particulares').asegurarTabla(db);
 
+// 27-nov-2026: alta rápida para todos y "No reparar" (ver server/altaRapida.js).
+require('./altaRapida').asegurarColumnas(db);
+
 module.exports = db;

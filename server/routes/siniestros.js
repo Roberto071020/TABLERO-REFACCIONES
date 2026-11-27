@@ -117,6 +117,14 @@ router.post('/', requireAuth, (req, res)=>{
     const c = V.buscarCoincidencia(db, { placas: b.placas, vin: b.vin, numero: b.numero });
     if(c) return res.status(409).json({ error: V.mensajeCoincidencia(c), coincide_volante: c });
   }
+  // 27-nov-2026 (Roberto: "¿consideras que todos deberíamos poder registrar unidades?... muchas veces Ale no lo hace por
+  // no estar en su lugar"): ahora registra más gente, así que también se pregunta si las placas ya están en una unidad
+  // activa. Nunca bloquea: puede ser otro siniestro del mismo carro (es_otro_siniestro = sí, crear).
+  if(!b.es_otro_siniestro){
+    const AR = require('../altaRapida');
+    const m = AR.buscarMismaPlaca(db, { placas: b.placas, numero: b.numero });
+    if(m) return res.status(409).json({ error: AR.mensajeMismaPlaca(m), coincide_unidad: m });
+  }
   // Módulo Alejandra (Fase 1): cuando ella da de alta el expediente desde recepción, los datos
   // básicos de contacto son obligatorios. No se exige a otros roles, para no alterar el flujo actual de Daniela.
   if(req.session.user.rol === 'atencion_cliente'){
@@ -158,6 +166,11 @@ router.post('/', requireAuth, (req, res)=>{
          esParticular, llavesEntregadasIni, dadoSeguridadIni, deducibleAplicaIni, fechaAdmisionIni);
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: info.lastInsertRowid, accion:'alta', usuario:req.session.user,
     valor_nuevo: `Siniestro ${b.numero} (${b.aseguradora})` });
+  // 27-nov-2026: alta rápida hecha por alguien que no es Ale -> le aparece a ella como "falta recibirla".
+  if(b.alta_rapida && req.session.user.rol !== 'atencion_cliente'){
+    db.prepare(`UPDATE siniestros SET alta_rapida_por=?, alta_rapida_en=datetime('now') WHERE id=?`)
+      .run(String(req.session.user.nombre || '').split(' ')[0] || 'otra persona', info.lastInsertRowid);
+  }
 
   // Módulo Alejandra (Fase 2): alta de expediente -> tarea automática de mensaje inicial (regla del punto 7 del documento).
   if(req.session.user.rol === 'atencion_cliente'){
@@ -685,11 +698,35 @@ router.patch('/:id/cerrar', requireAuth, requireRole('operativo','jefe','admin')
 });
 
 
+// 27-nov-2026 (Orlando: "este Mustang, que al final no va a ingresar por siniestro, colocar alguna opción que diga
+// 'unidad no reparar' y que haya un campo de texto libre para poder poner la explicación del porqué"). Aprobado por
+// Roberto. Sale de todos los pendientes con el mismo mecanismo de archivado que el cierre; se regresa con desarchivar.
+router.post('/:id/no-reparar', requireAuth, (req, res)=>{
+  const AR = require('../altaRapida');
+  if(!AR.ROLES_NO_REPARAR.includes(req.session.user.rol)) return res.status(403).json({ error:'No tienes permiso para esta acción.' });
+  const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
+  if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
+  if(s.estatus_general === 'Cerrado' || s.archivado) return res.status(400).json({ error:'Esta unidad ya no está en proceso.' });
+  if(s.fecha_entrega_real) return res.status(400).json({ error:'Esta unidad ya se entregó.' });
+  const motivo = String((req.body && req.body.motivo) || '').trim().slice(0, 300);
+  if(motivo.length < 5) return res.status(400).json({ error:'Escribe por qué no se va a reparar.' });
+  const quien = String(req.session.user.nombre || '').split(' ')[0];
+  db.prepare(`UPDATE siniestros SET estatus_general='No reparar', archivado=1, archivado_en=datetime('now'), no_reparar_motivo=?,
+    no_reparar_en=datetime('now'), no_reparar_por=?, actualizado_en=datetime('now') WHERE id=?`).run(motivo, quien, s.id);
+  registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'no_reparar', campo:'estatus_general',
+    valor_anterior: s.estatus_general, valor_nuevo: 'No reparar — ' + motivo, usuario:req.session.user });
+  res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
+});
+
 // Desarchivar manualmente (correcciones/consultas puntuales). Mismo permiso que cerrar/administrar.
 router.patch('/:id/desarchivar', requireAuth, requireRole('operativo','jefe','admin'), (req, res)=>{
   const s = db.prepare('SELECT * FROM siniestros WHERE id = ?').get(req.params.id);
   if(!s) return res.status(404).json({ error:'Siniestro no encontrado.' });
   db.prepare("UPDATE siniestros SET archivado=0, archivado_en=NULL, no_auto_archivar=1 WHERE id=?").run(s.id);
+  // 27-nov-2026: si estaba como "No reparar" (al final sí entra), regresa a proceso. El motivo queda en la auditoría.
+  if(s.estatus_general === 'No reparar'){
+    db.prepare("UPDATE siniestros SET estatus_general='Abierto', no_reparar_motivo=NULL, no_reparar_en=NULL, no_reparar_por=NULL WHERE id=?").run(s.id);
+  }
   registrarAuditoria(db, { entidad_tipo:'siniestro', entidad_id: s.id, accion:'desarchivado_manual', usuario:req.session.user });
   res.json(db.prepare('SELECT * FROM siniestros WHERE id = ?').get(s.id));
 });
