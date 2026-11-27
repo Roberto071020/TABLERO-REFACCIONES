@@ -161,3 +161,41 @@ footer.note{font-size:11.5px;color:var(--gris-500);text-align:center;padding:20p
 @media (max-width:900px){
   .ph-grid{grid-template-columns:1fr;}
 }
+
+/* ===== Mi pantalla (27-nov-2026): temas por persona. Solo cambian fondo, encabezado y botones; el rojo/ámbar/verde
+   de los avisos (--rojo, --ambar, --verde) NO cambia en ningún tema, para que "vencido" se vea igual en todos. ===== */
+body[data-tema="cristian"]{--azul:#9a0c22;--azul-claro:#b91c1c;--gris-50:#fdf2f2;--border:#f3dede;}
+body[data-tema="mar"]{--azul:#075985;--azul-claro:#0369a1;--gris-50:#eef6fb;--border:#d7e8f3;}
+body[data-tema="bosque"]{--azul:#166534;--azul-claro:#15803d;--gris-50:#eff7f1;--border:#d6eadb;}
+body[data-tema="lavanda"]{--azul:#5b21b6;--azul-claro:#6d28d9;--gris-50:#f5f1fb;--border:#e6dcf5;}
+body[data-tema="cristian"] nav.tabs button.active{background:#fde2e2;}
+body[data-tema="mar"] nav.tabs button.active{background:#dbeefa;}
+body[data-tema="bosque"] nav.tabs button.active{background:#dcf1e2;}
+body[data-tema="lavanda"] nav.tabs button.active{background:#ece3fb;}
+body[data-tema="oscuro"]{--azul:#93c5fd;--azul-claro:#3b82f6;--gris-950:#f8fafc;--gris-900:#e5e7eb;--gris-700:#cbd5e1;--gris-500:#9ca3af;
+  --gris-300:#4b5563;--gris-100:#1f2937;--gris-50:#0b1220;--card-bg:#111827;--border:#273244;color-scheme:dark;}
+body[data-tema="oscuro"] header.top,body[data-tema="oscuro"] .modal,body[data-tema="oscuro"] .kcard,body[data-tema="oscuro"] .result-item,
+body[data-tema="oscuro"] .login-card{background:#111827;color:var(--gris-900);}
+body[data-tema="oscuro"] .btn.secondary{background:#1f2937;color:#bfdbfe;}
+body[data-tema="oscuro"] input,body[data-tema="oscuro"] select,body[data-tema="oscuro"] textarea,
+body[data-tema="oscuro"] .filters select,body[data-tema="oscuro"] .filters input,body[data-tema="oscuro"] .field input,
+body[data-tema="oscuro"] .field select,body[data-tema="oscuro"] .field textarea,body[data-tema="oscuro"] .search-box input{background:#0b1220;color:#e5e7eb;border-color:#374151;}
+body[data-tema="oscuro"] nav.tabs button.active{background:#1e3a8a;color:#dbeafe;}
+body[data-tema="oscuro"] th{background:#0f172a;}
+body[data-tema="oscuro"] .banner.ambar{background:#3a2a0a;border-color:#78350f;color:#fde68a;}
+body[data-tema="oscuro"] .banner.rojo{background:#3b1111;border-color:#7f1d1d;color:#fecaca;}
+body[data-tema="oscuro"] header.top .brand img{background:#fff;border-radius:6px;padding:2px;}
+/* El azul de los avisos/tarjetas tampoco cambia con el tema (en "Servicio Cristian" se veía rojo, como si fuera urgente). */
+body[data-tema] .card.azul{border-left-color:#2563eb;}
+body[data-tema] .badge.azul{background:#2563eb;}
+/* Tamaño de letra */
+body[data-letra="grande"] main{zoom:1.12;}
+body[data-letra="muy_grande"] main{zoom:1.25;}
+/* Botón y opciones de "Mi pantalla" */
+.btn-mipantalla{order:4;}
+.mp-temas{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;}
+.mp-tema{border:2px solid var(--border);border-radius:12px;padding:8px;cursor:pointer;background:var(--card-bg);text-align:left;font:inherit;color:inherit;}
+.mp-tema.sel{border-color:var(--azul-claro);}
+.mp-muestra{border-radius:8px;padding:8px;height:62px;display:flex;flex-direction:column;justify-content:space-between;}
+.mp-muestra span{display:inline-block;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;color:#fff;width:max-content;}
+.mp-letras{display:flex;gap:8px;flex-wrap:wrap;}

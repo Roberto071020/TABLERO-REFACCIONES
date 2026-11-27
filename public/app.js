@@ -162,6 +162,7 @@ async function hacerLogin(){
     document.getElementById('topHeader').classList.remove('hidden');
     document.getElementById('footerNote').classList.remove('hidden');
     document.getElementById('userChip').textContent = currentUser.nombre;
+    aplicarMiPantalla(); // 27-nov-2026
     goTo('inicio');
   }catch(e){
     document.getElementById('loginError').textContent = e.message;
@@ -170,7 +171,61 @@ async function hacerLogin(){
 async function hacerLogout(){
   await api('POST','/api/auth/logout');
   currentUser = null;
+  document.body.removeAttribute('data-tema'); document.body.removeAttribute('data-letra'); MIPANT = null; // 27-nov-2026
   renderLogin();
+}
+/* ===================== Mi pantalla (27-nov-2026) =====================
+   Roberto: "¿Podríamos agregar algunos fondos o temas?" y "no van a identificar que desde [un engrane] pueden personalizar
+   su pantalla" -> botón con texto "🎨 Mi pantalla" en el encabezado y una tarjeta en el inicio hasta que elijan o digan
+   "Ahora no". Solo personal de oficina (el de patio no). Tema y letra se guardan por persona (server/routes/miPantalla.js). */
+let MIPANT = null;
+const MP_TEMAS = [
+  { k:'claro', n:'Claro', fondo:'#f8fafc', boton:'#2563eb', texto:'#1e293b' },
+  { k:'oscuro', n:'Oscuro', fondo:'#0b1220', boton:'#3b82f6', texto:'#e5e7eb' },
+  { k:'cristian', n:'Servicio Cristian', fondo:'#fdf2f2', boton:'#b91c1c', texto:'#3b0d0d' },
+  { k:'mar', n:'Mar', fondo:'#eef6fb', boton:'#0369a1', texto:'#0c2d48' },
+  { k:'bosque', n:'Bosque', fondo:'#eff7f1', boton:'#15803d', texto:'#0f2e1a' },
+  { k:'lavanda', n:'Lavanda', fondo:'#f5f1fb', boton:'#6d28d9', texto:'#2a1650' },
+];
+const MP_LETRAS = [['normal','Normal'], ['grande','Grande'], ['muy_grande','Muy grande']];
+function puedePersonalizar(){ return !!(currentUser && currentUser.rol !== 'tecnico'); }
+function ponerMiPantalla(p){
+  document.body.setAttribute('data-tema', p.tema || 'claro');
+  document.body.setAttribute('data-letra', p.letra || 'normal');
+}
+async function aplicarMiPantalla(){
+  const b = document.getElementById('btnMiPantalla');
+  if(b) b.classList.toggle('hidden', !puedePersonalizar());
+  if(!puedePersonalizar()){ ponerMiPantalla({}); return; }
+  try{ MIPANT = await api('GET', '/api/mi-pantalla', null, { silent:true }); ponerMiPantalla(MIPANT); }catch(e){}
+  if(MIPANT && !MIPANT.elegida && state.view === 'inicio') render();
+}
+function tarjetaMiPantalla(){
+  if(!puedePersonalizar() || !MIPANT || MIPANT.elegida) return '';
+  return `<div class="section" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;border:2px dashed var(--azul-claro);">
+    <div style="font-size:28px;">🎨</div>
+    <div style="flex:1;min-width:180px;"><b>Nuevo: elige el color de tu pantalla</b><div class="subtle">Puedes cambiar el tema y el tamaño de la letra. Lo encuentras siempre arriba en "🎨 Mi pantalla".</div></div>
+    <div style="display:flex;gap:6px;"><button class="btn" onclick="abrirMiPantalla()">Elegir</button><button class="btn ghost" onclick="guardarMiPantalla({}, true)">Ahora no</button></div>
+  </div>`;
+}
+function abrirMiPantalla(){
+  const p = MIPANT || { tema:'claro', letra:'normal' };
+  showModal(`<h3 style="margin-top:0;">🎨 Mi pantalla</h3>
+    <p class="subtle" style="margin-top:-4px;">Toca un tema para probarlo. Los avisos rojo, ámbar y verde se ven igual en todos.</p>
+    <div class="mp-temas">${MP_TEMAS.map(t => `<button class="mp-tema ${p.tema === t.k ? 'sel' : ''}" onclick="guardarMiPantalla({ tema:'${t.k}' })">
+      <div class="mp-muestra" style="background:${t.fondo};color:${t.texto};"><b style="font-size:12px;">Hola 👋</b><span style="background:${t.boton};">Botón</span></div>
+      <div style="margin-top:6px;font-weight:600;font-size:13px;">${p.tema === t.k ? '✔ ' : ''}${esc(t.n)}</div></button>`).join('')}</div>
+    <p style="margin:14px 0 6px;"><b>Tamaño de letra</b></p>
+    <div class="mp-letras">${MP_LETRAS.map(([k, n]) => `<button class="btn ${p.letra === k ? '' : 'secondary'}" onclick="guardarMiPantalla({ letra:'${k}' })">${p.letra === k ? '✔ ' : ''}${n}</button>`).join('')}</div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal(); render();">Listo</button></div>`);
+}
+async function guardarMiPantalla(cambio, ahoraNo){
+  try{
+    MIPANT = await api('PATCH', '/api/mi-pantalla', cambio);
+    ponerMiPantalla(MIPANT);
+    if(ahoraNo){ toast('Cuando quieras, está arriba en "🎨 Mi pantalla".', 'success'); render(); }
+    else abrirMiPantalla();
+  }catch(e){}
 }
 function abrirCambiarPassword(){
   showModal(`
@@ -343,7 +398,7 @@ async function render(){
   if(!mismaPantalla) app.innerHTML = '<div class="empty">Cargando…</div>';
   if(await bloqueoEntrada(app)){ RENDER_CLAVE = null; return; }
   try{
-    if(state.view==='inicio') app.innerHTML = await viewInicio();
+    if(state.view==='inicio') app.innerHTML = tarjetaMiPantalla() + await viewInicio(); // 27-nov-2026: tarjeta "elige tu pantalla"
     else if(state.view==='clientes') app.innerHTML = await viewClientes();
     else if(state.view==='pendientes-hoy') app.innerHTML = await viewPendientesHoy();
     else if(state.view==='vales') app.innerHTML = await viewVales();
@@ -6757,6 +6812,7 @@ async function crearRespaldoAhora(){
     document.getElementById('topHeader').classList.remove('hidden');
     document.getElementById('footerNote').classList.remove('hidden');
     document.getElementById('userChip').textContent = currentUser.nombre;
+    aplicarMiPantalla(); // 27-nov-2026
     render();
   }catch(e){
     renderLogin();
