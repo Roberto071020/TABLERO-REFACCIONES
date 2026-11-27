@@ -207,7 +207,7 @@ const LABEL_ACCION = {
   correo_aprobado: 'Correo aprobado (borrador/sandbox)', correo_descartado: 'Correo descartado',
   exclusion_temporal: 'Proveedor excluido de un envío puntual', reversion: 'Carga masiva revertida',
   login: 'Inicio de sesión', logout: 'Cierre de sesión', password_reseteada_por_admin: 'Contraseña reseteada por administrador',
-  no_reparar: 'Unidad marcada como "No reparar"' // 27-nov-2026
+  no_reparar: 'Unidad marcada como "No reparar"', retirada_taller: 'Unidad retirada del taller' // 27-nov-2026
 };
 const LABEL_CAMPO = {
   estatus_operativo: 'Estatus operativo', estatus_inpart: 'Estatus Inpart', fecha_prevista: 'Fecha promesa',
@@ -1133,6 +1133,7 @@ async function viewInicioAlejandra(){
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre) || 'Alejandra')} 👋</h2>
   <p class="subtle" style="margin-top:0;">Esto es lo que tienes que hacer hoy, en este orden. Toca el botón de cada unidad y sigue los pasos.</p>
   <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
+  ${seccionPorRetirar()}
   <div class="grid-cards">
     ${tarjetaNum(n.entregas, 'Entregas de hoy', n.entregas ? 'rojo' : 'verde', 'entregar')}
     ${tarjetaNum(n.citas, 'Citas de hoy', 'azul', 'recibir')}
@@ -1571,6 +1572,29 @@ function seccionInicio(id, titulo, ayuda, items, renderItem, { max = 10, cerrada
   if(cerrada) return `<details id="sec-${id}" style="margin-top:18px;"><summary style="cursor:pointer;font-weight:700;font-size:17px;">${titulo} <span class="badge gris">${items.length}</span></summary>${cuerpo}</details>`;
   return `<div id="sec-${id}" style="margin-top:18px;"><h3 style="margin:0 0 2px;">${titulo} <span class="badge gris">${items.length}</span></h3>${cuerpo}</div>`;
 }
+/* ===================== Por retirar del taller (27-nov-2026) =====================
+   Roberto: "dejar un recordatorio para que indiquen hasta que se retire la unidad del CDR... igual con las PT para saber
+   qué unidades debemos exigir sean retiradas". Pérdidas totales y "No reparar" que siguen en piso, con los días que llevan
+   (rojo desde 3) y el botón "Ya se retiró". Inicio de Alejandra, Daniela y Roberto (ver server/retiros.js). */
+function seccionPorRetirar(){ setTimeout(pintarPorRetirar, 0); return '<div id="porRetirar" style="margin-bottom:14px;"></div>'; }
+async function pintarPorRetirar(){
+  const caja = document.getElementById('porRetirar'); if(!caja) return;
+  let d; try{ d = await api('GET', '/api/retiros', null, { silent: true }); }catch(e){ return; }
+  const u = d.unidades || [];
+  if(!u.length){ caja.innerHTML = ''; return; }
+  const enRojo = u.filter(x => x.rojo).length;
+  // Va arriba pero cerrada (una sola línea con el número y cuántas en rojo) para no empujar hacia abajo lo del día.
+  caja.innerHTML = seccionInicio('por-retirar', `🚗 Por retirar del taller${enRojo ? ` <span class="badge rojo">${enRojo} en rojo</span>` : ''}`, `Pérdidas totales y unidades que no se van a reparar que siguen aquí. Exige que las retiren${enRojo ? ` (<b>${enRojo}</b> con ${d.dias_rojo} días o más)` : ''}. Cuando se la lleven, toca "Ya se retiró".`, u,
+    x => cajaInicio(`${encabezadoUnidad(x.id, x.vehiculo, x.numero, [x.placas, x.aseguradora].filter(Boolean).map(esc).join(' · '), x.desde)}
+      <div style="margin-bottom:10px;"><span class="badge ${x.tipo === 'No reparar' ? 'ambar' : 'gris'}">${esc(x.tipo)}</span>
+        <span class="badge ${x.rojo ? 'rojo' : 'azul'}">${x.dias === 0 ? 'Desde hoy' : `${x.dias} día(s) en el taller`}</span></div>
+      ${x.no_reparar_motivo ? `<div class="subtle" style="margin-bottom:8px;">${esc(x.no_reparar_motivo)}</div>` : ''}
+      <button class="btn" onclick="marcarRetirada(${x.id}, '${esc(x.vehiculo || x.numero)}')">✔ Ya se retiró</button>`), { cerrada: true });
+}
+async function marcarRetirada(id, nombre){
+  if(!confirm(`¿${nombre} ya salió del taller?`)) return;
+  try{ await api('POST', `/api/retiros/${id}/retirada`, {}); toast('Listo: ya no aparece por retirar.', 'success'); pintarPorRetirar(); }catch(e){}
+}
 function cajaInicio(contenido){ return `<div class="section" style="margin:8px 0;padding:14px;">${contenido}</div>`; }
 // 13-nov-2026 (Orlando, aprobado por Roberto): "que todos los cambios... lleven fecha y no. siniestro" -> todas las
 // tarjetas de los inicios muestran el número de siniestro y, cuando se conoce, la fecha del último movimiento.
@@ -1699,6 +1723,7 @@ async function viewInicioDaniela(){
   <h2 style="margin-bottom:4px;">Hola, ${esc((currentUser && currentUser.nombre || 'Daniela').split(' ')[0])} 👋</h2>
   <p class="subtle" style="margin-top:0;">Aquí solo está lo que sigue pendiente de refacciones, en el orden en que conviene hacerlo. Si una unidad no aparece, sus refacciones están completas.</p>
   <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
+  ${seccionPorRetirar()}
   <button class="btn" style="width:100%;margin-bottom:12px;" onclick="danLlegoPieza()">📦 Llegó una pieza</button>
   <div class="grid-cards">
     ${tarjetaNumeroInicio(n.por_recibir, 'Piezas por recibir', n.por_recibir ? 'azul' : 'verde', 'recibir')}
@@ -2072,6 +2097,7 @@ async function viewInicioRoberto(){
     <button class="btn secondary" onclick="window.open('/reporte-dia.html?tipo=corte', '_blank')">🕒 Corte de las 3</button>
   </div>
   <div id="avisosPush"></div>${(setTimeout(pintarAvisosPush, 0), '')}
+  ${seccionPorRetirar()}
   <div class="grid-cards">
     ${tarjetaNumeroInicio(n.por_valuar, 'Por valuar', n.por_valuar ? 'ambar' : 'verde', 'por-valuar')}
     ${tarjetaNumeroInicio(n.esperando, 'Esperando a la aseguradora', 'azul', 'esperando')}

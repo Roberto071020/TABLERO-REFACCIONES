@@ -1591,4 +1591,7 @@ require('./particulares').asegurarTabla(db);
 // 27-nov-2026: alta rápida para todos y "No reparar" (ver server/altaRapida.js).
 require('./altaRapida').asegurarColumnas(db);
 
+// 27-nov-2026: unidades por retirar del taller (ver server/retiros.js).
+require('./retiros').asegurarColumnas(db);
+
 module.exports = db;

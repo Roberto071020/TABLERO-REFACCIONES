@@ -130,6 +130,7 @@ app.use('/api/push', require('./routes/push'));
 app.use('/api/revision-piezas', require('./routes/revisionPiezas')); // 12-nov-2026: el auxiliar de refacciones revisa lo que llega
 app.use('/api/patio', require('./routes/patio')); // 12-nov-2026: personal de patio -- Beto asigna, el técnico ve sus trabajos y reporta
 app.use('/api/calidad', require('./routes/calidad')); // 12-nov-2026: checklist de calidad digital por OT, desde el celular // 11-nov-2026: activar/probar avisos push en el celular
+app.use('/api/retiros', require('./routes/retiros')); // 27-nov-2026: PT y "No reparar" que siguen en el taller
 app.use('/api/inicio-roberto', require('./routes/inicioRoberto')); // 7-nov-2026: pantalla de inicio de Roberto
 
 // ---- Frontend estático ----
